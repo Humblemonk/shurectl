@@ -3,6 +3,8 @@
 An open-source terminal UI configurator for the **Shure MVX2U** XLR-to-USB audio
 interface on Linux. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 
+![Project Example Screenshot](images/shurectl.png)
+
 ## Features
 
 - **Gain** — 0–60 dB with live gauge display
