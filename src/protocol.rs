@@ -1293,9 +1293,18 @@ mod tests {
         // FEAT_GAIN needs 2 bytes (big-endian u16). Empty or 1-byte values must be rejected.
         let mut state = DeviceState::default();
         let original = state.gain_db;
-        assert!(!apply_response(FEAT_GAIN, &[], &mut state), "empty must return false");
-        assert!(!apply_response(FEAT_GAIN, &[0x0E], &mut state), "1-byte must return false");
-        assert_eq!(state.gain_db, original, "state must not change on rejection");
+        assert!(
+            !apply_response(FEAT_GAIN, &[], &mut state),
+            "empty must return false"
+        );
+        assert!(
+            !apply_response(FEAT_GAIN, &[0x0E], &mut state),
+            "1-byte must return false"
+        );
+        assert_eq!(
+            state.gain_db, original,
+            "state must not change on rejection"
+        );
     }
 
     #[test]
@@ -1363,11 +1372,11 @@ mod tests {
         // gain_addr = EQ_BAND_ADDRS[i].1; raw = gain_db * 10 as i16 big-endian.
         // Bands: 0=100Hz(0x14), 1=250Hz(0x24), 2=1kHz(0x34), 3=4kHz(0x44), 4=10kHz(0x54)
         let cases: &[(usize, [u8; 2], u8, u8, i8)] = &[
-            (0, [0x02, 0x14], 0x00, 0x28, 4),   // +4 dB = raw 40
-            (1, [0x02, 0x24], 0xFF, 0xC4, -6),  // -6 dB = raw -60
-            (2, [0x02, 0x34], 0x00, 0x1E, 3),   // +3 dB = raw 30
-            (3, [0x02, 0x44], 0xFF, 0xD8, -4),  // -4 dB = raw -40
-            (4, [0x02, 0x54], 0x00, 0x3C, 6),   // +6 dB = raw 60
+            (0, [0x02, 0x14], 0x00, 0x28, 4),  // +4 dB = raw 40
+            (1, [0x02, 0x24], 0xFF, 0xC4, -6), // -6 dB = raw -60
+            (2, [0x02, 0x34], 0x00, 0x1E, 3),  // +3 dB = raw 30
+            (3, [0x02, 0x44], 0xFF, 0xD8, -4), // -4 dB = raw -40
+            (4, [0x02, 0x54], 0x00, 0x3C, 6),  // +6 dB = raw 60
         ];
         for &(band, addr, hi, lo, expected_db) in cases {
             let mut state = DeviceState::default();
@@ -1397,7 +1406,10 @@ mod tests {
             assert!(apply_response(*addr, &[0x01], &mut state));
             assert!(state.eq_bands[band].enabled, "band {band} must be enabled");
             assert!(apply_response(*addr, &[0x00], &mut state));
-            assert!(!state.eq_bands[band].enabled, "band {band} must be disabled");
+            assert!(
+                !state.eq_bands[band].enabled,
+                "band {band} must be disabled"
+            );
         }
     }
 
@@ -1604,13 +1616,14 @@ mod tests {
 
     #[test]
     fn mic_position_roundtrip_via_packet() {
-        for (pos, expected_byte) in [
-            (MicPosition::Near, 0x00u8),
-            (MicPosition::Far, 0x01u8),
-        ] {
+        for (pos, expected_byte) in [(MicPosition::Near, 0x00u8), (MicPosition::Far, 0x01u8)] {
             let pkt = cmd_set_auto_position(0, &pos);
             assert_eq!(pkt.len(), PACKET_SIZE);
-            assert_eq!(&pkt[14..16], &FEAT_AUTO_POSITION, "feature address mismatch");
+            assert_eq!(
+                &pkt[14..16],
+                &FEAT_AUTO_POSITION,
+                "feature address mismatch"
+            );
             assert_eq!(pkt[16], expected_byte, "position byte mismatch for {pos}");
         }
     }

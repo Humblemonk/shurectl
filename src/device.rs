@@ -32,11 +32,11 @@ use anyhow::{Context, Result, anyhow};
 use hidapi::{HidApi, HidDevice};
 
 use crate::protocol::{
-    self, DeviceState, PACKET_SIZE, PID, VID, apply_response, cmd_confirm, cmd_get_compressor,
-    cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf,
-    cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_phantom,
-    cmd_set_lock, parse_response,
-    cmd_get_auto_position, cmd_get_auto_tone, cmd_get_auto_gain,
+    self, DeviceState, PACKET_SIZE, PID, VID, apply_response, cmd_confirm, cmd_get_auto_gain,
+    cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor, cmd_get_eq_band_enable,
+    cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf, cmd_get_limiter,
+    cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_phantom, cmd_set_lock,
+    parse_response,
 };
 
 /// How long to wait for a read response, in milliseconds.

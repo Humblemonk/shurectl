@@ -1,10 +1,12 @@
 //! Application state and navigation logic.
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicI32;
+use std::sync::{Arc, Mutex};
 
 use crate::meter::{METER_SILENT, PeakWindow};
-use crate::protocol::{AutoGain, AutoTone, CompressorPreset, DeviceState, HpfFrequency, InputMode, MicPosition};
+use crate::protocol::{
+    AutoGain, AutoTone, CompressorPreset, DeviceState, HpfFrequency, InputMode, MicPosition,
+};
 
 /// Which top-level tab/panel is active.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -327,8 +329,7 @@ impl App {
                 Some(DeviceAction::SetMode(self.device_state.mode))
             }
             Focus::AutoPosition => {
-                self.device_state.auto_position =
-                    self.device_state.auto_position.cycle_next();
+                self.device_state.auto_position = self.device_state.auto_position.cycle_next();
                 Some(DeviceAction::SetAutoPosition(
                     self.device_state.auto_position,
                 ))
@@ -828,15 +829,25 @@ mod tests {
         let action = app.toggle_focused();
         assert_eq!(app.device_state.mode, InputMode::Manual);
         assert_eq!(app.focus, Focus::Gain, "Manual mode must focus Gain");
-        assert!(matches!(action, Some(DeviceAction::SetMode(InputMode::Manual))));
+        assert!(matches!(
+            action,
+            Some(DeviceAction::SetMode(InputMode::Manual))
+        ));
 
         // Re-focus Mode to toggle back
         app.focus = Focus::Mode;
         // Manual → Auto: focus jumps to AutoPosition
         let action = app.toggle_focused();
         assert_eq!(app.device_state.mode, InputMode::Auto);
-        assert_eq!(app.focus, Focus::AutoPosition, "Auto mode must focus AutoPosition");
-        assert!(matches!(action, Some(DeviceAction::SetMode(InputMode::Auto))));
+        assert_eq!(
+            app.focus,
+            Focus::AutoPosition,
+            "Auto mode must focus AutoPosition"
+        );
+        assert!(matches!(
+            action,
+            Some(DeviceAction::SetMode(InputMode::Auto))
+        ));
     }
 
     #[test]
@@ -872,7 +883,10 @@ mod tests {
         assert_eq!(app.device_state.auto_tone, AutoTone::Bright);
         let action = app.toggle_focused();
         assert_eq!(app.device_state.auto_tone, AutoTone::Dark);
-        assert!(matches!(action, Some(DeviceAction::SetAutoTone(AutoTone::Dark))));
+        assert!(matches!(
+            action,
+            Some(DeviceAction::SetAutoTone(AutoTone::Dark))
+        ));
     }
 
     #[test]
@@ -887,7 +901,10 @@ mod tests {
         assert_eq!(app.device_state.auto_gain, AutoGain::Loud);
         let action = app.toggle_focused();
         assert_eq!(app.device_state.auto_gain, AutoGain::Quiet);
-        assert!(matches!(action, Some(DeviceAction::SetAutoGain(AutoGain::Quiet))));
+        assert!(matches!(
+            action,
+            Some(DeviceAction::SetAutoGain(AutoGain::Quiet))
+        ));
     }
 
     #[test]
