@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::meter::{METER_SILENT, PeakWindow};
+use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceState, HpfFrequency, InputMode, MicPosition,
 };
@@ -76,8 +77,9 @@ pub enum Focus {
     Limiter,
     Compressor,
     Hpf,
-    // Presets tab
-    PresetSlot(usize),
+    // Presets tab — usize is slot index 0–3
+    PresetName(usize),
+    PresetActions(usize),
     // Info — no interactive focus
     None,
 }
@@ -93,6 +95,12 @@ pub struct App {
     pub should_quit: bool,
     pub demo_mode: bool,
     pub help_visible: bool,
+    /// Loaded preset slots. `None` means the slot file does not exist yet.
+    pub presets: [Option<PresetSlot>; PRESET_COUNT],
+    /// Set to `true` while the user is typing a new name for a preset slot.
+    pub editing_preset_name: bool,
+    /// Which slot index is being edited (valid when `editing_preset_name` is true).
+    pub editing_preset_index: usize,
     /// Instantaneous peak level shared with the cpal capture thread.
     /// Stores `peak_dbfs * 10` as i32, or `METER_SILENT` when unavailable.
     pub meter_level: Arc<AtomicI32>,
@@ -106,13 +114,16 @@ impl Default for App {
         Self {
             device_state: DeviceState::default(),
             active_tab: Tab::Main,
-            focus: Focus::Gain,
+            focus: Focus::Mode,
             status_message: String::from("Press ? for help"),
             status_is_error: false,
             eq_selected_band: 0,
             should_quit: false,
             demo_mode: false,
             help_visible: false,
+            presets: [None, None, None, None],
+            editing_preset_name: false,
+            editing_preset_index: 0,
             meter_level: Arc::new(AtomicI32::new(METER_SILENT)),
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
         }
@@ -174,44 +185,45 @@ impl App {
     fn reset_focus_for_tab(&mut self) {
         self.focus = match self.active_tab {
             Tab::Main => match self.device_state.mode {
-                InputMode::Auto => Focus::Mode,
                 InputMode::Manual => Focus::Gain,
+                InputMode::Auto => Focus::Mode,
             },
             Tab::Eq => Focus::EqEnable,
             Tab::Dynamics => Focus::Limiter,
-            Tab::Presets => Focus::PresetSlot(0),
+            Tab::Presets => Focus::PresetName(0),
             Tab::Info => Focus::None,
         };
     }
 
     // ── Focus cycling within a tab ────────────────────────────────────────────
     //
-    // Main tab has two distinct cycles depending on input mode:
+    // Main tab has two distinct cycles depending on input mode.
+    // Order matches top-to-bottom screen layout:
     //
-    //   Manual: Gain → Mode → Mute → Phantom → Lock → MonitorMix → (wrap)
-    //   Auto:   Mode → AutoPosition → AutoTone → AutoGain → Mute → Phantom → Lock → MonitorMix → (wrap)
+    //   Manual: Mode → Mute → Gain → MonitorMix → Phantom → Lock → (wrap)
+    //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
     // If focus lands on a mode-specific control while the mode doesn't match
     // (e.g. user toggles mode while focused on Gain), the wildcard arm catches
     // it and returns to the correct starting focus for the current mode.
     pub fn focus_next(&mut self) {
         self.focus = match (&self.active_tab, &self.focus, &self.device_state.mode) {
-            // Manual cycle
-            (Tab::Main, Focus::Gain, InputMode::Manual) => Focus::Mode,
+            // Manual cycle (top → bottom): Mode → Mute → Gain → MonitorMix → Phantom → Lock
             (Tab::Main, Focus::Mode, InputMode::Manual) => Focus::Mute,
-            // Auto cycle
-            (Tab::Main, Focus::Mode, InputMode::Auto) => Focus::AutoPosition,
+            (Tab::Main, Focus::Mute, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Gain, InputMode::Manual) => Focus::MonitorMix,
+            // Auto cycle (top → bottom): Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock
+            (Tab::Main, Focus::Mode, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::Mute, InputMode::Auto) => Focus::AutoPosition,
             (Tab::Main, Focus::AutoPosition, InputMode::Auto) => Focus::AutoTone,
             (Tab::Main, Focus::AutoTone, InputMode::Auto) => Focus::AutoGain,
-            (Tab::Main, Focus::AutoGain, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::AutoGain, InputMode::Auto) => Focus::MonitorMix,
             // Shared tail (both modes)
-            (Tab::Main, Focus::Mute, _) => Focus::Phantom,
+            (Tab::Main, Focus::MonitorMix, _) => Focus::Phantom,
             (Tab::Main, Focus::Phantom, _) => Focus::Lock,
-            (Tab::Main, Focus::Lock, _) => Focus::MonitorMix,
-            (Tab::Main, Focus::MonitorMix, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::MonitorMix, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::Lock, _) => Focus::Mode,
             // Fallback — wrong-mode focus or unexpected state
-            (Tab::Main, _, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, _, InputMode::Manual) => Focus::Mode,
             (Tab::Main, _, InputMode::Auto) => Focus::Mode,
 
             (Tab::Eq, Focus::EqEnable, _) => Focus::EqBandSelect,
@@ -225,8 +237,9 @@ impl App {
             (Tab::Dynamics, Focus::Hpf, _) => Focus::Limiter,
             (Tab::Dynamics, _, _) => Focus::Limiter,
 
-            (Tab::Presets, Focus::PresetSlot(i), _) => Focus::PresetSlot((*i + 1) % 4),
-            (Tab::Presets, _, _) => Focus::PresetSlot(0),
+            (Tab::Presets, Focus::PresetName(i), _) => Focus::PresetActions(*i),
+            (Tab::Presets, Focus::PresetActions(i), _) => Focus::PresetName((i + 1) % PRESET_COUNT),
+            (Tab::Presets, _, _) => Focus::PresetName(0),
 
             _ => self.focus,
         };
@@ -234,22 +247,23 @@ impl App {
 
     pub fn focus_prev(&mut self) {
         self.focus = match (&self.active_tab, &self.focus, &self.device_state.mode) {
-            // Manual cycle
-            (Tab::Main, Focus::Gain, InputMode::Manual) => Focus::MonitorMix,
-            (Tab::Main, Focus::Mode, InputMode::Manual) => Focus::Gain,
-            // Auto cycle
-            (Tab::Main, Focus::Mode, InputMode::Auto) => Focus::MonitorMix,
-            (Tab::Main, Focus::AutoPosition, InputMode::Auto) => Focus::Mode,
+            // Manual cycle reverse
+            (Tab::Main, Focus::Mode, InputMode::Manual) => Focus::Lock,
+            (Tab::Main, Focus::Mute, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::Gain, InputMode::Manual) => Focus::Mute,
+            // Auto cycle reverse
+            (Tab::Main, Focus::Mode, InputMode::Auto) => Focus::Lock,
+            (Tab::Main, Focus::Mute, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::AutoPosition, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::AutoTone, InputMode::Auto) => Focus::AutoPosition,
             (Tab::Main, Focus::AutoGain, InputMode::Auto) => Focus::AutoTone,
             // Shared tail (both modes)
-            (Tab::Main, Focus::Mute, InputMode::Manual) => Focus::Mode,
-            (Tab::Main, Focus::Mute, InputMode::Auto) => Focus::AutoGain,
-            (Tab::Main, Focus::Phantom, _) => Focus::Mute,
+            (Tab::Main, Focus::MonitorMix, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, InputMode::Auto) => Focus::AutoGain,
+            (Tab::Main, Focus::Phantom, _) => Focus::MonitorMix,
             (Tab::Main, Focus::Lock, _) => Focus::Phantom,
-            (Tab::Main, Focus::MonitorMix, _) => Focus::Lock,
             // Fallback
-            (Tab::Main, _, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, _, InputMode::Manual) => Focus::Mode,
             (Tab::Main, _, InputMode::Auto) => Focus::Mode,
 
             (Tab::Eq, Focus::EqEnable, _) => Focus::EqGain(self.eq_selected_band),
@@ -263,9 +277,10 @@ impl App {
             (Tab::Dynamics, Focus::Hpf, _) => Focus::Compressor,
             (Tab::Dynamics, _, _) => Focus::Limiter,
 
-            (Tab::Presets, Focus::PresetSlot(0), _) => Focus::PresetSlot(3),
-            (Tab::Presets, Focus::PresetSlot(i), _) if *i > 0 => Focus::PresetSlot(i - 1),
-            (Tab::Presets, _, _) => Focus::PresetSlot(0),
+            (Tab::Presets, Focus::PresetName(0), _) => Focus::PresetActions(PRESET_COUNT - 1),
+            (Tab::Presets, Focus::PresetName(i), _) => Focus::PresetActions(i - 1),
+            (Tab::Presets, Focus::PresetActions(i), _) => Focus::PresetName(*i),
+            (Tab::Presets, _, _) => Focus::PresetName(0),
 
             _ => self.focus,
         };
@@ -377,6 +392,14 @@ impl App {
                 self.device_state.hpf = self.device_state.hpf.cycle_next();
                 Some(DeviceAction::SetHpf(self.device_state.hpf))
             }
+            Focus::PresetActions(i) => {
+                // Enter on the actions row loads the preset (if filled).
+                if self.presets[i].is_some() {
+                    Some(DeviceAction::LoadPreset(i))
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -403,6 +426,14 @@ pub enum DeviceAction {
     SetEqBandEnable(usize, bool),
     /// `usize` is band index 0–4; `i8` is gain in dB (−8..+6, steps of 2).
     SetEqBandGain(usize, i8),
+    /// Save current device state to preset slot `usize`.
+    SavePreset(usize),
+    /// Load preset slot `usize` and apply all settings to the device.
+    LoadPreset(usize),
+    /// Delete the preset file for slot `usize`.
+    DeletePreset(usize),
+    /// Write the (already in-memory-updated) preset name for slot `usize` back to disk.
+    PersistPresetName(usize),
     Refresh,
 }
 
@@ -478,7 +509,7 @@ mod tests {
         let expected: &[(Tab, Focus)] = &[
             (Tab::Eq, Focus::EqEnable),
             (Tab::Dynamics, Focus::Limiter),
-            (Tab::Presets, Focus::PresetSlot(0)),
+            (Tab::Presets, Focus::PresetName(0)),
             (Tab::Info, Focus::None),
         ];
         for (tab, expected_focus) in expected {
@@ -585,44 +616,44 @@ mod tests {
 
     #[test]
     fn main_tab_manual_mode_focus_cycles_forward_and_back() {
-        // Manual: Gain → Mode → Mute → Phantom → Lock → MonitorMix → Gain
+        // Manual: Mode → Mute → Gain → MonitorMix → Phantom → Lock → Mode
         let forward = [
-            Focus::Gain,
             Focus::Mode,
             Focus::Mute,
+            Focus::Gain,
+            Focus::MonitorMix,
             Focus::Phantom,
             Focus::Lock,
-            Focus::MonitorMix,
-            Focus::Gain, // wrap
+            Focus::Mode, // wrap
         ];
         let mut app = App::default();
         app.active_tab = Tab::Main;
         app.device_state.mode = InputMode::Manual;
-        app.focus = Focus::Gain;
+        app.focus = Focus::Mode;
 
         for expected in &forward[1..] {
             app.focus_next();
             assert_eq!(app.focus, *expected);
         }
 
-        // Backward from Gain wraps to MonitorMix
-        app.focus = Focus::Gain;
+        // Backward from Mode wraps to Lock
+        app.focus = Focus::Mode;
         app.focus_prev();
-        assert_eq!(app.focus, Focus::MonitorMix);
+        assert_eq!(app.focus, Focus::Lock);
     }
 
     #[test]
     fn main_tab_auto_mode_focus_cycles_forward_and_back() {
-        // Auto: Mode → AutoPosition → AutoTone → AutoGain → Mute → Phantom → Lock → MonitorMix → Mode
+        // Auto: Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → Mode
         let forward = [
             Focus::Mode,
+            Focus::Mute,
             Focus::AutoPosition,
             Focus::AutoTone,
             Focus::AutoGain,
-            Focus::Mute,
+            Focus::MonitorMix,
             Focus::Phantom,
             Focus::Lock,
-            Focus::MonitorMix,
             Focus::Mode, // wrap
         ];
         let mut app = App::default();
@@ -635,10 +666,10 @@ mod tests {
             assert_eq!(app.focus, *expected);
         }
 
-        // Backward from Mode wraps to MonitorMix
+        // Backward from Mode wraps to Lock
         app.focus = Focus::Mode;
         app.focus_prev();
-        assert_eq!(app.focus, Focus::MonitorMix);
+        assert_eq!(app.focus, Focus::Lock);
     }
 
     #[test]
@@ -660,25 +691,43 @@ mod tests {
     }
 
     #[test]
-    fn presets_tab_focus_wraps_at_slot_boundaries() {
+    fn presets_tab_focus_cycles_through_name_and_actions_rows() {
         let mut app = App::default();
         app.active_tab = Tab::Presets;
-        app.focus = Focus::PresetSlot(3);
 
-        app.focus_next();
-        assert_eq!(
-            app.focus,
-            Focus::PresetSlot(0),
-            "slot 3 next should wrap to slot 0"
-        );
+        // Walk forward through all slots: Name(0) → Actions(0) → Name(1) → ... → Actions(3) → Name(0)
+        app.focus = Focus::PresetName(0);
+        let expected_forward = [
+            Focus::PresetActions(0),
+            Focus::PresetName(1),
+            Focus::PresetActions(1),
+            Focus::PresetName(2),
+            Focus::PresetActions(2),
+            Focus::PresetName(3),
+            Focus::PresetActions(3),
+            Focus::PresetName(0), // wraps
+        ];
+        for expected in expected_forward {
+            app.focus_next();
+            assert_eq!(app.focus, expected, "focus_next mismatch");
+        }
 
-        app.focus = Focus::PresetSlot(0);
-        app.focus_prev();
-        assert_eq!(
-            app.focus,
-            Focus::PresetSlot(3),
-            "slot 0 prev should wrap to slot 3"
-        );
+        // Walk backward: Actions(3) → Name(3) → Actions(2) → ... → Name(0) → Actions(3)
+        app.focus = Focus::PresetActions(3);
+        let expected_backward = [
+            Focus::PresetName(3),
+            Focus::PresetActions(2),
+            Focus::PresetName(2),
+            Focus::PresetActions(1),
+            Focus::PresetName(1),
+            Focus::PresetActions(0),
+            Focus::PresetName(0),
+            Focus::PresetActions(3), // wraps
+        ];
+        for expected in expected_backward {
+            app.focus_prev();
+            assert_eq!(app.focus, expected, "focus_prev mismatch");
+        }
     }
 
     // ── adjust_focused ────────────────────────────────────────────────────────
@@ -968,6 +1017,10 @@ mod tests {
             Focus::MonitorMix,
             Focus::EqBandSelect,
             Focus::None,
+            // PresetName: editing is handled in handle_key, not toggle_focused
+            Focus::PresetName(0),
+            // PresetActions with empty slot: no preset to load
+            Focus::PresetActions(0),
         ] {
             app.focus = focus;
             assert!(
@@ -1026,6 +1079,45 @@ mod tests {
             app.peak_window.lock().unwrap().short.max(),
             Some(-200),
             "write through a cloned Arc must be visible via app.peak_window"
+        );
+    }
+
+    // ── preset focus / toggle ─────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_preset_actions_filled_returns_load_preset() {
+        let mut app = App::default();
+        app.active_tab = Tab::Presets;
+        app.focus = Focus::PresetActions(2);
+        // Populate slot 2 with a minimal preset.
+        use crate::presets::{
+            PresetSlot, SerAutoGain, SerAutoTone, SerCompressorPreset, SerEqBand, SerHpfFrequency,
+            SerInputMode, SerMicPosition,
+        };
+        app.presets[2] = Some(PresetSlot {
+            name: String::from("Test"),
+            gain_db: 36,
+            mode: SerInputMode::Manual,
+            auto_position: SerMicPosition::Near,
+            auto_tone: SerAutoTone::Natural,
+            auto_gain: SerAutoGain::Normal,
+            muted: false,
+            phantom_power: false,
+            monitor_mix: 0,
+            limiter_enabled: false,
+            compressor: SerCompressorPreset::Off,
+            hpf: SerHpfFrequency::Off,
+            eq_enabled: false,
+            eq_bands: [SerEqBand {
+                enabled: false,
+                gain_db: 0,
+            }; 5],
+        });
+
+        let action = app.toggle_focused();
+        assert!(
+            matches!(action, Some(DeviceAction::LoadPreset(2))),
+            "filled PresetActions slot must return LoadPreset"
         );
     }
 }

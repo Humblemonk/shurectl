@@ -10,6 +10,7 @@
 mod app;
 mod device;
 mod meter;
+mod presets;
 mod protocol;
 mod ui;
 
@@ -31,6 +32,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use app::{App, DeviceAction};
 use device::Mvx2u;
 use meter::{MeterStatus, start_meter};
+use presets::PresetSlot;
 use protocol::InputMode;
 
 #[derive(Parser)]
@@ -97,6 +99,8 @@ fn main() -> Result<()> {
     } else {
         app.set_ok("Demo mode — changes will not be sent to a device.");
     }
+
+    app.presets = presets::load_all_presets();
 
     // Start the input level meter. _meter_stream must stay alive —
     // dropping it stops the capture thread.
@@ -174,7 +178,41 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
         || (code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL))
     {
-        app.should_quit = true;
+        // Quit is blocked while editing a preset name — Esc must be used first.
+        if !app.editing_preset_name {
+            app.should_quit = true;
+        }
+        return None;
+    }
+
+    // ── Preset name editing mode ──────────────────────────────────────────────
+    if app.editing_preset_name {
+        match code {
+            KeyCode::Enter | KeyCode::Esc => {
+                app.editing_preset_name = false;
+                let i = app.editing_preset_index;
+                // Persist the updated name if the slot is filled.
+                if app.presets[i].is_some() {
+                    return Some(DeviceAction::PersistPresetName(i));
+                }
+            }
+            KeyCode::Backspace => {
+                let i = app.editing_preset_index;
+                if let Some(slot) = &mut app.presets[i] {
+                    slot.name.pop();
+                }
+            }
+            KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
+                let i = app.editing_preset_index;
+                if let Some(slot) = &mut app.presets[i] {
+                    // Cap name length at 40 characters.
+                    if slot.name.len() < 40 {
+                        slot.name.push(c);
+                    }
+                }
+            }
+            _ => {}
+        }
         return None;
     }
 
@@ -209,7 +247,36 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         }
         KeyCode::Left | KeyCode::Char('h') => app.adjust_focused(-1),
         KeyCode::Right | KeyCode::Char('l') => app.adjust_focused(1),
-        KeyCode::Enter | KeyCode::Char(' ') => app.toggle_focused(),
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            // On PresetName: enter edit mode.
+            if let app::Focus::PresetName(i) = app.focus
+                && app.presets[i].is_some()
+            {
+                app.editing_preset_name = true;
+                app.editing_preset_index = i;
+                return None;
+            }
+            app.toggle_focused()
+        }
+        // Preset-specific keys — only active on the Presets tab.
+        KeyCode::Char('s') if app.active_tab == app::Tab::Presets => {
+            if let app::Focus::PresetName(i) | app::Focus::PresetActions(i) = app.focus {
+                Some(DeviceAction::SavePreset(i))
+            } else {
+                None
+            }
+        }
+        KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
+            if let app::Focus::PresetActions(i) = app.focus {
+                if app.presets[i].is_some() {
+                    Some(DeviceAction::DeletePreset(i))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -253,11 +320,11 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             send_if_connected(device, |d| d.set_auto_gain(gain))
         }
         DeviceAction::SetMute(m) => {
-            app.set_ok(format!("Mute → {}", if *m { "ON" } else { "Off" }));
+            app.set_ok(format!("Mute → {}", if *m { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_mute(*m))
         }
         DeviceAction::SetPhantom(p) => {
-            app.set_ok(format!("Phantom → {}", if *p { "48V ON" } else { "Off" }));
+            app.set_ok(format!("Phantom → {}", if *p { "48V ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_phantom(*p))
         }
         DeviceAction::SetLock(locked) => {
@@ -273,7 +340,7 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             send_if_connected(device, |d| d.set_monitor_mix(*m))
         }
         DeviceAction::SetLimiter(en) => {
-            app.set_ok(format!("Limiter → {}", if *en { "ON" } else { "Off" }));
+            app.set_ok(format!("Limiter → {}", if *en { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_limiter(*en))
         }
         DeviceAction::SetCompressor(preset) => {
@@ -292,13 +359,64 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             app.set_ok(format!(
                 "EQ Band {} → {}",
                 band + 1,
-                if *en { "ON" } else { "Off" }
+                if *en { "ON" } else { "OFF" }
             ));
             send_if_connected(device, |d| d.set_eq_band_enable(*band, *en))
         }
         DeviceAction::SetEqBandGain(band, gain_db) => {
             app.set_ok(format!("EQ Band {} → {:+} dB", band + 1, gain_db));
             send_if_connected(device, |d| d.set_eq_band_gain(*band, *gain_db))
+        }
+        DeviceAction::SavePreset(i) => {
+            let name = app.presets[*i]
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("Preset {}", i + 1));
+            let slot = PresetSlot::from_device_state(name, &app.device_state);
+            match presets::save_preset(*i, &slot) {
+                Ok(()) => {
+                    app.set_ok(format!("Saved to \"{}\".", slot.name));
+                    app.presets[*i] = Some(slot);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+        DeviceAction::LoadPreset(i) => {
+            if let Some(slot) = &app.presets[*i].clone() {
+                slot.apply_to_device_state(&mut app.device_state);
+                app.set_ok(format!("Loaded \"{}\".", slot.name));
+                // Apply every setting to the device.
+                apply_preset_to_device(device, &app.device_state)
+            } else {
+                app.set_err(format!("Preset slot {} is empty.", i + 1));
+                Ok(())
+            }
+        }
+        DeviceAction::DeletePreset(i) => match presets::delete_preset(*i) {
+            Ok(()) => {
+                let name = app.presets[*i]
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("preset");
+                app.set_ok(format!("Deleted \"{}\".", name));
+                app.presets[*i] = None;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
+        DeviceAction::PersistPresetName(i) => {
+            if let Some(slot) = &app.presets[*i] {
+                match presets::save_preset(*i, slot) {
+                    Ok(()) => {
+                        app.set_ok(format!("Renamed to \"{}\".", slot.name));
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                Ok(())
+            }
         }
     };
 
@@ -315,4 +433,28 @@ where
         Some(dev) => f(dev),
         None => Ok(()),
     }
+}
+
+/// Send every configurable field of `state` to the device.
+/// Called after loading a preset to bring the hardware into sync.
+fn apply_preset_to_device(device: &Option<Mvx2u>, state: &protocol::DeviceState) -> Result<()> {
+    send_if_connected(device, |d| {
+        d.set_mode(state.mode == InputMode::Auto)?;
+        d.set_gain(state.gain_db)?;
+        d.set_auto_position(&state.auto_position)?;
+        d.set_auto_tone(&state.auto_tone)?;
+        d.set_auto_gain(&state.auto_gain)?;
+        d.set_mute(state.muted)?;
+        d.set_phantom(state.phantom_power)?;
+        d.set_monitor_mix(state.monitor_mix)?;
+        d.set_limiter(state.limiter_enabled)?;
+        d.set_compressor(&state.compressor)?;
+        d.set_hpf(&state.hpf)?;
+        d.set_eq_enable(state.eq_enabled)?;
+        for (band, eq) in state.eq_bands.iter().enumerate() {
+            d.set_eq_band_enable(band, eq.enabled)?;
+            d.set_eq_band_gain(band, eq.gain_db)?;
+        }
+        Ok(())
+    })
 }

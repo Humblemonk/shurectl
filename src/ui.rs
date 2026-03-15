@@ -9,7 +9,9 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus, Tab};
-use crate::protocol::{AutoGain, AutoTone, EQ_BAND_FREQS, InputMode, MicPosition};
+use crate::protocol::{
+    AutoGain, AutoTone, CompressorPreset, EQ_BAND_FREQS, HpfFrequency, InputMode, MicPosition,
+};
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C_ACCENT: Color = Color::Rgb(255, 95, 0); // Shure orange
@@ -158,15 +160,22 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         (format!("  {}", app.status_message), C_DIM)
     };
 
-    let help_hint = Span::styled(
-        " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [r] Refresh  [?] Help  [q] Quit",
-        Style::default().fg(C_DISABLED),
-    );
+    let hint = if app.editing_preset_name {
+        Span::styled(
+            " Editing name — type to change  [Enter/Esc] confirm  [Backspace] delete",
+            Style::default().fg(C_ACCENT),
+        )
+    } else {
+        Span::styled(
+            " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [r] Refresh  [?] Help  [q] Quit",
+            Style::default().fg(C_DISABLED),
+        )
+    };
 
     let status_line = vec![
         Span::styled(msg, Style::default().fg(color)),
         Span::raw("   "),
-        help_hint,
+        hint,
     ];
 
     f.render_widget(
@@ -488,6 +497,11 @@ fn draw_mute_block(f: &mut Frame, app: &App, area: Rect) {
 ///
 /// `rows` must have at least 4 elements (indices 0–3).
 fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
+    debug_assert!(
+        rows.len() >= 4,
+        "draw_main_shared requires at least 4 row slots, got {}",
+        rows.len()
+    );
     // ── Level Meter ───────────────────────────────────────────────────────────
     draw_meter(f, app, rows[0]);
 
@@ -634,10 +648,6 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Firmware    : ", Style::default().fg(C_DIM)),
-            Span::styled(&*ds.firmware_version, Style::default().fg(C_TEXT)),
-        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("Mode        : ", Style::default().fg(C_DIM)),
@@ -651,7 +661,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.muted {
                 Span::styled("YES", Style::default().fg(C_ERROR))
             } else {
-                Span::styled("No", Style::default().fg(C_SUCCESS))
+                Span::styled("NO", Style::default().fg(C_SUCCESS))
             },
         ]),
         Line::from(vec![
@@ -659,7 +669,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.locked {
                 Span::styled("YES", Style::default().fg(C_ERROR))
             } else {
-                Span::styled("No", Style::default().fg(C_DIM))
+                Span::styled("NO", Style::default().fg(C_DIM))
             },
         ]),
         Line::from(vec![
@@ -667,7 +677,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.phantom_power {
                 Span::styled("48V ON", Style::default().fg(C_SUCCESS))
             } else {
-                Span::styled("Off", Style::default().fg(C_DIM))
+                Span::styled("OFF", Style::default().fg(C_DIM))
             },
         ]),
         Line::from(""),
@@ -696,7 +706,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             } else if ds.limiter_enabled {
                 Span::styled("ON", Style::default().fg(C_SUCCESS))
             } else {
-                Span::styled("Off", Style::default().fg(C_DIM))
+                Span::styled("OFF", Style::default().fg(C_DIM))
             },
         ]),
         Line::from(vec![
@@ -1181,27 +1191,31 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // ── Compressor ────────────────────────────────────────────────────────────
     let comp_foc = app.focus == Focus::Compressor;
-    let comp_lines: Vec<Line> = ["Off", "Light", "Medium", "Heavy"]
-        .iter()
-        .map(|label| {
-            let selected =
-                label.to_lowercase() == app.device_state.compressor.to_string().to_lowercase();
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    *label,
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
+    let comp_lines: Vec<Line> = [
+        CompressorPreset::Off,
+        CompressorPreset::Light,
+        CompressorPreset::Medium,
+        CompressorPreset::Heavy,
+    ]
+    .iter()
+    .map(|preset| {
+        let selected = *preset == app.device_state.compressor;
+        Line::from(vec![
+            Span::styled(
+                if selected { "▶ " } else { "  " },
+                Style::default().fg(C_ACCENT),
+            ),
+            Span::styled(
+                preset.to_string(),
+                if selected {
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_DIM)
+                },
+            ),
+        ])
+    })
+    .collect();
 
     let mut comp_content = vec![Line::from("")];
     comp_content.extend(comp_lines);
@@ -1234,17 +1248,17 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // ── HPF ───────────────────────────────────────────────────────────────────
     let hpf_foc = app.focus == Focus::Hpf;
-    let hpf_lines: Vec<Line> = ["Off", "75 Hz", "150 Hz"]
+    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
         .iter()
-        .map(|label| {
-            let selected = *label == app.device_state.hpf.to_string();
+        .map(|freq| {
+            let selected = *freq == app.device_state.hpf;
             Line::from(vec![
                 Span::styled(
                     if selected { "▶ " } else { "  " },
                     Style::default().fg(C_ACCENT),
                 ),
                 Span::styled(
-                    *label,
+                    freq.to_string(),
                     if selected {
                         Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
                     } else {
@@ -1289,89 +1303,182 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 // Presets Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_presets_tab(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
+    // Each slot gets a fixed-height card: name row (3) + actions row (3) = 6 lines each.
+    let slot_constraints: Vec<Constraint> = (0..4).map(|_| Constraint::Length(7)).collect();
+    let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(9), // explanation banner (7 lines + 2 borders)
-            Constraint::Min(0),    // slot placeholders
-        ])
+        .constraints(slot_constraints)
         .margin(1)
         .split(area);
 
-    // ── Explanation banner ────────────────────────────────────────────────────
-    let banner = Paragraph::new(vec![
+    for i in 0..4 {
+        draw_preset_card(f, app, i, rows[i]);
+    }
+}
+
+fn draw_preset_card(f: &mut Frame, app: &App, index: usize, area: Rect) {
+    // Split the card into name row and actions row.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(4)])
+        .split(area);
+
+    draw_preset_name_row(f, app, index, rows[0]);
+    draw_preset_actions_row(f, app, index, rows[1]);
+}
+
+fn draw_preset_name_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
+    let focused = app.focus == Focus::PresetName(index);
+    let editing = app.editing_preset_name && app.editing_preset_index == index;
+
+    let (name_text, border_color, title_style) = match &app.presets[index] {
+        Some(slot) => {
+            let display = if editing {
+                format!("{}_", slot.name) // show cursor
+            } else {
+                slot.name.clone()
+            };
+            let color = if editing {
+                C_ACCENT
+            } else if focused {
+                C_FOCUS
+            } else {
+                C_BORDER
+            };
+            let style = if focused || editing {
+                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            (display, color, style)
+        }
+        None => {
+            let color = if focused { C_FOCUS } else { C_DISABLED };
+            let style = if focused {
+                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(C_DISABLED)
+            };
+            (String::from("Empty"), color, style)
+        }
+    };
+
+    let hint = if editing {
+        Span::styled("  [Enter/Esc] confirm", Style::default().fg(C_ACCENT))
+    } else if focused && app.presets[index].is_some() {
+        Span::styled("  [Enter] rename", Style::default().fg(C_DIM))
+    } else {
+        Span::raw("")
+    };
+
+    let summary_line = match &app.presets[index] {
+        Some(slot) if !editing => {
+            Line::from(Span::styled(slot.summary(), Style::default().fg(C_DIM)))
+        }
+        _ => Line::from(""),
+    };
+
+    let content = vec![
         Line::from(vec![
             Span::styled(
-                "⚠  ",
-                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+                format!("  {name_text}"),
+                if editing {
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
             ),
-            Span::styled(
-                "Preset save/recall is not yet implemented.",
-                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
-            ),
+            hint,
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "The MVX2U hardware supports 4 on-device preset slots, but the USB HID",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "commands for save/recall have not been reverse-engineered yet.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "To help: capture packets with usbmon while using MOTIV Desktop on",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "Windows/Mac, then open an issue at the project repository.",
-            Style::default().fg(C_DIM),
-        )),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(C_WARN))
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(banner, chunks[0]);
+        summary_line,
+    ];
 
-    // ── Slot placeholders ─────────────────────────────────────────────────────
-    let slot_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(3); 4])
-        .split(chunks[1]);
-
-    let show_count = slot_rows.len().min(4);
-    for i in 0..show_count {
-        let foc = app.focus == Focus::PresetSlot(i);
-        let placeholder = Paragraph::new(Line::from(Span::styled(
-            "not implemented",
-            Style::default().fg(C_DISABLED),
-        )))
+    let block = Paragraph::new(content)
         .block(
             Block::default()
                 .title(Span::styled(
-                    format!("  Preset {}  ", i + 1),
-                    if foc {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
+                    format!("  Preset {}  ", index + 1),
+                    title_style,
                 ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if foc {
-                    Style::default().fg(C_FOCUS)
+                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                .border_type(if focused || editing {
+                    BorderType::Thick
                 } else {
-                    Style::default().fg(C_DISABLED)
+                    BorderType::Rounded
                 })
+                .border_style(Style::default().fg(border_color))
                 .padding(Padding::horizontal(1)),
-        );
-        f.render_widget(placeholder, slot_rows[i]);
-    }
+        )
+        .style(Style::default().bg(C_BG));
+    f.render_widget(block, area);
+}
+
+fn draw_preset_actions_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
+    let focused = app.focus == Focus::PresetActions(index);
+    let filled = app.presets[index].is_some();
+
+    let actions: Line = if filled {
+        Line::from(vec![
+            Span::styled(
+                " [Enter] ",
+                Style::default()
+                    .fg(if focused { C_ACCENT } else { C_DIM })
+                    .add_modifier(if focused {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(
+                "Load  ",
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
+            ),
+            Span::styled(
+                " [s] ",
+                Style::default().fg(if focused { C_ACCENT } else { C_DIM }),
+            ),
+            Span::styled(
+                "Save  ",
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
+            ),
+            Span::styled(
+                " [d] ",
+                Style::default().fg(if focused { C_ERROR } else { C_DIM }),
+            ),
+            Span::styled(
+                "Delete",
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                " [s] ",
+                Style::default().fg(if focused { C_ACCENT } else { C_DIM }),
+            ),
+            Span::styled(
+                "Save current settings here",
+                Style::default().fg(if focused { C_TEXT } else { C_DISABLED }),
+            ),
+        ])
+    };
+
+    let border_color = if focused { C_FOCUS } else { C_BORDER };
+
+    let block = Paragraph::new(vec![Line::from(""), actions])
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
+                .border_type(if focused {
+                    BorderType::Thick
+                } else {
+                    BorderType::Rounded
+                })
+                .border_style(Style::default().fg(border_color))
+                .padding(Padding::horizontal(1)),
+        )
+        .style(Style::default().bg(C_BG));
+    f.render_widget(block, area);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1399,10 +1506,6 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  Serial No.   : ", Style::default().fg(C_DIM)),
             Span::styled(&*ds.serial_number, Style::default().fg(C_TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Firmware     : ", Style::default().fg(C_DIM)),
-            Span::styled(&*ds.firmware_version, Style::default().fg(C_TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  USB VID/PID  : ", Style::default().fg(C_DIM)),
@@ -1436,7 +1539,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Presets      : ", Style::default().fg(C_DIM)),
-            Span::styled("4 slots (stored on device)", Style::default().fg(C_TEXT)),
+            Span::styled("4 slots", Style::default().fg(C_TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -1470,7 +1573,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let popup_width = 58u16.min(area.width.saturating_sub(4));
-    let popup_height = 22u16.min(area.height.saturating_sub(4));
+    let popup_height = 32u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -1538,6 +1641,29 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  q / Ctrl+C       ", Style::default().fg(C_ACCENT)),
             Span::styled("Quit", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Presets tab",
+            Style::default()
+                .fg(C_TEXT)
+                .add_modifier(Modifier::UNDERLINED),
+        )]),
+        Line::from(vec![
+            Span::styled("  Enter (on name)  ", Style::default().fg(C_ACCENT)),
+            Span::styled("Rename preset", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter (on actions)", Style::default().fg(C_ACCENT)),
+            Span::styled("Load preset to device", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("  s                ", Style::default().fg(C_ACCENT)),
+            Span::styled("Save current settings to slot", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("  d / Delete       ", Style::default().fg(C_ACCENT)),
+            Span::styled("Delete preset", Style::default().fg(C_DIM)),
         ]),
         Line::from(""),
         Line::from(Span::styled(

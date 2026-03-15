@@ -142,8 +142,6 @@ pub struct DeviceState {
     pub locked: bool,
     /// Device serial number string, populated after connection.
     pub serial_number: String,
-    /// Device firmware version string, populated after connection.
-    pub firmware_version: String,
 }
 
 impl Default for DeviceState {
@@ -164,7 +162,6 @@ impl Default for DeviceState {
             eq_bands: [EqBand::default(); 5],
             locked: false,
             serial_number: String::from("Unknown"),
-            firmware_version: String::from("Unknown"),
         }
     }
 }

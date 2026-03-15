@@ -14,9 +14,11 @@ interface on Linux. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 - **Monitor Mix** — mic vs. playback blend slider
 - **5-band Parametric EQ** — per-band enable, gain (−8 to +6 dB in 2 dB steps)
 - **Limiter** — enable/disable
-- **Compressor** — Off / Light / Medium / Heavy presets
+- **Compressor** — Off / Light / Medium / Heavy
 - **High-Pass Filter** — Off / 75 Hz / 150 Hz
-- **4 Preset Slots** — save and load device presets - Work In Progress!
+- **Panel Lock** — lock the physical panel controls on the device
+- **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright), gain environment (Quiet/Normal/Loud)
+- **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
 - **Real-time Level Meter** — dBFS input meter with peak-hold display
 - **Device Info** — firmware version, serial number
 - **Demo mode** — run without a device plugged in (`--demo`)
@@ -29,7 +31,7 @@ Settings persist on the device after disconnect (no host software needed after c
 ## Requirements
 
 - Linux (kernel ≥ 4.0)
-- Rust ≥ 1.75 (`rustup` recommended, see below)
+- Rust ≥ 1.85 (`rustup` recommended, see below)
 - `libhidapi-dev` and `libudev-dev`
 
 ```bash
@@ -133,8 +135,34 @@ shurectl --list       # List detected MVX2U devices and exit
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
 | `r` | Refresh state from device |
+| `s` | Save preset (on Presets tab, focused slot) |
+| `d` | Delete preset (on Presets tab, focused slot) |
 | `?` | Toggle help overlay |
 | `q` / `Ctrl+C` | Quit |
+
+---
+
+## Presets
+
+Presets are stored as human-readable TOML files in `~/.config/shurectl/presets/`:
+
+```
+~/.config/shurectl/presets/
+├── preset_1.toml
+├── preset_2.toml
+├── preset_3.toml
+└── preset_4.toml
+```
+
+Each file captures all configurable DSP settings (gain, mode, EQ, dynamics, monitor mix, etc.)
+but not hardware-identity fields like serial number or firmware version. Files are hand-editable.
+
+On the **Presets tab**:
+- Navigate to a slot with `↑`/`↓`
+- Press `Enter` on the name field to rename it (type, then `Enter` to confirm or `Esc` to cancel)
+- Press `Enter` on the actions row to load a filled preset — all settings are applied to the device immediately
+- Press `s` to save the current device state into the focused slot
+- Press `d` to delete the focused slot
 
 ---
 
@@ -146,6 +174,7 @@ src/
 ├── app.rs        — Application state, focus/tab navigation, DeviceAction events
 ├── device.rs     — hidapi wrapper; open/send/receive for MVX2U
 ├── meter.rs      — cpal audio capture; real-time dBFS metering, RollingWindow, PeakWindow
+├── presets.rs    — Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
 ├── protocol.rs   — USB HID packet encoding, CRC-16/ANSI, command constructors, apply_response()
 └── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
 ```
