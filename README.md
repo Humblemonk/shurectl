@@ -28,18 +28,13 @@ Settings persist on the device after disconnect (no host software needed after c
 
 ---
 
-## Requirements
-
-- Linux (kernel ≥ 4.0)
-- Rust ≥ 1.85 (`rustup` recommended, see below)
-
----
-
 ## udev Rule (Required for Non-Root Access)
 
 Without a udev rule, `/dev/hidrawN` for the MVX2U is only accessible by root.
 
-Create `/etc/udev/rules.d/99-mvx2u.rules` with the content for your distro:
+Create `/etc/udev/rules.d/99-mvx2u.rules`. The group name varies by distro — `input`
+is common on Arch-based systems, `plugdev` on Debian/Ubuntu. Use whichever group your
+user already belongs to, or create a dedicated one.
 
 **Arch Linux** (uses the `input` group, which exists by default):
 ```
@@ -85,10 +80,12 @@ shurectl --list
 
 ---
 
-## Building
+## Installing
+
+### From source
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Humblemonk/shurectl.git
 cd shurectl
 cargo build --release
 ```
@@ -105,6 +102,12 @@ Or for your user only:
 
 ```bash
 install -m 755 target/release/shurectl ~/.local/bin/
+```
+
+### Via cargo install
+
+```bash
+cargo install --git <repo-url>
 ```
 
 ---
@@ -172,64 +175,16 @@ src/
 └── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
 ```
 
-### Protocol Notes
-
-The MVX2U uses plain USB HID Output/Input Reports for device configuration. The protocol
-was reverse-engineered by [PennRobotics](https://gitlab.com/PennRobotics/shux)
-and is publicly documented (Apache 2.0). Key details:
-
-- **USB IDs**: VID `0x14ED`, PID `0x1013`
-- **Interface**: HID interface (accessed via `/dev/hidrawN`, not the USB audio interface)
-- **Packet size**: 64 bytes
-- **Header**: `0x11 0x22` (fixed magic bytes, never change)
-- **Checksum**: CRC-16/ANSI — poly `0x8005`, init `0x0000`, reflected input and output (not CCITT-FALSE)
-- **Report ID**: `0x01` (first byte of every packet; required by hidapi)
-- **Transport**: plain HID Output Reports via `hid_write()` for commands; Input Reports via `hid_read()` for responses. Not Feature Reports — `HIDIOCSFEATURE`/`HIDIOCGFEATURE` are not used.
-
-Packet layout:
-```
-[0x01] [0x11] [0x22] [seq] [0x03] [0x08] [data_len] [0x70] [data_len] [cmd0][cmd1][cmd2] [feat_addr...] [value...] [crc_hi] [crc_lo] [0x00 padding...]
-  ↑─── Report ID ────↑                                                   ↑──────── CRC covers from 0x11 onward (excluding CRC bytes themselves) ─────────↑
-```
-
-Every SET command must be followed immediately by a CONFIRM packet; the device will not apply
-the change without it. GET commands receive one response packet on the next `hid_read()`.
-
-State is read back by issuing individual GET packets for each feature (not a single bulk
-GET_STATE). Each response is dispatched through `apply_response()` in `protocol.rs`, which
-decodes the 2-byte feature address and writes the value into the appropriate `DeviceState` field.
-
-All command byte values and response field offsets are documented inline in
-`src/protocol.rs`. If a command doesn't behave as expected on your firmware
-version, capture packets with `usbmon` + Wireshark while using MOTIV Desktop
-on Windows/Mac and compare to the byte sequences in `protocol.rs`.
-
-### Capturing Packets for Protocol Verification
-
-```bash
-# Load the usbmon kernel module
-sudo modprobe usbmon
-
-# Find the bus number for the MVX2U
-lsusb | grep -i shure   # note the bus number
-
-# Capture on that bus with Wireshark
-sudo wireshark -i usbmon2   # replace '2' with your bus number
-
-# Or with tcpdump
-sudo tcpdump -i usbmon2 -w mvx2u.pcap
-```
-
-Filter for HID output and interrupt transfers in Wireshark: `usb.transfer_type == 0x01` (interrupt) for responses, `usb.transfer_type == 0x03` (bulk/interrupt OUT) for commands. Both endpoints are on the HID interface, not the audio interface.
+The protocol was reverse-engineered by [PennRobotics](https://gitlab.com/PennRobotics/shux)
+and is publicly documented (Apache 2.0). All command byte values, feature addresses, and
+packet structure details are documented inline in `src/protocol.rs`.
 
 ---
 
 ## Troubleshooting
 
-**"Cannot open MVX2U"** — udev rule not installed, not in the correct group (`input` on Arch, `plugdev` on Debian/Ubuntu), or device not plugged in.
+**"Cannot open MVX2U"** — udev rule not installed, not in the correct group, or device not plugged in.
 Run `shurectl --list` to check detection. Try `sudo shurectl` to confirm it's a permissions issue.
-
-**Settings don't seem to apply** — Every SET command must be followed by a CONFIRM packet, which `device.rs` handles automatically via `send_set()`. If you've patched `device.rs`, ensure `send_set()` is still called rather than `write()` directly. Use usbmon to confirm two Output Report transfers appear on the wire for each setting change.
 
 **Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;
 the device ignores gain commands in Auto Level mode. Switch to Manual mode first.
@@ -246,10 +201,9 @@ Protocol reverse-engineering credit goes to **PennRobotics** and the
 this tool would not exist. If you find shurectl useful, consider starring their
 repository.
 
-This project was developed with the assistance of Claude
-(Anthropic). Claude acted as a pair-programmer throughout: writing and reviewing
-Rust code, reasoning about the HID protocol, and catching issues during implementation.
-All code was reviewed and tested by the author before merging.
+This project was developed with the assistance of Claude (Anthropic) as a pair-programmer
+throughout: writing and reviewing Rust code, reasoning about the HID protocol, and catching
+issues during implementation. All code was reviewed and tested by the author before merging.
 
 ---
 
