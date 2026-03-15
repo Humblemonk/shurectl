@@ -20,7 +20,7 @@ interface on Linux. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 - **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright), gain environment (Quiet/Normal/Loud)
 - **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
 - **Real-time Level Meter** — dBFS input meter with peak-hold display
-- **Device Info** — firmware version, serial number
+- **Device Info** — serial number
 - **Demo mode** — run without a device plugged in (`--demo`)
 
 All settings are sent to the device in real-time as you adjust them.
