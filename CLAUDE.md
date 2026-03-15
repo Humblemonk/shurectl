@@ -302,7 +302,7 @@ Suggesting improvements:
 - Validate all packet arguments before encoding (clamp ranges, not panic)
 - No secrets in source — if a config file is added, use environment variables or `~/.config/`
 - Never write firmware update packets — the firmware update byte sequences are intentionally
-  omitted from this codebase (see README legal section)
+  omitted from this codebase (see readme legal section)
 
 ---
 
