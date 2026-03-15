@@ -32,13 +32,6 @@ Settings persist on the device after disconnect (no host software needed after c
 
 - Linux (kernel ≥ 4.0)
 - Rust ≥ 1.85 (`rustup` recommended, see below)
-- `libhidapi-dev` and `libudev-dev`
-
-```bash
-sudo apt install libhidapi-dev libudev-dev   # Debian/Ubuntu
-sudo pacman -S hidapi                        # Arch/CachyOS (no extra dev pkg needed)
-sudo dnf install hidapi-devel systemd-devel  # Fedora
-```
 
 ---
 
