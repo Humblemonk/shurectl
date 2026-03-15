@@ -107,7 +107,7 @@ install -m 755 target/release/shurectl ~/.local/bin/
 ### Via cargo install
 
 ```bash
-cargo install --git <repo-url>
+cargo install --git https://github.com/Humblemonk/shurectl.git
 ```
 
 ---
