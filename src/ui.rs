@@ -9,7 +9,9 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus, Tab};
-use crate::protocol::{AutoGain, AutoTone, EQ_BAND_FREQS, InputMode, MicPosition};
+use crate::protocol::{
+    AutoGain, AutoTone, CompressorPreset, EQ_BAND_FREQS, HpfFrequency, InputMode, MicPosition,
+};
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C_ACCENT: Color = Color::Rgb(255, 95, 0); // Shure orange
@@ -495,6 +497,11 @@ fn draw_mute_block(f: &mut Frame, app: &App, area: Rect) {
 ///
 /// `rows` must have at least 4 elements (indices 0–3).
 fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
+    debug_assert!(
+        rows.len() >= 4,
+        "draw_main_shared requires at least 4 row slots, got {}",
+        rows.len()
+    );
     // ── Level Meter ───────────────────────────────────────────────────────────
     draw_meter(f, app, rows[0]);
 
@@ -654,7 +661,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.muted {
                 Span::styled("YES", Style::default().fg(C_ERROR))
             } else {
-                Span::styled("No", Style::default().fg(C_SUCCESS))
+                Span::styled("NO", Style::default().fg(C_SUCCESS))
             },
         ]),
         Line::from(vec![
@@ -662,7 +669,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.locked {
                 Span::styled("YES", Style::default().fg(C_ERROR))
             } else {
-                Span::styled("No", Style::default().fg(C_DIM))
+                Span::styled("NO", Style::default().fg(C_DIM))
             },
         ]),
         Line::from(vec![
@@ -670,7 +677,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.phantom_power {
                 Span::styled("48V ON", Style::default().fg(C_SUCCESS))
             } else {
-                Span::styled("Off", Style::default().fg(C_DIM))
+                Span::styled("OFF", Style::default().fg(C_DIM))
             },
         ]),
         Line::from(""),
@@ -699,7 +706,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             } else if ds.limiter_enabled {
                 Span::styled("ON", Style::default().fg(C_SUCCESS))
             } else {
-                Span::styled("Off", Style::default().fg(C_DIM))
+                Span::styled("OFF", Style::default().fg(C_DIM))
             },
         ]),
         Line::from(vec![
@@ -1184,27 +1191,31 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // ── Compressor ────────────────────────────────────────────────────────────
     let comp_foc = app.focus == Focus::Compressor;
-    let comp_lines: Vec<Line> = ["Off", "Light", "Medium", "Heavy"]
-        .iter()
-        .map(|label| {
-            let selected =
-                label.to_lowercase() == app.device_state.compressor.to_string().to_lowercase();
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    *label,
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
+    let comp_lines: Vec<Line> = [
+        CompressorPreset::Off,
+        CompressorPreset::Light,
+        CompressorPreset::Medium,
+        CompressorPreset::Heavy,
+    ]
+    .iter()
+    .map(|preset| {
+        let selected = *preset == app.device_state.compressor;
+        Line::from(vec![
+            Span::styled(
+                if selected { "▶ " } else { "  " },
+                Style::default().fg(C_ACCENT),
+            ),
+            Span::styled(
+                preset.to_string(),
+                if selected {
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_DIM)
+                },
+            ),
+        ])
+    })
+    .collect();
 
     let mut comp_content = vec![Line::from("")];
     comp_content.extend(comp_lines);
@@ -1237,17 +1248,17 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // ── HPF ───────────────────────────────────────────────────────────────────
     let hpf_foc = app.focus == Focus::Hpf;
-    let hpf_lines: Vec<Line> = ["Off", "75 Hz", "150 Hz"]
+    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
         .iter()
-        .map(|label| {
-            let selected = *label == app.device_state.hpf.to_string();
+        .map(|freq| {
+            let selected = *freq == app.device_state.hpf;
             Line::from(vec![
                 Span::styled(
                     if selected { "▶ " } else { "  " },
                     Style::default().fg(C_ACCENT),
                 ),
                 Span::styled(
-                    *label,
+                    freq.to_string(),
                     if selected {
                         Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
                     } else {

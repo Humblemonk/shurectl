@@ -184,7 +184,10 @@ impl App {
 
     fn reset_focus_for_tab(&mut self) {
         self.focus = match self.active_tab {
-            Tab::Main => Focus::Mode,
+            Tab::Main => match self.device_state.mode {
+                InputMode::Manual => Focus::Gain,
+                InputMode::Auto => Focus::Mode,
+            },
             Tab::Eq => Focus::EqEnable,
             Tab::Dynamics => Focus::Limiter,
             Tab::Presets => Focus::PresetName(0),

@@ -320,11 +320,11 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             send_if_connected(device, |d| d.set_auto_gain(gain))
         }
         DeviceAction::SetMute(m) => {
-            app.set_ok(format!("Mute → {}", if *m { "ON" } else { "Off" }));
+            app.set_ok(format!("Mute → {}", if *m { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_mute(*m))
         }
         DeviceAction::SetPhantom(p) => {
-            app.set_ok(format!("Phantom → {}", if *p { "48V ON" } else { "Off" }));
+            app.set_ok(format!("Phantom → {}", if *p { "48V ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_phantom(*p))
         }
         DeviceAction::SetLock(locked) => {
@@ -340,7 +340,7 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             send_if_connected(device, |d| d.set_monitor_mix(*m))
         }
         DeviceAction::SetLimiter(en) => {
-            app.set_ok(format!("Limiter → {}", if *en { "ON" } else { "Off" }));
+            app.set_ok(format!("Limiter → {}", if *en { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_limiter(*en))
         }
         DeviceAction::SetCompressor(preset) => {
@@ -359,7 +359,7 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             app.set_ok(format!(
                 "EQ Band {} → {}",
                 band + 1,
-                if *en { "ON" } else { "Off" }
+                if *en { "ON" } else { "OFF" }
             ));
             send_if_connected(device, |d| d.set_eq_band_enable(*band, *en))
         }

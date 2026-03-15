@@ -25,7 +25,6 @@
 //! device echoes this number in its response. We track it in `Mvx2u` and
 //! increment after every `write()`.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use anyhow::{Context, Result, anyhow};
@@ -44,9 +43,8 @@ const READ_TIMEOUT_MS: i32 = 200;
 
 pub struct Mvx2u {
     device: HidDevice,
-    /// Packet sequence number, shared so callers can read it for diagnostics.
-    /// Increments after every write.
-    seq: Arc<AtomicU8>,
+    /// Packet sequence number. Increments after every write; wraps at 256.
+    seq: AtomicU8,
     /// Serial number string read from the USB device descriptor at open time.
     pub serial_number: String,
 }
@@ -75,7 +73,7 @@ impl Mvx2u {
             .unwrap_or_else(|| "(unknown)".to_string());
         Ok(Self {
             device,
-            seq: Arc::new(AtomicU8::new(0)),
+            seq: AtomicU8::new(0),
             serial_number,
         })
     }
@@ -262,7 +260,7 @@ impl Mvx2u {
         ))
     }
 
-    /// Set an EQ band's gain (−12 to +12 dB). `band` is 0–4.
+    /// Set an EQ band's gain (−8 to +6 dB, steps of 2). `band` is 0–4.
     pub fn set_eq_band_gain(&self, band: usize, gain_db: i8) -> Result<()> {
         self.send_set(&protocol::cmd_set_eq_band_gain(
             self.next_seq(),
