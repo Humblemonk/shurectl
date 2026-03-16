@@ -32,42 +32,20 @@ Settings persist on the device after disconnect (no host software needed after c
 
 Without a udev rule, `/dev/hidrawN` for the MVX2U is only accessible by root.
 
-Create `/etc/udev/rules.d/99-mvx2u.rules`. The group name varies by distro — `input`
-is common on Arch-based systems, `plugdev` on Debian/Ubuntu. Use whichever group your
-user already belongs to, or create a dedicated one.
+Create `/etc/udev/rules.d/99-mvx2u.rules`:
 
-**Arch Linux** (uses the `input` group, which exists by default):
 ```
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", MODE="0660", GROUP="input"
+ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
 ```
 
-**Debian / Ubuntu** (uses the `plugdev` group):
-```
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", MODE="0660", GROUP="plugdev"
-```
+This uses `uaccess`, which grants access to the currently logged-in user automatically —
+no group membership or logout required. Works on any systemd-based distro (Arch, Debian, Ubuntu, Fedora, etc.).
 
 Then reload udev and replug your device:
 
 ```bash
 sudo udevadm control --reload-rules
 sudo udevadm trigger
-```
-
-Add your user to the appropriate group:
-
-```bash
-# Arch
-sudo usermod -aG input $USER
-
-# Debian / Ubuntu
-sudo usermod -aG plugdev $USER
-```
-
-Log out and back in for the group change to take effect, or apply it to your current shell immediately:
-
-```bash
-newgrp input    # Arch
-newgrp plugdev  # Debian / Ubuntu
 ```
 
 Verify the device appears:
@@ -183,7 +161,7 @@ packet structure details are documented inline in `src/protocol.rs`.
 
 ## Troubleshooting
 
-**"Cannot open MVX2U"** — udev rule not installed, not in the correct group, or device not plugged in.
+**"Cannot open MVX2U"** — udev rule not installed, or device not plugged in.
 Run `shurectl --list` to check detection. Try `sudo shurectl` to confirm it's a permissions issue.
 
 **Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;

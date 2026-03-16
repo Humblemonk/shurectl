@@ -56,8 +56,7 @@ impl Mvx2u {
         let device = api.open(VID, PID).map_err(|e| {
             anyhow!(
                 "Cannot open MVX2U (VID={:#06x} PID={:#06x}): {e}\n\
-                Hint: ensure the udev rule is installed and you are in the correct group \
-                ('input' on Arch, 'plugdev' on Debian/Ubuntu), or run with sudo.",
+                Hint: ensure the udev rule is installed or run with sudo.",
                 VID,
                 PID
             )
