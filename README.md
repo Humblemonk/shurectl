@@ -32,7 +32,7 @@ Settings persist on the device after disconnect (no host software needed after c
 
 Without a udev rule, `/dev/hidrawN` for the MVX2U is only accessible by root.
 
-Create `/etc/udev/rules.d/60-mvx2u.rules`:
+Create `/etc/udev/rules.d/62-mvx2u.rules`:
 
 ```
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
