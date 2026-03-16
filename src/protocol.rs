@@ -1069,6 +1069,26 @@ mod tests {
     }
 
     #[test]
+    fn set_limiter_encodes_on_off() {
+        let pkt = cmd_set_limiter(0, true);
+        assert_eq!(&pkt[14..16], &FEAT_LIMITER);
+        assert_eq!(pkt[16], 1, "limiter enabled must encode as 1");
+
+        let pkt = cmd_set_limiter(0, false);
+        assert_eq!(pkt[16], 0, "limiter disabled must encode as 0");
+    }
+
+    #[test]
+    fn set_eq_enable_encodes_on_off() {
+        let pkt = cmd_set_eq_enable(0, true);
+        assert_eq!(&pkt[14..16], &FEAT_EQ);
+        assert_eq!(pkt[16], 1, "EQ enabled must encode as 1");
+
+        let pkt = cmd_set_eq_enable(0, false);
+        assert_eq!(pkt[16], 0, "EQ disabled must encode as 0");
+    }
+
+    #[test]
     fn set_mode_encodes_auto_manual() {
         assert_eq!(cmd_set_mode(0, true)[16], 1, "auto=true must be 1");
         assert_eq!(cmd_set_mode(0, false)[16], 0, "auto=false must be 0");
