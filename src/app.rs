@@ -1010,6 +1010,53 @@ mod tests {
     }
 
     #[test]
+    fn toggle_phantom_flips_state_and_returns_action() {
+        let mut app = App::default();
+        app.focus = Focus::Phantom;
+        app.device_state.phantom_power = false;
+
+        let action = app.toggle_focused();
+        assert!(app.device_state.phantom_power);
+        assert!(matches!(action, Some(DeviceAction::SetPhantom(true))));
+
+        let action = app.toggle_focused();
+        assert!(!app.device_state.phantom_power);
+        assert!(matches!(action, Some(DeviceAction::SetPhantom(false))));
+    }
+
+    #[test]
+    fn toggle_eq_enable_flips_state_and_returns_action() {
+        let mut app = App::default();
+        app.active_tab = Tab::Eq;
+        app.focus = Focus::EqEnable;
+        app.device_state.eq_enabled = false;
+
+        let action = app.toggle_focused();
+        assert!(app.device_state.eq_enabled);
+        assert!(matches!(action, Some(DeviceAction::SetEqEnable(true))));
+
+        let action = app.toggle_focused();
+        assert!(!app.device_state.eq_enabled);
+        assert!(matches!(action, Some(DeviceAction::SetEqEnable(false))));
+    }
+
+    #[test]
+    fn toggle_limiter_flips_state_and_returns_action() {
+        let mut app = App::default();
+        app.active_tab = Tab::Dynamics;
+        app.focus = Focus::Limiter;
+        app.device_state.limiter_enabled = false;
+
+        let action = app.toggle_focused();
+        assert!(app.device_state.limiter_enabled);
+        assert!(matches!(action, Some(DeviceAction::SetLimiter(true))));
+
+        let action = app.toggle_focused();
+        assert!(!app.device_state.limiter_enabled);
+        assert!(matches!(action, Some(DeviceAction::SetLimiter(false))));
+    }
+
+    #[test]
     fn toggle_non_toggleable_focus_returns_none() {
         let mut app = App::default();
         for focus in [
