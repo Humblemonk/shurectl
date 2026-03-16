@@ -37,10 +37,6 @@ Create `/etc/udev/rules.d/99-mvx2u.rules`:
 ```
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
 ```
-
-This uses `uaccess`, which grants access to the currently logged-in user automatically —
-no group membership or logout required. Works on any systemd-based distro (Arch, Debian, Ubuntu, Fedora, etc.).
-
 Then reload udev and replug your device:
 
 ```bash
