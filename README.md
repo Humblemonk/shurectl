@@ -149,9 +149,7 @@ src/
 └── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
 ```
 
-The protocol was reverse-engineered by [PennRobotics](https://gitlab.com/PennRobotics/shux)
-and is publicly documented (Apache 2.0). All command byte values, feature addresses, and
-packet structure details are documented inline in `src/protocol.rs`.
+All command byte values, feature addresses, and packet structure details are documented inline in `src/protocol.rs`.
 
 ---
 
