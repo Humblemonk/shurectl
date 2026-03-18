@@ -38,6 +38,7 @@ use protocol::InputMode;
 #[derive(Parser)]
 #[command(
     name = "shurectl",
+    version,
     about = "shurectl — TUI configurator for the Shure MVX2U audio interface"
 )]
 struct Cli {
@@ -46,7 +47,7 @@ struct Cli {
     demo: bool,
 
     /// List connected MVX2U devices and exit
-    #[arg(long)]
+    #[arg(long, short)]
     list: bool,
 }
 
