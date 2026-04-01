@@ -49,6 +49,12 @@ struct Cli {
     /// List connected MVX2U devices and exit
     #[arg(long, short)]
     list: bool,
+
+    /// Open a specific device by hidraw path (e.g. /dev/hidraw3).
+    /// Without this flag, the first detected MVX2U is opened.
+    /// Use --list to see available paths.
+    #[arg(long, short = 'D')]
+    device: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -62,7 +68,7 @@ fn main() -> Result<()> {
         } else {
             println!("Found {} MVX2U device(s):", devs.len());
             for d in devs {
-                println!("{d}");
+                println!("  {} | S/N: {}", d.path, d.serial);
             }
         }
         return Ok(());
@@ -71,7 +77,12 @@ fn main() -> Result<()> {
     let (device, demo_mode) = if cli.demo {
         (None, true)
     } else {
-        match Mvx2u::open() {
+        let open_result = if let Some(ref path) = cli.device {
+            Mvx2u::open_path(path)
+        } else {
+            Mvx2u::open()
+        };
+        match open_result {
             Ok(d) => (Some(d), false),
             Err(e) => {
                 eprintln!("Warning: {e}");

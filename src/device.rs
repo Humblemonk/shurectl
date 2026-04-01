@@ -50,6 +50,24 @@ pub struct Mvx2u {
 }
 
 impl Mvx2u {
+    /// Wrap an already-opened `HidDevice` into `Mvx2u`, reading the serial
+    /// number from the USB device descriptor.
+    fn from_hid_device(device: HidDevice) -> Self {
+        device.set_blocking_mode(false).ok();
+        // Serial number is read from the USB string descriptor at open time —
+        // no HID packet exchange required.
+        let serial_number = device
+            .get_serial_number_string()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "(unknown)".to_string());
+        Self {
+            device,
+            seq: AtomicU8::new(0),
+            serial_number,
+        }
+    }
+
     /// Open the first MVX2U found on the system.
     pub fn open() -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
@@ -61,20 +79,44 @@ impl Mvx2u {
                 PID
             )
         })?;
-        device.set_blocking_mode(false).ok();
-        // Read the serial number from the USB device descriptor. This is
-        // available without any HID packet exchange — hidapi reads it from
-        // the USB string descriptor at open time.
-        let serial_number = device
-            .get_serial_number_string()
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "(unknown)".to_string());
-        Ok(Self {
-            device,
-            seq: AtomicU8::new(0),
-            serial_number,
-        })
+        Ok(Self::from_hid_device(device))
+    }
+
+    /// Open the MVX2U at a specific hidraw path (e.g. `/dev/hidraw3`).
+    ///
+    /// Returns an error if the path is not found in the device list or does
+    /// not identify a Shure MVX2U (VID/PID mismatch).
+    pub fn open_path(path: &str) -> Result<Self> {
+        let api = HidApi::new().context("Failed to initialise hidapi")?;
+        // Validate the path against the enumerated device list before opening.
+        // This catches both "no such hidraw node" and "wrong device type" with
+        // clear error messages, rather than a generic hidapi open failure.
+        let info = api
+            .device_list()
+            .find(|d| d.path().to_string_lossy() == path)
+            .ok_or_else(|| {
+                anyhow!("No device found at {path}. Use --list to see available devices.")
+            })?;
+        if info.vendor_id() != VID || info.product_id() != PID {
+            return Err(anyhow!(
+                "{path} is not a Shure MVX2U (VID={:#06x} PID={:#06x}); \
+                expected VID={:#06x} PID={:#06x}.",
+                info.vendor_id(),
+                info.product_id(),
+                VID,
+                PID
+            ));
+        }
+        // Open by path. We validated above that this path exists and matches
+        // VID/PID, so any remaining error here is a permissions problem.
+        let c_path = std::ffi::CString::new(path)
+            .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
+        let device = api.open_path(c_path.as_c_str()).map_err(|e| {
+            anyhow!(
+                "Cannot open {path}: {e}\nHint: ensure the udev rule is installed or run with sudo."
+            )
+        })?;
+        Ok(Self::from_hid_device(device))
     }
 
     /// Return the next sequence number and post-increment it (wraps at 256).
@@ -277,19 +319,24 @@ impl Mvx2u {
     }
 }
 
+/// Information about a detected MVX2U, returned by [`list_devices`].
+pub struct DeviceInfo {
+    /// Path to the hidraw node, e.g. `/dev/hidraw3`.
+    pub path: String,
+    /// USB serial number string, e.g. `MVX2U#3-7d84d19...`.
+    pub serial: String,
+}
+
 /// Probe the system for MVX2U devices without opening them.
-pub fn list_devices() -> Vec<String> {
+pub fn list_devices() -> Vec<DeviceInfo> {
     let Ok(api) = HidApi::new() else {
         return vec![];
     };
     api.device_list()
         .filter(|d| d.vendor_id() == VID && d.product_id() == PID)
-        .map(|d| {
-            format!(
-                "  {} | S/N: {}",
-                d.path().to_string_lossy(),
-                d.serial_number().unwrap_or("(unknown)")
-            )
+        .map(|d| DeviceInfo {
+            path: d.path().to_string_lossy().into_owned(),
+            serial: d.serial_number().unwrap_or("(unknown)").to_owned(),
         })
         .collect()
 }

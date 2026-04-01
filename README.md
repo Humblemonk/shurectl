@@ -50,6 +50,11 @@ Verify the device appears:
 shurectl --list
 # Found 1 MVX2U device(s):
 #   /dev/hidraw2 | S/N: MVX2U-XXXXXXXX
+
+# With multiple devices:
+# Found 2 MVX2U device(s):
+#   /dev/hidraw3 | S/N: MVX2U#3-7d84d19...
+#   /dev/hidraw2 | S/N: MVX2U#3-17b7a6c...
 ```
 
 ---
@@ -89,9 +94,10 @@ cargo install --git https://github.com/Humblemonk/shurectl.git
 ## Usage
 
 ```bash
-shurectl              # Connect to device and launch TUI
-shurectl --demo       # Run without a device (explore the UI)
-shurectl --list       # List detected MVX2U devices and exit
+shurectl                        # Connect to first detected device and launch TUI
+shurectl --device /dev/hidraw3  # Connect to a specific device (use --list to find paths)
+shurectl --demo                 # Run without a device (explore the UI)
+shurectl --list                 # List detected MVX2U devices and exit
 ```
 
 ### Keyboard Shortcuts
