@@ -1,11 +1,11 @@
-//! shurectl — Interactive TUI configurator for the Shure MVX2U on Linux
+//! shurectl — Interactive TUI configurator for the Shure MVX2U
 //!
 //! Usage:
-//!   shure               # Connect to device, launch TUI
-//!   shure --demo        # Run without a device (for testing)
-//!   shure --list        # List detected devices and exit
+//!   shurectl               # Connect to device, launch TUI
+//!   shurectl --demo        # Run without a device (for testing)
+//!   shurectl --list        # List detected devices and exit
 //!
-//! See README.md for udev setup and permissions.
+//! See README.md for platform-specific setup and permissions.
 
 mod app;
 mod device;
@@ -50,7 +50,7 @@ struct Cli {
     #[arg(long, short)]
     list: bool,
 
-    /// Open a specific device by hidraw path (e.g. /dev/hidraw3).
+    /// Open a specific device by its HID path.
     /// Without this flag, the first detected MVX2U is opened.
     /// Use --list to see available paths.
     #[arg(long, short = 'D')]
@@ -64,7 +64,10 @@ fn main() -> Result<()> {
         let devs = device::list_devices();
         if devs.is_empty() {
             println!("No Shure MVX2U devices found.");
+            #[cfg(target_os = "linux")]
             println!("Check that the device is plugged in and the udev rule is installed.");
+            #[cfg(not(target_os = "linux"))]
+            println!("Check that the device is plugged in and accessible.");
         } else {
             println!("Found {} MVX2U device(s):", devs.len());
             for d in devs {
