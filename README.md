@@ -1,7 +1,7 @@
 # shurectl
 
 An open-source terminal UI configurator for the **Shure MVX2U** XLR-to-USB audio
-interface on Linux. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+interface on Linux and macOS. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
@@ -28,7 +28,9 @@ Settings persist on the device after disconnect (no host software needed after c
 
 ---
 
-## udev Rule (Required for Non-Root Access)
+## Platform Setup
+
+### Linux — udev Rule (Required for Non-Root Access)
 
 Without a udev rule, `/dev/hidrawN` for the MVX2U is only accessible by root.
 
@@ -56,6 +58,11 @@ shurectl --list
 #   /dev/hidraw3 | S/N: MVX2U#3-7d84d19...
 #   /dev/hidraw2 | S/N: MVX2U#3-17b7a6c...
 ```
+
+### macOS — No Extra Setup Required
+
+On macOS, IOKit grants user-space access to HID devices without extra configuration.
+Plug in the MVX2U and run `shurectl --list` to confirm detection.
 
 ---
 
@@ -94,10 +101,10 @@ cargo install --git https://github.com/Humblemonk/shurectl.git
 ## Usage
 
 ```bash
-shurectl                        # Connect to first detected device and launch TUI
-shurectl --device /dev/hidraw3  # Connect to a specific device (use --list to find paths)
-shurectl --demo                 # Run without a device (explore the UI)
-shurectl --list                 # List detected MVX2U devices and exit
+shurectl                         # Connect to first detected device and launch TUI
+shurectl --device <path>         # Connect to a specific device (use --list to find paths)
+shurectl --demo                  # Run without a device (explore the UI)
+shurectl --list                  # List detected MVX2U devices and exit
 ```
 
 ### Keyboard Shortcuts
@@ -161,8 +168,8 @@ All command byte values, feature addresses, and packet structure details are doc
 
 ## Troubleshooting
 
-**"Cannot open MVX2U"** — udev rule not installed, or device not plugged in.
-Run `shurectl --list` to check detection. Try `sudo shurectl` to confirm it's a permissions issue.
+**"Cannot open MVX2U"** — device not found or a permissions issue.
+Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS, ensure no other software has exclusive access to the device.
 
 **Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;
 the device ignores gain commands in Auto Level mode. Switch to Manual mode first.

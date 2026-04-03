@@ -5,9 +5,11 @@
 //!   Interface 1 – USB Audio streaming
 //!   Interface 2 – HID configuration (the one we need)
 //!
-//! hidapi on Linux will open the HID interface by matching VID/PID.
-//! Because snd-usb-audio also claims the device, hidapi uses /dev/hidrawN
-//! which bypasses the audio driver entirely — no kernel detach needed.
+//! hidapi opens the HID configuration interface (interface 2) by matching VID/PID.
+//! On Linux, snd-usb-audio claims the audio interfaces, but hidapi uses /dev/hidrawN
+//! for the HID interface, bypassing the audio driver entirely — no kernel detach needed.
+//! On macOS, IOHidManager opens the HID interface alongside CoreAudio; the
+//! `macos-shared-device` hidapi feature enables non-exclusive access for this.
 //!
 //! # Transport
 //!
@@ -28,6 +30,11 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use anyhow::{Context, Result, anyhow};
+
+#[cfg(target_os = "linux")]
+const ACCESS_HINT: &str = "ensure the udev rule is installed, or run with sudo";
+#[cfg(not(target_os = "linux"))]
+const ACCESS_HINT: &str = "ensure the device is plugged in and accessible";
 use hidapi::{HidApi, HidDevice};
 
 use crate::protocol::{
@@ -74,7 +81,7 @@ impl Mvx2u {
         let device = api.open(VID, PID).map_err(|e| {
             anyhow!(
                 "Cannot open MVX2U (VID={:#06x} PID={:#06x}): {e}\n\
-                Hint: ensure the udev rule is installed or run with sudo.",
+                Hint: {ACCESS_HINT}.",
                 VID,
                 PID
             )
@@ -82,7 +89,7 @@ impl Mvx2u {
         Ok(Self::from_hid_device(device))
     }
 
-    /// Open the MVX2U at a specific hidraw path (e.g. `/dev/hidraw3`).
+    /// Open the MVX2U at a specific HID device path (use `--list` to find paths).
     ///
     /// Returns an error if the path is not found in the device list or does
     /// not identify a Shure MVX2U (VID/PID mismatch).
@@ -111,11 +118,9 @@ impl Mvx2u {
         // VID/PID, so any remaining error here is a permissions problem.
         let c_path = std::ffi::CString::new(path)
             .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
-        let device = api.open_path(c_path.as_c_str()).map_err(|e| {
-            anyhow!(
-                "Cannot open {path}: {e}\nHint: ensure the udev rule is installed or run with sudo."
-            )
-        })?;
+        let device = api
+            .open_path(c_path.as_c_str())
+            .map_err(|e| anyhow!("Cannot open {path}: {e}\nHint: {ACCESS_HINT}."))?;
         Ok(Self::from_hid_device(device))
     }
 
@@ -321,7 +326,7 @@ impl Mvx2u {
 
 /// Information about a detected MVX2U, returned by [`list_devices`].
 pub struct DeviceInfo {
-    /// Path to the hidraw node, e.g. `/dev/hidraw3`.
+    /// Platform-specific HID device path (e.g. `/dev/hidraw3` on Linux).
     pub path: String,
     /// USB serial number string, e.g. `MVX2U#3-7d84d19...`.
     pub serial: String,
