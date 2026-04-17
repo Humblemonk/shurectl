@@ -72,7 +72,12 @@ fn main() -> Result<()> {
         } else {
             println!("Found {} Shure device(s):", devs.len());
             for d in devs {
-                println!("  {} | {} | S/N: {}", d.path, d.model.display_name(), d.serial);
+                println!(
+                    "  {} | {} | S/N: {}",
+                    d.path,
+                    d.model.display_name(),
+                    d.serial
+                );
             }
         }
         return Ok(());
@@ -391,7 +396,10 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             send_if_connected(device, |d| d.set_mv6_denoiser(*en))
         }
         DeviceAction::SetMv6PopperStopper(en) => {
-            app.set_ok(format!("Popper Stopper → {}", if *en { "ON" } else { "OFF" }));
+            app.set_ok(format!(
+                "Popper Stopper → {}",
+                if *en { "ON" } else { "OFF" }
+            ));
             send_if_connected(device, |d| d.set_mv6_popper_stopper(*en))
         }
         DeviceAction::SetMv6MuteBtnDisable(disabled) => {
@@ -452,9 +460,10 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
                 if app.device_model == DeviceModel::Mv6
                     && let Err(e) = presets::save_mv6_state(&presets::Mv6State {
                         mute_btn_disabled: app.device_state.mute_btn_disabled,
-                    }) {
-                        eprintln!("Warning: failed to persist MV6 state after preset load: {e}");
-                    }
+                    })
+                {
+                    eprintln!("Warning: failed to persist MV6 state after preset load: {e}");
+                }
                 result
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));

@@ -39,9 +39,9 @@ use crate::protocol::{
     self, DeviceModel, DeviceState, MV6_PID, PACKET_SIZE, PID, VID, apply_response, cmd_confirm,
     cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor,
     cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf,
-    cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_phantom,
-    cmd_get_mv6_denoiser,
-    cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_mv6_gain_lock, cmd_set_lock, parse_response,
+    cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
+    cmd_get_mv6_gain_lock, cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_phantom,
+    cmd_set_lock, parse_response,
 };
 
 #[cfg(target_os = "linux")]
@@ -110,9 +110,8 @@ impl ShureDevice {
             1 => {
                 let info = found[0];
                 let pid = info.product_id();
-                let c_path =
-                    std::ffi::CString::new(info.path().to_string_lossy().as_ref())
-                        .map_err(|_| anyhow!("Device path contains a null byte"))?;
+                let c_path = std::ffi::CString::new(info.path().to_string_lossy().as_ref())
+                    .map_err(|_| anyhow!("Device path contains a null byte"))?;
                 let device = api
                     .open_path(c_path.as_c_str())
                     .map_err(|e| anyhow!("Cannot open device: {e}\nHint: {ACCESS_HINT}."))?;

@@ -227,7 +227,12 @@ impl App {
     // MV6 EQ:      Tone (slider only, no bands)
     // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
     pub fn focus_next(&mut self) {
-        self.focus = match (&self.active_tab, &self.focus, &self.device_model, &self.device_state.mode) {
+        self.focus = match (
+            &self.active_tab,
+            &self.focus,
+            &self.device_model,
+            &self.device_state.mode,
+        ) {
             // ── MV6 Main cycle ────────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
@@ -244,7 +249,9 @@ impl App {
             // ── MVX2U Auto cycle ──────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
-            (Tab::Main, Focus::AutoPosition, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoTone,
+            (Tab::Main, Focus::AutoPosition, DeviceModel::Mvx2u, InputMode::Auto) => {
+                Focus::AutoTone
+            }
             (Tab::Main, Focus::AutoTone, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoGain,
             (Tab::Main, Focus::AutoGain, DeviceModel::Mvx2u, InputMode::Auto) => Focus::MonitorMix,
             // ── MVX2U shared tail ─────────────────────────────────────────────
@@ -258,7 +265,9 @@ impl App {
 
             // ── MVX2U EQ ──────────────────────────────────────────────────────
             (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => Focus::EqBandSelect,
-            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2u, _) => Focus::EqBandEnable(self.eq_selected_band),
+            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2u, _) => {
+                Focus::EqBandEnable(self.eq_selected_band)
+            }
             (Tab::Eq, Focus::EqBandEnable(b), DeviceModel::Mvx2u, _) => Focus::EqGain(*b),
             (Tab::Eq, Focus::EqGain(_), DeviceModel::Mvx2u, _) => Focus::EqEnable,
             (Tab::Eq, _, DeviceModel::Mvx2u, _) => Focus::EqEnable,
@@ -287,7 +296,12 @@ impl App {
     }
 
     pub fn focus_prev(&mut self) {
-        self.focus = match (&self.active_tab, &self.focus, &self.device_model, &self.device_state.mode) {
+        self.focus = match (
+            &self.active_tab,
+            &self.focus,
+            &self.device_model,
+            &self.device_state.mode,
+        ) {
             // ── MV6 Main reverse ──────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
             (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
@@ -305,7 +319,9 @@ impl App {
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Lock,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mode,
             (Tab::Main, Focus::AutoPosition, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, Focus::AutoTone, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
+            (Tab::Main, Focus::AutoTone, DeviceModel::Mvx2u, InputMode::Auto) => {
+                Focus::AutoPosition
+            }
             (Tab::Main, Focus::AutoGain, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoTone,
             // ── MVX2U shared tail reverse ─────────────────────────────────────
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Gain,
@@ -318,7 +334,9 @@ impl App {
             (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
 
             // ── MVX2U EQ reverse ──────────────────────────────────────────────
-            (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => Focus::EqGain(self.eq_selected_band),
+            (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => {
+                Focus::EqGain(self.eq_selected_band)
+            }
             (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2u, _) => Focus::EqEnable,
             (Tab::Eq, Focus::EqBandEnable(_), DeviceModel::Mvx2u, _) => Focus::EqBandSelect,
             (Tab::Eq, Focus::EqGain(b), DeviceModel::Mvx2u, _) => Focus::EqBandEnable(*b),
@@ -987,8 +1005,14 @@ mod tests {
         app.device_state.mv6_gain_locked = true;
 
         let action = app.adjust_focused(1);
-        assert!(action.is_none(), "adjust must return None when gain is locked");
-        assert_eq!(app.device_state.gain_db, 20, "gain must not change when locked");
+        assert!(
+            action.is_none(),
+            "adjust must return None when gain is locked"
+        );
+        assert_eq!(
+            app.device_state.gain_db, 20,
+            "gain must not change when locked"
+        );
     }
 
     #[test]

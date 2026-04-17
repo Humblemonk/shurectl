@@ -160,7 +160,11 @@ impl PresetSlot {
                 )
             }
             DeviceModel::Mvx2u => {
-                let phantom_str = if self.phantom_power { "48V on" } else { "48V off" };
+                let phantom_str = if self.phantom_power {
+                    "48V on"
+                } else {
+                    "48V off"
+                };
                 match InputMode::from(self.mode) {
                     InputMode::Auto => {
                         let tone = AutoTone::from(self.auto_tone);
@@ -219,7 +223,8 @@ pub fn load_preset(index: usize) -> Result<Option<PresetSlot>> {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(e).with_context(|| format!("Failed to read preset file: {}", path.display()))
+            return Err(e)
+                .with_context(|| format!("Failed to read preset file: {}", path.display()));
         }
     };
     let slot: PresetSlot = toml::from_str(&text)
@@ -528,11 +533,26 @@ mod tests {
             hpf: HpfFrequency::Hz75,
             eq_enabled: true,
             eq_bands: [
-                EqBand { enabled: true, gain_db: 4 },
-                EqBand { enabled: false, gain_db: -2 },
-                EqBand { enabled: true, gain_db: 0 },
-                EqBand { enabled: false, gain_db: 6 },
-                EqBand { enabled: true, gain_db: -8 },
+                EqBand {
+                    enabled: true,
+                    gain_db: 4,
+                },
+                EqBand {
+                    enabled: false,
+                    gain_db: -2,
+                },
+                EqBand {
+                    enabled: true,
+                    gain_db: 0,
+                },
+                EqBand {
+                    enabled: false,
+                    gain_db: 6,
+                },
+                EqBand {
+                    enabled: true,
+                    gain_db: -8,
+                },
             ],
             locked: false,
             denoiser_enabled: true,
@@ -745,9 +765,15 @@ mod tests {
         let loaded: PresetSlot =
             toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("deserialise");
 
-        assert!(loaded.mute_btn_disabled, "mute_btn_disabled must survive a file roundtrip");
+        assert!(
+            loaded.mute_btn_disabled,
+            "mute_btn_disabled must survive a file roundtrip"
+        );
         assert_eq!(loaded.tone, 5, "tone must survive a file roundtrip");
-        assert!(loaded.denoiser_enabled, "denoiser_enabled must survive a file roundtrip");
+        assert!(
+            loaded.denoiser_enabled,
+            "denoiser_enabled must survive a file roundtrip"
+        );
         assert!(
             loaded.popper_stopper_enabled,
             "popper_stopper_enabled must survive a file roundtrip"
@@ -769,9 +795,15 @@ mod tests {
         assert!(s.contains("HPF 75 Hz"), "summary: {s}");
         assert!(s.contains("50% Bright"), "summary: {s}");
         // MVX2U-specific fields must not appear
-        assert!(!s.contains("48V"), "MV6 summary must not mention phantom: {s}");
+        assert!(
+            !s.contains("48V"),
+            "MV6 summary must not mention phantom: {s}"
+        );
         assert!(!s.contains("EQ"), "MV6 summary must not mention EQ: {s}");
-        assert!(!s.contains("Comp"), "MV6 summary must not mention Comp: {s}");
+        assert!(
+            !s.contains("Comp"),
+            "MV6 summary must not mention Comp: {s}"
+        );
     }
 
     #[test]
@@ -779,11 +811,17 @@ mod tests {
         let mut state = mv6_example_state();
         state.tone = 0;
         let slot = PresetSlot::from_device_state("S", &state);
-        assert!(slot.summary(DeviceModel::Mv6).contains("Natural"), "zero tone should be Natural");
+        assert!(
+            slot.summary(DeviceModel::Mv6).contains("Natural"),
+            "zero tone should be Natural"
+        );
 
         let mut state2 = mv6_example_state();
         state2.tone = -3; // -30% Dark
         let slot2 = PresetSlot::from_device_state("S", &state2);
-        assert!(slot2.summary(DeviceModel::Mv6).contains("30% Dark"), "negative tone should be Dark");
+        assert!(
+            slot2.summary(DeviceModel::Mv6).contains("30% Dark"),
+            "negative tone should be Dark"
+        );
     }
 }

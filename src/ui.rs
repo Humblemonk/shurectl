@@ -234,10 +234,18 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("  GAIN  ", focused_style(gain_focused)),
                     Span::styled(
                         format!(" {} dB ", gain),
-                        Style::default().fg(if gain_locked { C_DIM } else { C_ACCENT }).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(if gain_locked { C_DIM } else { C_ACCENT })
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        if gain_focused && !gain_locked { "  ◄ ► or ←→ to adjust" } else if gain_focused && gain_locked { "  🔒 locked" } else { "" },
+                        if gain_focused && !gain_locked {
+                            "  ◄ ► or ←→ to adjust"
+                        } else if gain_focused && gain_locked {
+                            "  🔒 locked"
+                        } else {
+                            ""
+                        },
                         Style::default().fg(C_DIM),
                     ),
                 ]))
@@ -249,9 +257,16 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(C_BORDER)
                 }),
         )
-        .gauge_style(Style::default().fg(if gain_locked { C_DISABLED } else { C_ACCENT }).bg(C_SURFACE).add_modifier(
-            if gain_focused { Modifier::BOLD } else { Modifier::empty() },
-        ))
+        .gauge_style(
+            Style::default()
+                .fg(if gain_locked { C_DISABLED } else { C_ACCENT })
+                .bg(C_SURFACE)
+                .add_modifier(if gain_focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
         .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
         .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
     f.render_widget(gauge, rows[2]);
@@ -265,7 +280,10 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
         if gain_locked {
-            Span::styled("LOCKED", Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD))
+            Span::styled(
+                "LOCKED",
+                Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
         },
@@ -1145,7 +1163,11 @@ fn draw_mv6_eq_tab(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
                 .fg(Color::Rgb(50, 150, 220))
                 .bg(C_SURFACE)
-                .add_modifier(if tone_foc { Modifier::BOLD } else { Modifier::empty() }),
+                .add_modifier(if tone_foc {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
         )
         .ratio(tone_ratio)
         .label(format!("Dark ◄─{:+}─► Bright", pct));
@@ -1194,10 +1216,7 @@ fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
     ])
     .block(
         Block::default()
-            .title(Span::styled(
-                "  Denoiser  ",
-                focused_style(den_foc),
-            ))
+            .title(Span::styled("  Denoiser  ", focused_style(den_foc)))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if den_foc {
@@ -1218,10 +1237,7 @@ fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
             bool_span(ds.popper_stopper_enabled),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            "Reduces plosive",
-            Style::default().fg(C_DIM),
-        )),
+        Line::from(Span::styled("Reduces plosive", Style::default().fg(C_DIM))),
         Line::from(Span::styled(
             "sounds (p, b, t).",
             Style::default().fg(C_DIM),
@@ -1234,10 +1250,7 @@ fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
     ])
     .block(
         Block::default()
-            .title(Span::styled(
-                "  Popper Stopper  ",
-                focused_style(pop_foc),
-            ))
+            .title(Span::styled("  Popper Stopper  ", focused_style(pop_foc)))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if pop_foc {
@@ -1262,10 +1275,7 @@ fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
             "Prevents the physical",
             Style::default().fg(C_DIM),
         )),
-        Line::from(Span::styled(
-            "mute button from",
-            Style::default().fg(C_DIM),
-        )),
+        Line::from(Span::styled("mute button from", Style::default().fg(C_DIM))),
         Line::from(Span::styled("toggling mute.", Style::default().fg(C_DIM))),
         Line::from(""),
         Line::from(Span::styled(
@@ -1275,10 +1285,7 @@ fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
     ])
     .block(
         Block::default()
-            .title(Span::styled(
-                "  Mute Button  ",
-                focused_style(mbd_foc),
-            ))
+            .title(Span::styled("  Mute Button  ", focused_style(mbd_foc)))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if mbd_foc {
@@ -1814,9 +1821,10 @@ fn draw_preset_name_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
     };
 
     let summary_line = match &app.presets[index] {
-        Some(slot) if !editing => {
-            Line::from(Span::styled(slot.summary(app.device_model), Style::default().fg(C_DIM)))
-        }
+        Some(slot) if !editing => Line::from(Span::styled(
+            slot.summary(app.device_model),
+            Style::default().fg(C_DIM),
+        )),
         _ => Line::from(""),
     };
 
@@ -1987,7 +1995,10 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         DeviceModel::Mv6 => &[
             ("  Denoiser     : ", "On / Off"),
             ("  Popper Stop. : ", "On / Off"),
-            ("  Tone         : ", "Dark (−100%) → Natural → Bright (+100%)"),
+            (
+                "  Tone         : ",
+                "Dark (−100%) → Natural → Bright (+100%)",
+            ),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
             ("  Mute Button  : ", "Enable / Disable"),

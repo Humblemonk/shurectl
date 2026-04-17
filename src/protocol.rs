@@ -889,7 +889,12 @@ pub fn cmd_set_mv6_popper_stopper(seq: u8, enabled: bool) -> Vec<u8> {
 pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
     let enable_byte: u8 = if disabled { 0x00 } else { 0x01 };
     let mix_byte: u8 = 0x60;
-    let payload = [MV6_FEAT_MUTE_BTN_DISABLE[0], MV6_FEAT_MUTE_BTN_DISABLE[1], mix_byte, enable_byte];
+    let payload = [
+        MV6_FEAT_MUTE_BTN_DISABLE[0],
+        MV6_FEAT_MUTE_BTN_DISABLE[1],
+        mix_byte,
+        enable_byte,
+    ];
     let data_len = (3 + payload.len() + 2) as u8;
 
     let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
@@ -2113,7 +2118,11 @@ mod tests {
         let pkt_on = cmd_set_mv6_mute_btn_disable(0, true);
         assert_eq!(pkt_on.len(), PACKET_SIZE);
         assert_eq!(pkt_on[5], 0x00, "HDR_CONSTANT must be 0x00");
-        assert_eq!(&pkt_on[10..13], &[0x02u8, 0x02, 0x01], "cmd must be [02 02 01]");
+        assert_eq!(
+            &pkt_on[10..13],
+            &[0x02u8, 0x02, 0x01],
+            "cmd must be [02 02 01]"
+        );
         assert_eq!(&pkt_on[13..15], &MV6_FEAT_MUTE_BTN_DISABLE);
         assert_eq!(pkt_on[15], 0x60, "mix_byte must be 0x60");
         assert_eq!(pkt_on[16], 0x00, "disabled=true encodes as 0x00");
@@ -2174,7 +2183,10 @@ mod tests {
             let total_len = pkt[1] as usize;
             let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
             let computed_crc = crc16_ansi(&pkt[2..total_len]);
-            assert_eq!(stored_crc, computed_crc, "CRC must be valid for locked={locked}");
+            assert_eq!(
+                stored_crc, computed_crc,
+                "CRC must be valid for locked={locked}"
+            );
         }
     }
 
