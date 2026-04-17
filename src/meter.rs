@@ -12,7 +12,7 @@
 //!   peak into both windows; the render thread reads the rolling maxima to
 //!   drive the bar ratio and the peak-hold marker respectively.
 //!
-//! We deliberately do NOT search for the MVX2U by name. On Linux, cpal's
+//! We deliberately do NOT search for the device by name. On Linux, cpal's
 //! default ALSA host would find the raw `hw:MVX2U` PCM device and open it
 //! exclusively, preventing any other application (PipeWire, PulseAudio, DAW)
 //! from capturing audio until shurectl exits. Using the default input

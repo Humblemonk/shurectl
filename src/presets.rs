@@ -5,7 +5,7 @@
 //!
 //! Each file is human-readable and hand-editable. The preset captures all
 //! configurable DSP settings from `DeviceState` — everything that can be sent
-//! to the MVX2U over HID. Hardware-identity fields `serial_number` are intentionally excluded.
+//! to the device over HID. Hardware-identity fields `serial_number` are intentionally excluded.
 //!
 //! This mirrors how MOTIV Desktop saves presets: the app sends a batch of SET
 //! commands when a preset is loaded, with no device-side preset bank involved.
@@ -16,36 +16,65 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceState, EqBand, HpfFrequency, InputMode, MicPosition,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqBand, HpfFrequency,
+    InputMode, MicPosition,
 };
 
 pub const PRESET_COUNT: usize = 4;
 
 /// A serializable snapshot of all configurable device settings.
+///
+/// Fields from both MVX2U and MV6 are included. Fields irrelevant to a given
+/// device model remain at their serde defaults and are not applied to the device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresetSlot {
     /// Human-readable name shown in the TUI (editable in-app or by hand in TOML).
     pub name: String,
 
-    // ── Main ─────────────────────────────────────────────────────────────────
+    // ── Shared ───────────────────────────────────────────────────────────────
     pub gain_db: u8,
     pub mode: SerInputMode,
-    pub auto_position: SerMicPosition,
-    pub auto_tone: SerAutoTone,
-    pub auto_gain: SerAutoGain,
     pub muted: bool,
-    pub phantom_power: bool,
-    /// Monitor mix: 0 = 100% mic, 100 = 100% playback.
-    pub monitor_mix: u8,
-
-    // ── Dynamics ─────────────────────────────────────────────────────────────
-    pub limiter_enabled: bool,
-    pub compressor: SerCompressorPreset,
     pub hpf: SerHpfFrequency,
 
-    // ── EQ ───────────────────────────────────────────────────────────────────
+    // ── MVX2U-specific ───────────────────────────────────────────────────────
+    #[serde(default)]
+    pub auto_position: SerMicPosition,
+    #[serde(default)]
+    pub auto_tone: SerAutoTone,
+    #[serde(default)]
+    pub auto_gain: SerAutoGain,
+    #[serde(default)]
+    pub phantom_power: bool,
+    #[serde(default)]
+    /// Monitor mix: 0 = 100% mic, 100 = 100% playback.
+    pub monitor_mix: u8,
+    #[serde(default)]
+    pub limiter_enabled: bool,
+    #[serde(default)]
+    pub compressor: SerCompressorPreset,
+    #[serde(default)]
     pub eq_enabled: bool,
+    #[serde(default)]
     pub eq_bands: [SerEqBand; 5],
+
+    // ── MV6-specific ─────────────────────────────────────────────────────────
+    #[serde(default)]
+    pub denoiser_enabled: bool,
+    #[serde(default = "default_popper_stopper")]
+    pub popper_stopper_enabled: bool,
+    #[serde(default)]
+    pub mute_btn_disabled: bool,
+    /// Tone: -10 (100% Dark) to +10 (100% Bright), 0 = Natural.
+    #[serde(default)]
+    pub tone: i8,
+    /// Gain lock (Manual mode only). MV6 only.
+    #[serde(default)]
+    pub mv6_gain_locked: bool,
+}
+
+fn default_popper_stopper() -> bool {
+    true
 }
 
 impl PresetSlot {
@@ -55,17 +84,22 @@ impl PresetSlot {
             name: name.into(),
             gain_db: state.gain_db,
             mode: SerInputMode::from(state.mode),
+            muted: state.muted,
+            hpf: SerHpfFrequency::from(state.hpf),
             auto_position: SerMicPosition::from(state.auto_position),
             auto_tone: SerAutoTone::from(state.auto_tone),
             auto_gain: SerAutoGain::from(state.auto_gain),
-            muted: state.muted,
             phantom_power: state.phantom_power,
             monitor_mix: state.monitor_mix,
             limiter_enabled: state.limiter_enabled,
             compressor: SerCompressorPreset::from(state.compressor),
-            hpf: SerHpfFrequency::from(state.hpf),
             eq_enabled: state.eq_enabled,
             eq_bands: state.eq_bands.map(SerEqBand::from),
+            denoiser_enabled: state.denoiser_enabled,
+            popper_stopper_enabled: state.popper_stopper_enabled,
+            mute_btn_disabled: state.mute_btn_disabled,
+            tone: state.tone,
+            mv6_gain_locked: state.mv6_gain_locked,
         }
     }
 
@@ -74,44 +108,75 @@ impl PresetSlot {
     pub fn apply_to_device_state(&self, state: &mut DeviceState) {
         state.gain_db = self.gain_db;
         state.mode = InputMode::from(self.mode);
+        state.muted = self.muted;
+        state.hpf = HpfFrequency::from(self.hpf);
         state.auto_position = MicPosition::from(self.auto_position);
         state.auto_tone = AutoTone::from(self.auto_tone);
         state.auto_gain = AutoGain::from(self.auto_gain);
-        state.muted = self.muted;
         state.phantom_power = self.phantom_power;
         state.monitor_mix = self.monitor_mix;
         state.limiter_enabled = self.limiter_enabled;
         state.compressor = CompressorPreset::from(self.compressor);
-        state.hpf = HpfFrequency::from(self.hpf);
         state.eq_enabled = self.eq_enabled;
         state.eq_bands = self.eq_bands.map(EqBand::from);
+        state.denoiser_enabled = self.denoiser_enabled;
+        state.popper_stopper_enabled = self.popper_stopper_enabled;
+        state.mute_btn_disabled = self.mute_btn_disabled;
+        state.tone = self.tone;
+        state.mv6_gain_locked = self.mv6_gain_locked;
     }
 
     /// One-line summary of the key settings for display in the TUI.
-    pub fn summary(&self) -> String {
-        let phantom_str = if self.phantom_power {
-            "48V on"
-        } else {
-            "48V off"
+    ///
+    /// The model is needed because MVX2U and MV6 have different configurable
+    /// fields — showing EQ/phantom for an MV6 preset (or denoiser for an MVX2U
+    /// preset) would be misleading.
+    pub fn summary(&self, model: DeviceModel) -> String {
+        let hpf_str = match HpfFrequency::from(self.hpf) {
+            HpfFrequency::Off => "HPF off".to_string(),
+            freq => format!("HPF {freq}"),
         };
-        match InputMode::from(self.mode) {
-            InputMode::Auto => {
-                let tone = AutoTone::from(self.auto_tone);
-                let gain = AutoGain::from(self.auto_gain);
-                let pos = MicPosition::from(self.auto_position);
-                format!("Auto · {tone} · {gain} · {pos} · {phantom_str}")
-            }
-            InputMode::Manual => {
-                let eq_str = if self.eq_enabled { "EQ on" } else { "EQ off" };
-                let comp_str = CompressorPreset::from(self.compressor).to_string();
-                let hpf_str = match HpfFrequency::from(self.hpf) {
-                    HpfFrequency::Off => "HPF off".to_string(),
-                    freq => format!("HPF {freq}"),
+
+        match model {
+            DeviceModel::Mv6 => {
+                let denoiser_str = if self.denoiser_enabled {
+                    "Denoiser on"
+                } else {
+                    "Denoiser off"
+                };
+                let popper_str = if self.popper_stopper_enabled {
+                    "Popper on"
+                } else {
+                    "Popper off"
+                };
+                let tone_str = match self.tone {
+                    0 => "Natural".to_string(),
+                    t if t > 0 => format!("{}% Bright", t as i32 * 10),
+                    t => format!("{}% Dark", (t as i32 * 10).abs()),
                 };
                 format!(
-                    "Manual · {}dB · {eq_str} · Comp: {comp_str} · {phantom_str} · {hpf_str}",
+                    "{}dB · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str}",
                     self.gain_db
                 )
+            }
+            DeviceModel::Mvx2u => {
+                let phantom_str = if self.phantom_power { "48V on" } else { "48V off" };
+                match InputMode::from(self.mode) {
+                    InputMode::Auto => {
+                        let tone = AutoTone::from(self.auto_tone);
+                        let gain = AutoGain::from(self.auto_gain);
+                        let pos = MicPosition::from(self.auto_position);
+                        format!("Auto · {tone} · {gain} · {pos} · {phantom_str}")
+                    }
+                    InputMode::Manual => {
+                        let eq_str = if self.eq_enabled { "EQ on" } else { "EQ off" };
+                        let comp_str = CompressorPreset::from(self.compressor).to_string();
+                        format!(
+                            "Manual · {}dB · {eq_str} · Comp: {comp_str} · {phantom_str} · {hpf_str}",
+                            self.gain_db
+                        )
+                    }
+                }
             }
         }
     }
@@ -119,8 +184,8 @@ impl PresetSlot {
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
-/// Returns `~/.config/shurectl/presets/`, creating it if absent.
-fn presets_dir() -> Result<PathBuf> {
+/// Returns `~/.config/shurectl/`, creating it if absent.
+fn config_dir() -> Result<PathBuf> {
     let base = dirs_next::config_dir()
         .or_else(|| {
             std::env::var("HOME")
@@ -128,7 +193,15 @@ fn presets_dir() -> Result<PathBuf> {
                 .map(|h| PathBuf::from(h).join(".config"))
         })
         .context("Cannot determine config directory; set $HOME")?;
-    let dir = base.join("shurectl").join("presets");
+    let dir = base.join("shurectl");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create config directory: {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Returns `~/.config/shurectl/presets/`, creating it if absent.
+fn presets_dir() -> Result<PathBuf> {
+    let dir = config_dir()?.join("presets");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create preset directory: {}", dir.display()))?;
     Ok(dir)
@@ -142,33 +215,43 @@ pub fn preset_path(index: usize) -> Result<PathBuf> {
 /// Load the preset at `index`. Returns `None` if the slot file does not exist.
 pub fn load_preset(index: usize) -> Result<Option<PresetSlot>> {
     let path = preset_path(index)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read preset file: {}", path.display()))?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| format!("Failed to read preset file: {}", path.display()))
+        }
+    };
     let slot: PresetSlot = toml::from_str(&text)
         .with_context(|| format!("Failed to parse preset file: {}", path.display()))?;
     Ok(Some(slot))
 }
 
 /// Save a preset to slot `index`, overwriting any existing file.
+///
+/// Uses a write-to-temp-then-rename pattern so a crash or power loss mid-write
+/// cannot leave a corrupt or empty preset file behind.
 pub fn save_preset(index: usize, slot: &PresetSlot) -> Result<()> {
     let path = preset_path(index)?;
     let text = toml::to_string_pretty(slot).context("Failed to serialise preset")?;
-    std::fs::write(&path, text)
-        .with_context(|| format!("Failed to write preset file: {}", path.display()))?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &text)
+        .with_context(|| format!("Failed to write preset file: {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("Failed to rename preset file: {}", path.display()))?;
     Ok(())
 }
 
 /// Delete the preset file for slot `index`. No-op if the slot is already empty.
 pub fn delete_preset(index: usize) -> Result<()> {
     let path = preset_path(index)?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("Failed to delete preset file: {}", path.display()))?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            Err(e).with_context(|| format!("Failed to delete preset file: {}", path.display()))
+        }
     }
-    Ok(())
 }
 
 /// Load all 4 preset slots. Missing files produce `None` entries.
@@ -181,6 +264,46 @@ pub fn load_all_presets() -> [Option<PresetSlot>; PRESET_COUNT] {
             None
         }
     })
+}
+
+// ── MV6 persistent state ──────────────────────────────────────────────────────
+//
+// Some MV6 settings cannot be read back from the device (the mute button disable
+// state always returns the same value regardless of what was set). We persist
+// these host-side in ~/.config/shurectl/mv6_state.toml.
+
+/// Host-side persistent state for MV6 settings that cannot be read from the device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct Mv6State {
+    /// Whether the physical mute button is disabled.
+    #[serde(default)]
+    pub mute_btn_disabled: bool,
+}
+
+/// Load MV6 persistent state from `~/.config/shurectl/mv6_state.toml`.
+/// Returns default (all false) if the file does not exist or cannot be parsed.
+pub fn load_mv6_state() -> Mv6State {
+    let path = match config_dir() {
+        Ok(dir) => dir.join("mv6_state.toml"),
+        Err(_) => return Mv6State::default(),
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Mv6State::default(),
+    };
+    toml::from_str(&text).unwrap_or_default()
+}
+
+/// Save MV6 persistent state to `~/.config/shurectl/mv6_state.toml`.
+pub fn save_mv6_state(state: &Mv6State) -> Result<()> {
+    let path = config_dir()?.join("mv6_state.toml");
+    let text = toml::to_string_pretty(state).context("Failed to serialise MV6 state")?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &text)
+        .with_context(|| format!("Failed to write MV6 state: {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("Failed to rename MV6 state file: {}", path.display()))?;
+    Ok(())
 }
 
 // ── Serialisable mirror types ─────────────────────────────────────────────────
@@ -215,9 +338,10 @@ impl From<SerInputMode> for InputMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerMicPosition {
+    #[default]
     Near,
     Far,
 }
@@ -240,10 +364,11 @@ impl From<SerMicPosition> for MicPosition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerAutoTone {
     Dark,
+    #[default]
     Natural,
     Bright,
 }
@@ -268,10 +393,11 @@ impl From<SerAutoTone> for AutoTone {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerAutoGain {
     Quiet,
+    #[default]
     Normal,
     Loud,
 }
@@ -296,9 +422,10 @@ impl From<SerAutoGain> for AutoGain {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerCompressorPreset {
+    #[default]
     Off,
     Light,
     Medium,
@@ -355,7 +482,7 @@ impl From<SerHpfFrequency> for HpfFrequency {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct SerEqBand {
     pub enabled: bool,
     /// Gain in dB, range −8..+6.
@@ -388,7 +515,7 @@ mod tests {
 
     fn example_state() -> DeviceState {
         DeviceState {
-            gain_db: 42,
+            gain_db: 36,
             mode: InputMode::Manual,
             auto_position: MicPosition::Far,
             auto_tone: AutoTone::Bright,
@@ -401,28 +528,18 @@ mod tests {
             hpf: HpfFrequency::Hz75,
             eq_enabled: true,
             eq_bands: [
-                EqBand {
-                    enabled: true,
-                    gain_db: 4,
-                },
-                EqBand {
-                    enabled: false,
-                    gain_db: -2,
-                },
-                EqBand {
-                    enabled: true,
-                    gain_db: 0,
-                },
-                EqBand {
-                    enabled: false,
-                    gain_db: 6,
-                },
-                EqBand {
-                    enabled: true,
-                    gain_db: -8,
-                },
+                EqBand { enabled: true, gain_db: 4 },
+                EqBand { enabled: false, gain_db: -2 },
+                EqBand { enabled: true, gain_db: 0 },
+                EqBand { enabled: false, gain_db: 6 },
+                EqBand { enabled: true, gain_db: -8 },
             ],
             locked: false,
+            denoiser_enabled: true,
+            popper_stopper_enabled: false,
+            mute_btn_disabled: true,
+            tone: -5,
+            mv6_gain_locked: false,
             serial_number: String::from("TEST001"),
         }
     }
@@ -437,10 +554,13 @@ mod tests {
 
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "My Preset");
-        assert_eq!(decoded.gain_db, 42);
-        assert_eq!(decoded.muted, true);
+        assert_eq!(decoded.gain_db, 36);
+        assert!(decoded.muted);
         assert_eq!(decoded.eq_bands[0].gain_db, 4);
         assert_eq!(decoded.eq_bands[4].gain_db, -8);
+        assert!(decoded.denoiser_enabled);
+        assert!(!decoded.popper_stopper_enabled);
+        assert_eq!(decoded.tone, -5);
     }
 
     #[test]
@@ -448,14 +568,12 @@ mod tests {
         let original = example_state();
         let slot = PresetSlot::from_device_state("Test", &original);
 
-        // Apply onto a default state (different values).
         let mut target = DeviceState::default();
-        // Preserve identity fields to confirm they are NOT overwritten.
         target.serial_number = String::from("OTHER");
 
         slot.apply_to_device_state(&mut target);
 
-        assert_eq!(target.gain_db, 42);
+        assert_eq!(target.gain_db, 36);
         assert_eq!(target.mode, InputMode::Manual);
         assert_eq!(target.auto_position, MicPosition::Far);
         assert_eq!(target.auto_tone, AutoTone::Bright);
@@ -468,6 +586,10 @@ mod tests {
         assert_eq!(target.hpf, HpfFrequency::Hz75);
         assert!(target.eq_enabled);
         assert_eq!(target.eq_bands[0].gain_db, 4);
+        assert!(target.denoiser_enabled);
+        assert!(!target.popper_stopper_enabled);
+        assert!(target.mute_btn_disabled);
+        assert_eq!(target.tone, -5);
         // Identity fields must be untouched.
         assert_eq!(target.serial_number, "OTHER");
     }
@@ -498,7 +620,7 @@ mod tests {
         state.phantom_power = true;
         state.hpf = HpfFrequency::Hz75;
         let slot = PresetSlot::from_device_state("S", &state);
-        let s = slot.summary();
+        let s = slot.summary(DeviceModel::Mvx2u);
         assert!(s.contains("Manual"), "summary: {s}");
         assert!(s.contains("36dB"), "summary: {s}");
         assert!(s.contains("EQ"), "summary: {s}");
@@ -516,7 +638,7 @@ mod tests {
         state.auto_position = MicPosition::Near;
         state.phantom_power = false;
         let slot = PresetSlot::from_device_state("S", &state);
-        let s = slot.summary();
+        let s = slot.summary(DeviceModel::Mvx2u);
         assert!(s.contains("Auto"), "summary: {s}");
         assert!(s.contains("Natural"), "summary: {s}");
         assert!(s.contains("Normal"), "summary: {s}");
@@ -529,5 +651,139 @@ mod tests {
             "Auto summary must not mention Comp: {s}"
         );
         assert!(!s.contains("HPF"), "Auto summary must not mention HPF: {s}");
+    }
+
+    fn mv6_example_state() -> DeviceState {
+        DeviceState {
+            gain_db: 24,
+            mode: InputMode::Manual,
+            auto_position: MicPosition::Near,
+            auto_tone: AutoTone::Natural,
+            auto_gain: AutoGain::Normal,
+            muted: false,
+            phantom_power: false,
+            monitor_mix: 0,
+            limiter_enabled: false,
+            compressor: CompressorPreset::Off,
+            hpf: HpfFrequency::Hz75,
+            eq_enabled: false,
+            eq_bands: [EqBand::default(); 5],
+            locked: false,
+            denoiser_enabled: true,
+            popper_stopper_enabled: true,
+            mute_btn_disabled: true,
+            tone: 5,
+            mv6_gain_locked: false,
+            serial_number: String::from("MV6TEST"),
+        }
+    }
+
+    #[test]
+    fn mv6_preset_roundtrip_toml() {
+        let state = mv6_example_state();
+        let slot = PresetSlot::from_device_state("MV6 Preset", &state);
+
+        let toml_str = toml::to_string_pretty(&slot).expect("serialise");
+        let decoded: PresetSlot = toml::from_str(&toml_str).expect("deserialise");
+
+        assert_eq!(slot, decoded);
+        assert_eq!(decoded.name, "MV6 Preset");
+        assert_eq!(decoded.gain_db, 24);
+        assert!(decoded.denoiser_enabled);
+        assert!(decoded.popper_stopper_enabled);
+        assert!(decoded.mute_btn_disabled);
+        assert_eq!(decoded.tone, 5);
+        assert_eq!(decoded.hpf, SerHpfFrequency::Hz75);
+    }
+
+    #[test]
+    fn mv6_apply_to_device_state_restores_mv6_fields() {
+        let original = mv6_example_state();
+        let slot = PresetSlot::from_device_state("MV6 Test", &original);
+
+        let mut target = DeviceState::default();
+        target.serial_number = String::from("OTHER");
+
+        slot.apply_to_device_state(&mut target);
+
+        assert_eq!(target.gain_db, 24);
+        assert!(target.denoiser_enabled);
+        assert!(target.popper_stopper_enabled);
+        assert!(target.mute_btn_disabled);
+        assert_eq!(target.tone, 5);
+        assert_eq!(target.hpf, HpfFrequency::Hz75);
+        // Identity fields must be untouched.
+        assert_eq!(target.serial_number, "OTHER");
+    }
+
+    #[test]
+    fn mv6_apply_to_device_state_no_duplicate_hpf() {
+        // Verifies the duplicate hpf assignment is gone: applying a preset with
+        // Hz150 must result in Hz150, not whatever was there before.
+        let mut state = mv6_example_state();
+        state.hpf = HpfFrequency::Hz150;
+        let slot = PresetSlot::from_device_state("HPF test", &state);
+
+        let mut target = DeviceState::default();
+        // target.hpf starts as HpfFrequency::Off (default).
+        slot.apply_to_device_state(&mut target);
+
+        assert_eq!(target.hpf, HpfFrequency::Hz150);
+    }
+
+    #[test]
+    fn mv6_mute_btn_disabled_roundtrip_file() {
+        let state = mv6_example_state(); // mute_btn_disabled = true
+        let slot = PresetSlot::from_device_state("MV6 File", &state);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("preset_1.toml");
+
+        let text = toml::to_string_pretty(&slot).expect("serialise");
+        std::fs::write(&path, &text).expect("write");
+
+        let loaded: PresetSlot =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("deserialise");
+
+        assert!(loaded.mute_btn_disabled, "mute_btn_disabled must survive a file roundtrip");
+        assert_eq!(loaded.tone, 5, "tone must survive a file roundtrip");
+        assert!(loaded.denoiser_enabled, "denoiser_enabled must survive a file roundtrip");
+        assert!(
+            loaded.popper_stopper_enabled,
+            "popper_stopper_enabled must survive a file roundtrip"
+        );
+    }
+
+    #[test]
+    fn summary_mv6_shows_denoiser_popper_tone_hpf_not_phantom_eq_comp() {
+        let mut state = mv6_example_state();
+        state.denoiser_enabled = true;
+        state.popper_stopper_enabled = false;
+        state.tone = 5; // +50% Bright
+        state.hpf = HpfFrequency::Hz75;
+        let slot = PresetSlot::from_device_state("S", &state);
+        let s = slot.summary(DeviceModel::Mv6);
+        assert!(s.contains("24dB"), "summary: {s}");
+        assert!(s.contains("Denoiser on"), "summary: {s}");
+        assert!(s.contains("Popper off"), "summary: {s}");
+        assert!(s.contains("HPF 75 Hz"), "summary: {s}");
+        assert!(s.contains("50% Bright"), "summary: {s}");
+        // MVX2U-specific fields must not appear
+        assert!(!s.contains("48V"), "MV6 summary must not mention phantom: {s}");
+        assert!(!s.contains("EQ"), "MV6 summary must not mention EQ: {s}");
+        assert!(!s.contains("Comp"), "MV6 summary must not mention Comp: {s}");
+    }
+
+    #[test]
+    fn summary_mv6_tone_natural_and_dark() {
+        let mut state = mv6_example_state();
+        state.tone = 0;
+        let slot = PresetSlot::from_device_state("S", &state);
+        assert!(slot.summary(DeviceModel::Mv6).contains("Natural"), "zero tone should be Natural");
+
+        let mut state2 = mv6_example_state();
+        state2.tone = -3; // -30% Dark
+        let slot2 = PresetSlot::from_device_state("S", &state2);
+        assert!(slot2.summary(DeviceModel::Mv6).contains("30% Dark"), "negative tone should be Dark");
     }
 }

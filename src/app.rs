@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use crate::meter::{METER_SILENT, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceState, HpfFrequency, InputMode, MicPosition,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, HpfFrequency, InputMode,
+    MicPosition,
 };
 
 /// Which top-level tab/panel is active.
@@ -68,15 +69,23 @@ pub enum Focus {
     AutoPosition,
     AutoTone,
     AutoGain,
-    // EQ tab — focus carries the band index (0–4)
+    // EQ tab — MVX2U bands
     EqEnable,
     EqBandSelect,
     EqBandEnable(usize),
     EqGain(usize),
-    // Dynamics tab
+    // EQ tab — MV6 tone
+    Tone,
+    // Dynamics tab — MVX2U
     Limiter,
     Compressor,
     Hpf,
+    // Dynamics tab — MV6 extra controls
+    Denoiser,
+    PopperStopper,
+    MuteBtnDisable,
+    // Main tab — MV6 gain lock (Manual mode only)
+    GainLock,
     // Presets tab — usize is slot index 0–3
     PresetName(usize),
     PresetActions(usize),
@@ -95,6 +104,8 @@ pub struct App {
     pub should_quit: bool,
     pub demo_mode: bool,
     pub help_visible: bool,
+    /// Which device model is connected. Drives which controls are shown.
+    pub device_model: DeviceModel,
     /// Loaded preset slots. `None` means the slot file does not exist yet.
     pub presets: [Option<PresetSlot>; PRESET_COUNT],
     /// Set to `true` while the user is typing a new name for a preset slot.
@@ -121,6 +132,7 @@ impl Default for App {
             should_quit: false,
             demo_mode: false,
             help_visible: false,
+            device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
             editing_preset_name: false,
             editing_preset_index: 0,
@@ -147,12 +159,13 @@ impl App {
     // ── Tab navigation ────────────────────────────────────────────────────────
 
     /// Returns true when a tab should be inaccessible given the current device state.
-    /// EQ and Dynamics are managed by the device in Auto Level mode and cannot be
-    /// configured independently.
+    ///
+    /// MVX2U: EQ and Dynamics are locked in Auto Level mode (device manages them).
+    /// MV6:   EQ (Tone) and Dynamics are always accessible.
     pub fn is_tab_locked(&self, tab: Tab) -> bool {
         matches!(
-            (tab, self.device_state.mode),
-            (Tab::Eq | Tab::Dynamics, InputMode::Auto)
+            (tab, self.device_model, self.device_state.mode),
+            (Tab::Eq | Tab::Dynamics, DeviceModel::Mvx2u, InputMode::Auto)
         )
     }
 
@@ -183,104 +196,151 @@ impl App {
     }
 
     fn reset_focus_for_tab(&mut self) {
-        self.focus = match self.active_tab {
-            Tab::Main => match self.device_state.mode {
+        self.focus = match (self.active_tab, self.device_model) {
+            (Tab::Main, DeviceModel::Mv6) => match self.device_state.mode {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
             },
-            Tab::Eq => Focus::EqEnable,
-            Tab::Dynamics => Focus::Limiter,
-            Tab::Presets => Focus::PresetName(0),
-            Tab::Info => Focus::None,
+            (Tab::Main, DeviceModel::Mvx2u) => match self.device_state.mode {
+                InputMode::Manual => Focus::Gain,
+                InputMode::Auto => Focus::Mode,
+            },
+            (Tab::Eq, DeviceModel::Mv6) => Focus::Tone,
+            (Tab::Eq, DeviceModel::Mvx2u) => Focus::EqEnable,
+            (Tab::Dynamics, DeviceModel::Mv6) => Focus::Denoiser,
+            (Tab::Dynamics, DeviceModel::Mvx2u) => Focus::Limiter,
+            (Tab::Presets, _) => Focus::PresetName(0),
+            (Tab::Info, _) => Focus::None,
         };
     }
 
     // ── Focus cycling within a tab ────────────────────────────────────────────
     //
-    // Main tab has two distinct cycles depending on input mode.
-    // Order matches top-to-bottom screen layout:
-    //
+    // MVX2U Main cycles:
     //   Manual: Mode → Mute → Gain → MonitorMix → Phantom → Lock → (wrap)
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
-    // If focus lands on a mode-specific control while the mode doesn't match
-    // (e.g. user toggles mode while focused on Gain), the wildcard arm catches
-    // it and returns to the correct starting focus for the current mode.
+    // MV6 Main cycles (mirrors MVX2U structure, no extra controls):
+    //   Manual: Mode → Mute → Gain → GainLock → (wrap)
+    //   Auto:   Mode → Mute → (wrap)
+    //
+    // MV6 EQ:      Tone (slider only, no bands)
+    // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
     pub fn focus_next(&mut self) {
-        self.focus = match (&self.active_tab, &self.focus, &self.device_state.mode) {
-            // Manual cycle (top → bottom): Mode → Mute → Gain → MonitorMix → Phantom → Lock
-            (Tab::Main, Focus::Mode, InputMode::Manual) => Focus::Mute,
-            (Tab::Main, Focus::Mute, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::Gain, InputMode::Manual) => Focus::MonitorMix,
-            // Auto cycle (top → bottom): Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock
-            (Tab::Main, Focus::Mode, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, Focus::Mute, InputMode::Auto) => Focus::AutoPosition,
-            (Tab::Main, Focus::AutoPosition, InputMode::Auto) => Focus::AutoTone,
-            (Tab::Main, Focus::AutoTone, InputMode::Auto) => Focus::AutoGain,
-            (Tab::Main, Focus::AutoGain, InputMode::Auto) => Focus::MonitorMix,
-            // Shared tail (both modes)
-            (Tab::Main, Focus::MonitorMix, _) => Focus::Phantom,
-            (Tab::Main, Focus::Phantom, _) => Focus::Lock,
-            (Tab::Main, Focus::Lock, _) => Focus::Mode,
-            // Fallback — wrong-mode focus or unexpected state
-            (Tab::Main, _, InputMode::Manual) => Focus::Mode,
-            (Tab::Main, _, InputMode::Auto) => Focus::Mode,
+        self.focus = match (&self.active_tab, &self.focus, &self.device_model, &self.device_state.mode) {
+            // ── MV6 Main cycle ────────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
+            (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mv6, _) => Focus::Mode,
 
-            (Tab::Eq, Focus::EqEnable, _) => Focus::EqBandSelect,
-            (Tab::Eq, Focus::EqBandSelect, _) => Focus::EqBandEnable(self.eq_selected_band),
-            (Tab::Eq, Focus::EqBandEnable(b), _) => Focus::EqGain(*b),
-            (Tab::Eq, Focus::EqGain(_), _) => Focus::EqEnable,
-            (Tab::Eq, _, _) => Focus::EqEnable,
+            // ── MVX2U Manual cycle ────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Gain, DeviceModel::Mvx2u, InputMode::Manual) => Focus::MonitorMix,
+            // ── MVX2U Auto cycle ──────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
+            (Tab::Main, Focus::AutoPosition, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoTone,
+            (Tab::Main, Focus::AutoTone, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoGain,
+            (Tab::Main, Focus::AutoGain, DeviceModel::Mvx2u, InputMode::Auto) => Focus::MonitorMix,
+            // ── MVX2U shared tail ─────────────────────────────────────────────
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, _) => Focus::Phantom,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2u, _) => Focus::Lock,
+            (Tab::Main, Focus::Lock, DeviceModel::Mvx2u, _) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mvx2u, _) => Focus::Mode,
 
-            (Tab::Dynamics, Focus::Limiter, _) => Focus::Compressor,
-            (Tab::Dynamics, Focus::Compressor, _) => Focus::Hpf,
-            (Tab::Dynamics, Focus::Hpf, _) => Focus::Limiter,
-            (Tab::Dynamics, _, _) => Focus::Limiter,
+            // ── MV6 EQ (Tone only) ────────────────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
 
-            (Tab::Presets, Focus::PresetName(i), _) => Focus::PresetActions(*i),
-            (Tab::Presets, Focus::PresetActions(i), _) => Focus::PresetName((i + 1) % PRESET_COUNT),
-            (Tab::Presets, _, _) => Focus::PresetName(0),
+            // ── MVX2U EQ ──────────────────────────────────────────────────────
+            (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => Focus::EqBandSelect,
+            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2u, _) => Focus::EqBandEnable(self.eq_selected_band),
+            (Tab::Eq, Focus::EqBandEnable(b), DeviceModel::Mvx2u, _) => Focus::EqGain(*b),
+            (Tab::Eq, Focus::EqGain(_), DeviceModel::Mvx2u, _) => Focus::EqEnable,
+            (Tab::Eq, _, DeviceModel::Mvx2u, _) => Focus::EqEnable,
+
+            // ── MV6 Dynamics ──────────────────────────────────────────────────
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv6, _) => Focus::PopperStopper,
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv6, _) => Focus::MuteBtnDisable,
+            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv6, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6, _) => Focus::Denoiser,
+            (Tab::Dynamics, _, DeviceModel::Mv6, _) => Focus::Denoiser,
+
+            // ── MVX2U Dynamics ────────────────────────────────────────────────
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mvx2u, _) => Focus::Compressor,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mvx2u, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mvx2u, _) => Focus::Limiter,
+            (Tab::Dynamics, _, DeviceModel::Mvx2u, _) => Focus::Limiter,
+
+            (Tab::Presets, Focus::PresetName(i), _, _) => Focus::PresetActions(*i),
+            (Tab::Presets, Focus::PresetActions(i), _, _) => {
+                Focus::PresetName((i + 1) % PRESET_COUNT)
+            }
+            (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
             _ => self.focus,
         };
     }
 
     pub fn focus_prev(&mut self) {
-        self.focus = match (&self.active_tab, &self.focus, &self.device_state.mode) {
-            // Manual cycle reverse
-            (Tab::Main, Focus::Mode, InputMode::Manual) => Focus::Lock,
-            (Tab::Main, Focus::Mute, InputMode::Manual) => Focus::Mode,
-            (Tab::Main, Focus::Gain, InputMode::Manual) => Focus::Mute,
-            // Auto cycle reverse
-            (Tab::Main, Focus::Mode, InputMode::Auto) => Focus::Lock,
-            (Tab::Main, Focus::Mute, InputMode::Auto) => Focus::Mode,
-            (Tab::Main, Focus::AutoPosition, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, Focus::AutoTone, InputMode::Auto) => Focus::AutoPosition,
-            (Tab::Main, Focus::AutoGain, InputMode::Auto) => Focus::AutoTone,
-            // Shared tail (both modes)
-            (Tab::Main, Focus::MonitorMix, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::MonitorMix, InputMode::Auto) => Focus::AutoGain,
-            (Tab::Main, Focus::Phantom, _) => Focus::MonitorMix,
-            (Tab::Main, Focus::Lock, _) => Focus::Phantom,
-            // Fallback
-            (Tab::Main, _, InputMode::Manual) => Focus::Mode,
-            (Tab::Main, _, InputMode::Auto) => Focus::Mode,
+        self.focus = match (&self.active_tab, &self.focus, &self.device_model, &self.device_state.mode) {
+            // ── MV6 Main reverse ──────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mv6, _) => Focus::Mode,
 
-            (Tab::Eq, Focus::EqEnable, _) => Focus::EqGain(self.eq_selected_band),
-            (Tab::Eq, Focus::EqBandSelect, _) => Focus::EqEnable,
-            (Tab::Eq, Focus::EqBandEnable(_), _) => Focus::EqBandSelect,
-            (Tab::Eq, Focus::EqGain(b), _) => Focus::EqBandEnable(*b),
-            (Tab::Eq, _, _) => Focus::EqEnable,
+            // ── MVX2U Manual reverse ──────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Lock,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::Gain, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Mute,
+            // ── MVX2U Auto reverse ────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Lock,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::AutoPosition, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::AutoTone, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
+            (Tab::Main, Focus::AutoGain, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoTone,
+            // ── MVX2U shared tail reverse ─────────────────────────────────────
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoGain,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2u, _) => Focus::MonitorMix,
+            (Tab::Main, Focus::Lock, DeviceModel::Mvx2u, _) => Focus::Phantom,
+            (Tab::Main, _, DeviceModel::Mvx2u, _) => Focus::Mode,
 
-            (Tab::Dynamics, Focus::Limiter, _) => Focus::Hpf,
-            (Tab::Dynamics, Focus::Compressor, _) => Focus::Limiter,
-            (Tab::Dynamics, Focus::Hpf, _) => Focus::Compressor,
-            (Tab::Dynamics, _, _) => Focus::Limiter,
+            // ── MV6 EQ ────────────────────────────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
 
-            (Tab::Presets, Focus::PresetName(0), _) => Focus::PresetActions(PRESET_COUNT - 1),
-            (Tab::Presets, Focus::PresetName(i), _) => Focus::PresetActions(i - 1),
-            (Tab::Presets, Focus::PresetActions(i), _) => Focus::PresetName(*i),
-            (Tab::Presets, _, _) => Focus::PresetName(0),
+            // ── MVX2U EQ reverse ──────────────────────────────────────────────
+            (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => Focus::EqGain(self.eq_selected_band),
+            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2u, _) => Focus::EqEnable,
+            (Tab::Eq, Focus::EqBandEnable(_), DeviceModel::Mvx2u, _) => Focus::EqBandSelect,
+            (Tab::Eq, Focus::EqGain(b), DeviceModel::Mvx2u, _) => Focus::EqBandEnable(*b),
+            (Tab::Eq, _, DeviceModel::Mvx2u, _) => Focus::EqEnable,
+
+            // ── MV6 Dynamics reverse ──────────────────────────────────────────
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv6, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv6, _) => Focus::Denoiser,
+            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv6, _) => Focus::PopperStopper,
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6, _) => Focus::MuteBtnDisable,
+            (Tab::Dynamics, _, DeviceModel::Mv6, _) => Focus::Denoiser,
+
+            // ── MVX2U Dynamics reverse ────────────────────────────────────────
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mvx2u, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mvx2u, _) => Focus::Limiter,
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mvx2u, _) => Focus::Compressor,
+            (Tab::Dynamics, _, DeviceModel::Mvx2u, _) => Focus::Limiter,
+
+            (Tab::Presets, Focus::PresetName(0), _, _) => Focus::PresetActions(PRESET_COUNT - 1),
+            (Tab::Presets, Focus::PresetName(i), _, _) => Focus::PresetActions(i - 1),
+            (Tab::Presets, Focus::PresetActions(i), _, _) => Focus::PresetName(*i),
+            (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
             _ => self.focus,
         };
@@ -291,12 +351,12 @@ impl App {
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
         match self.focus {
             Focus::Gain => {
-                let g = &mut self.device_state.gain_db;
-                if delta > 0 {
-                    *g = (*g + 1).min(60);
-                } else {
-                    *g = g.saturating_sub(1);
+                if self.device_state.mv6_gain_locked {
+                    return None;
                 }
+                let max = self.device_model.max_gain_db() as i32;
+                let g = &mut self.device_state.gain_db;
+                *g = ((*g as i32) + delta).clamp(0, max) as u8;
                 Some(DeviceAction::SetGain(self.device_state.gain_db))
             }
             Focus::MonitorMix => {
@@ -308,6 +368,11 @@ impl App {
                 }
                 Some(DeviceAction::SetMonitorMix(self.device_state.monitor_mix))
             }
+            Focus::Tone => {
+                let t = &mut self.device_state.tone;
+                *t = ((*t as i32) + delta).clamp(-10, 10) as i8;
+                Some(DeviceAction::SetMv6Tone(self.device_state.tone))
+            }
             Focus::EqBandSelect => {
                 if delta > 0 {
                     self.eq_selected_band = (self.eq_selected_band + 1) % 5;
@@ -318,7 +383,6 @@ impl App {
             }
             Focus::EqGain(b) => {
                 let band = &mut self.device_state.eq_bands[b];
-                // Hardware supports −8 to +6 in steps of 2.
                 let new_gain = ((band.gain_db as i32) + delta * 2).clamp(-8, 6) as i8;
                 band.gain_db = new_gain;
                 Some(DeviceAction::SetEqBandGain(b, band.gain_db))
@@ -335,8 +399,6 @@ impl App {
                     InputMode::Auto => InputMode::Manual,
                     InputMode::Manual => InputMode::Auto,
                 };
-                // Jump focus to the first relevant control for the new mode so
-                // the user doesn't end up on a control that no longer exists.
                 self.focus = match self.device_state.mode {
                     InputMode::Auto => Focus::AutoPosition,
                     InputMode::Manual => Focus::Gain,
@@ -392,8 +454,33 @@ impl App {
                 self.device_state.hpf = self.device_state.hpf.cycle_next();
                 Some(DeviceAction::SetHpf(self.device_state.hpf))
             }
+            // ── MV6 Dynamics controls ─────────────────────────────────────────
+            Focus::Denoiser => {
+                self.device_state.denoiser_enabled = !self.device_state.denoiser_enabled;
+                Some(DeviceAction::SetMv6Denoiser(
+                    self.device_state.denoiser_enabled,
+                ))
+            }
+            Focus::PopperStopper => {
+                self.device_state.popper_stopper_enabled =
+                    !self.device_state.popper_stopper_enabled;
+                Some(DeviceAction::SetMv6PopperStopper(
+                    self.device_state.popper_stopper_enabled,
+                ))
+            }
+            Focus::MuteBtnDisable => {
+                self.device_state.mute_btn_disabled = !self.device_state.mute_btn_disabled;
+                Some(DeviceAction::SetMv6MuteBtnDisable(
+                    self.device_state.mute_btn_disabled,
+                ))
+            }
+            Focus::GainLock => {
+                self.device_state.mv6_gain_locked = !self.device_state.mv6_gain_locked;
+                Some(DeviceAction::SetMv6GainLock(
+                    self.device_state.mv6_gain_locked,
+                ))
+            }
             Focus::PresetActions(i) => {
-                // Enter on the actions row loads the preset (if filled).
                 if self.presets[i].is_some() {
                     Some(DeviceAction::LoadPreset(i))
                 } else {
@@ -426,6 +513,14 @@ pub enum DeviceAction {
     SetEqBandEnable(usize, bool),
     /// `usize` is band index 0–4; `i8` is gain in dB (−8..+6, steps of 2).
     SetEqBandGain(usize, i8),
+    // ── MV6-specific actions ──────────────────────────────────────────────────
+    SetMv6Denoiser(bool),
+    SetMv6PopperStopper(bool),
+    SetMv6MuteBtnDisable(bool),
+    /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
+    SetMv6Tone(i8),
+    SetMv6GainLock(bool),
+    // ── Preset actions ────────────────────────────────────────────────────────
     /// Save current device state to preset slot `usize`.
     SavePreset(usize),
     /// Load preset slot `usize` and apply all settings to the device.
@@ -673,6 +768,37 @@ mod tests {
     }
 
     #[test]
+    fn mv6_main_tab_manual_mode_focus_cycles_forward_and_back() {
+        // MV6 Manual: Mode → Mute → Gain → GainLock → Mode
+        let forward = [
+            Focus::Mode,
+            Focus::Mute,
+            Focus::Gain,
+            Focus::GainLock,
+            Focus::Mode, // wrap
+        ];
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.active_tab = Tab::Main;
+        app.device_state.mode = InputMode::Manual;
+        app.focus = Focus::Mode;
+
+        for expected in &forward[1..] {
+            app.focus_next();
+            assert_eq!(app.focus, *expected, "focus_next: expected {expected:?}");
+        }
+
+        // Backward from Mode wraps to GainLock
+        app.focus = Focus::Mode;
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::GainLock);
+
+        // Backward from GainLock goes to Gain
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Gain);
+    }
+
+    #[test]
     fn dynamics_tab_focus_cycles_all_three_controls() {
         let mut app = App::default();
         app.active_tab = Tab::Dynamics;
@@ -841,6 +967,7 @@ mod tests {
             Focus::Mute,
             Focus::Phantom,
             Focus::Lock,
+            Focus::GainLock,
             Focus::None,
         ] {
             app.focus = focus;
@@ -849,6 +976,32 @@ mod tests {
                 "{focus:?} should return None from adjust_focused"
             );
         }
+    }
+
+    #[test]
+    fn adjust_gain_blocked_when_mv6_gain_locked() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.focus = Focus::Gain;
+        app.device_state.gain_db = 20;
+        app.device_state.mv6_gain_locked = true;
+
+        let action = app.adjust_focused(1);
+        assert!(action.is_none(), "adjust must return None when gain is locked");
+        assert_eq!(app.device_state.gain_db, 20, "gain must not change when locked");
+    }
+
+    #[test]
+    fn adjust_gain_allowed_when_mv6_gain_unlocked() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.focus = Focus::Gain;
+        app.device_state.gain_db = 20;
+        app.device_state.mv6_gain_locked = false;
+
+        let action = app.adjust_focused(1);
+        assert!(matches!(action, Some(DeviceAction::SetGain(21))));
+        assert_eq!(app.device_state.gain_db, 21);
     }
 
     // ── toggle_focused ────────────────────────────────────────────────────────
@@ -1010,6 +1163,22 @@ mod tests {
     }
 
     #[test]
+    fn toggle_gain_lock_flips_state_and_returns_action() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.focus = Focus::GainLock;
+        app.device_state.mv6_gain_locked = false;
+
+        let action = app.toggle_focused();
+        assert!(app.device_state.mv6_gain_locked);
+        assert!(matches!(action, Some(DeviceAction::SetMv6GainLock(true))));
+
+        let action = app.toggle_focused();
+        assert!(!app.device_state.mv6_gain_locked);
+        assert!(matches!(action, Some(DeviceAction::SetMv6GainLock(false))));
+    }
+
+    #[test]
     fn toggle_phantom_flips_state_and_returns_action() {
         let mut app = App::default();
         app.focus = Focus::Phantom;
@@ -1159,6 +1328,11 @@ mod tests {
                 enabled: false,
                 gain_db: 0,
             }; 5],
+            denoiser_enabled: false,
+            popper_stopper_enabled: true,
+            mute_btn_disabled: false,
+            tone: 0,
+            mv6_gain_locked: false,
         });
 
         let action = app.toggle_focused();

@@ -1,7 +1,11 @@
-//! MVX2U USB HID Protocol Implementation
+//! Shure USB HID Protocol Implementation
 //!
-//! The MVX2U uses USB HID reports for configuration, communicated via
-//! `write()` (host→device) and `read()` (device→host) on the hidraw fd.
+//! Covers two devices:
+//!   - Shure MVX2U  (VID 0x14ED, PID 0x1013) — XLR-to-USB interface
+//!   - Shure MV6    (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//!
+//! Both devices use the same packet framing, CRC algorithm, and command
+//! class structure. Feature addresses differ between models.
 //!
 //! Packet structure (64 bytes total, written via hidapi):
 //!
@@ -24,15 +28,16 @@
 //! USB IDs:
 //!   Vendor ID:  0x14ED  (Shure)
 //!   Product ID: 0x1013  (MVX2U)
+//!   Product ID: 0x1026  (MV6)
 //!
 //! Every SET command must be followed by a CONFIRM packet (CMD_CONFIRM).
 //! GET commands receive a response on the next `read()`.
 //!
-//! Feature addresses (2 bytes):
+//! ── MVX2U Feature addresses (2 bytes) ────────────────────────────────────────
 //!   Config lock:    [0x00, 0xA6]  — 1 byte: 0=unlocked, 1=locked
 //!                                   Uses CMD_GET_LOCK / CMD_SET_LOCK (last byte 0x01, not 0x02)
 //!                                   Payload prefix byte is 0x06 (not 0x00 or 0x01)
-//!   Gain (manual):  [0x01, 0x02]  — 16-bit big-endian, units: gain_db * 100
+//!   Gain (manual):  [0x01, 0x02]  — 16-bit big-endian, units: gain_db * 100, range 0–60 dB
 //!   Mute:           [0x01, 0x04]  — 1 byte: 0=unmuted, 1=muted
 //!   HPF:            [0x01, 0x06]  — 1 byte: 0=off, 1=75Hz, 2=150Hz
 //!   Limiter:        [0x01, 0x51]  — 1 byte: 0=off, 1=on
@@ -50,9 +55,64 @@
 //!
 //! EQ bands have fixed center frequencies: 100, 250, 1000, 4000, 10000 Hz.
 //! Frequency and Q are not adjustable on this device.
+//!
+//! ── MV6 Feature addresses (2 bytes) ──────────────────────────────────────────
+//! All confirmed by GET probe against firmware 1.3.0.6 unless noted.
+//!
+//!   Gain (manual):   [0x01, 0x02]  — 16-bit big-endian, units: gain_db * 100, max 36 dB
+//!                    SET confirmed working and persists to flash across replug (probe-verified).
+//!                    MOTIV on macOS does not re-read gain on reconnect — it restores from its
+//!                    own cache instead. Other settings (HPF, denoiser, etc.) do refresh. This
+//!                    is a Shure app bug; shurectl SET behaviour is correct.
+//!   Mute:            [0x01, 0x04]  — 1 byte: 0=unmuted, 1=muted
+//!   HPF:             [0x01, 0x06]  — 1 byte: 0=off, 1=75Hz, 2=150Hz
+//!   Denoiser:        [0x01, 0x58]  — 1 byte: 0=off, 1=on  (GET-readable, confirmed)
+//!   Auto level:      [0x01, 0x85]  — 1 byte: 0=manual, 1=auto
+//!   Popper stopper:  [0x03, 0x81]  — 1 byte: 0=off, 1=on  (confirmed by MOTIV app probe diff)
+//!   Mute btn disable:[0x0C, 0x00]  — SET uses cmd [02 02 01], HDR_CONSTANT=0x00,
+//!                                    payload [addr_hi, addr_lo, 0x60, enable_byte].
+//!                                    enable_byte: 0x00=disabled, 0x01=active (inverted).
+//!                                    State persisted host-side; GET unreliable.
+//!   Gain lock:       [0x01, 0xF3]  — 1 byte: 0=unlocked, 1=locked (Manual mode only)
+//!                                    Confirmed by probe diff: value changed 0x00→0x01 when
+//!                                    gain lock was enabled in MOTIV Mix. Standard CMD_GET_FEAT
+//!                                    / CMD_SET_FEAT, prefix 0x00. SET encoding unverified —
+//!                                    verify with usbmon if toggling does not take effect.
+//!   Tone:            [0x02, 0x04]  — 16-bit signed big-endian, units: percent
+//!                                    Range: -100 (Dark) to +100 (Bright), steps of 10.
+//!                                    0 = Natural (confirmed at factory default).
 
 pub const VID: u16 = 0x14ED;
+/// MVX2U: XLR-to-USB audio interface.
 pub const PID: u16 = 0x1013;
+/// MV6: USB gaming microphone.
+pub const MV6_PID: u16 = 0x1026;
+
+/// Which Shure device model is connected. Drives capability decisions
+/// throughout the app (which controls to show, gain max, etc.).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DeviceModel {
+    Mvx2u,
+    Mv6,
+}
+
+impl DeviceModel {
+    /// Maximum manual gain in dB for this device.
+    pub fn max_gain_db(&self) -> u8 {
+        match self {
+            DeviceModel::Mvx2u => 60,
+            DeviceModel::Mv6 => 36,
+        }
+    }
+
+    /// Human-readable model name for display.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            DeviceModel::Mvx2u => "Shure MVX2U",
+            DeviceModel::Mv6 => "Shure MV6",
+        }
+    }
+}
 pub const PACKET_SIZE: usize = 64;
 
 // Fixed header bytes
@@ -111,35 +171,79 @@ const EQ_BAND_ADDRS: [([u8; 2], [u8; 2]); 5] = [
 /// The center frequency (Hz) for each of the 5 EQ bands. Fixed by hardware.
 pub const EQ_BAND_FREQS: [u16; 5] = [100, 250, 1000, 4000, 10000];
 
+// ── MV6-specific feature addresses ───────────────────────────────────────────
+//
+// Confirmed by GET probe against MV6 firmware 1.3.0.6.
+// Gain, Mute, HPF, and Auto Level share addresses with the MVX2U.
+
+/// MV6 real-time denoiser. 0=off, 1=on. GET-readable and writable.
+const MV6_FEAT_DENOISER: [u8; 2] = [0x01, 0x58];
+/// MV6 popper stopper. 0=off, 1=on. Confirmed by MOTIV app probe diff — toggling
+/// popper stopper in MOTIV changes this address between [00] and [01].
+const MV6_FEAT_POPPER_STOPPER: [u8; 2] = [0x03, 0x81];
+/// MV6 mute button disable. Address [0x0C, 0x00] confirmed by Wireshark capture.
+/// SET uses cmd [02 02 01], HDR_CONSTANT=0x00, inverted encoding (0x00=disabled, 0x01=active).
+/// State is persisted host-side in mv6_state.toml since GET is unreliable.
+const MV6_FEAT_MUTE_BTN_DISABLE: [u8; 2] = [0x0C, 0x00];
+/// MV6 tone character. 16-bit signed big-endian, units: percent.
+/// Range: -100 (Dark) to +100 (Bright) in steps of 10. 0 = Natural (default).
+const MV6_FEAT_TONE: [u8; 2] = [0x02, 0x04];
+/// MV6 gain lock (Manual mode only). 0=unlocked, 1=locked.
+/// Confirmed by probe diff against MOTIV Mix with gain lock on/off.
+/// SET encoding assumed standard CMD_SET_FEAT / prefix 0x00 — verify with usbmon if misbehaving.
+const MV6_FEAT_GAIN_LOCK: [u8; 2] = [0x01, 0xF3];
 // ── Phantom power value encoding ──────────────────────────────────────────────
 const PHANTOM_ON: u8 = 0x30; // 48 decimal = 48V
 const PHANTOM_OFF: u8 = 0x00;
 
 // ── Device state (fully decoded) ──────────────────────────────────────────────
+//
+// Fields used only by one model are noted inline. Unused fields for a given
+// model remain at their default values and are not sent to the device.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceState {
-    /// Manual gain in dB, range 0–60.
-    /// Defaults to 36 dB, which matches the MVX2U factory default.
+    /// Manual gain in dB. MVX2U range: 0–60. MV6 range: 0–36.
+    /// Defaults to 36 dB (MVX2U factory default; also MV6 maximum).
     pub gain_db: u8,
     pub mode: InputMode,
-    /// Mic position for Auto Level mode.
+    /// Mic position for Auto Level mode. MVX2U only.
     pub auto_position: MicPosition,
-    /// Tone preset for Auto Level mode.
+    /// Tone preset for Auto Level mode. MVX2U only.
     pub auto_tone: AutoTone,
-    /// Gain preset for Auto Level mode.
+    /// Gain preset for Auto Level mode. MVX2U only.
     pub auto_gain: AutoGain,
     pub muted: bool,
+    /// 48V phantom power. MVX2U only (XLR input).
     pub phantom_power: bool,
-    /// Monitor mix: 0 = 100% mic, 100 = 100% playback.
+    /// Monitor mix: 0 = 100% mic, 100 = 100% playback. MVX2U only.
     pub monitor_mix: u8,
+    /// Limiter. MVX2U only.
     pub limiter_enabled: bool,
+    /// Compressor preset. MVX2U only.
     pub compressor: CompressorPreset,
     pub hpf: HpfFrequency,
+    /// 5-band parametric EQ master enable. MVX2U only.
     pub eq_enabled: bool,
-    /// 5 EQ bands at fixed frequencies (100, 250, 1k, 4k, 10k Hz).
+    /// 5 EQ bands at fixed frequencies (100, 250, 1k, 4k, 10k Hz). MVX2U only.
     pub eq_bands: [EqBand; 5],
-    /// Whether the device configuration is locked against changes.
+    /// Config lock (ignores SET commands while locked). MVX2U only.
     pub locked: bool,
+
+    // ── MV6-specific fields ───────────────────────────────────────────────────
+    /// Real-time denoiser. MV6 only.
+    pub denoiser_enabled: bool,
+    /// Popper stopper. MV6 only. Address [0x03, 0x81] confirmed by MOTIV app probe diff.
+    pub popper_stopper_enabled: bool,
+    /// Mute button disable. MV6 only. Address [0x0C, 0x00] confirmed by Wireshark capture.
+    /// State persisted host-side in mv6_state.toml; see presets::Mv6State.
+    pub mute_btn_disabled: bool,
+    /// Tone character. MV6 only. Range: -10 to +10 (displayed as × 10%).
+    /// -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
+    pub tone: i8,
+    /// Gain lock (Manual mode only). MV6 only. Prevents gain from being changed
+    /// while locked. Address [0x01, 0xF3] confirmed by probe diff.
+    pub mv6_gain_locked: bool,
+
     /// Device serial number string, populated after connection.
     pub serial_number: String,
 }
@@ -161,6 +265,12 @@ impl Default for DeviceState {
             eq_enabled: false,
             eq_bands: [EqBand::default(); 5],
             locked: false,
+            // MV6 defaults match factory reset state observed in MOTIV app.
+            denoiser_enabled: false,
+            popper_stopper_enabled: true,
+            mute_btn_disabled: false,
+            tone: 0, // Natural
+            mv6_gain_locked: false,
             serial_number: String::from("Unknown"),
         }
     }
@@ -618,6 +728,21 @@ pub fn cmd_get_eq_enable(seq: u8) -> Vec<u8> {
     cmd_get(seq, &FEAT_EQ)
 }
 
+// ── MV6 GET constructors ──────────────────────────────────────────────────────
+
+pub fn cmd_get_mv6_denoiser(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_FEAT_DENOISER)
+}
+pub fn cmd_get_mv6_popper_stopper(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_FEAT_POPPER_STOPPER)
+}
+pub fn cmd_get_mv6_tone(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_FEAT_TONE)
+}
+pub fn cmd_get_mv6_gain_lock(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_FEAT_GAIN_LOCK)
+}
+
 // ── Lock command constructors ─────────────────────────────────────────────────
 //
 // Lock uses a distinct command type (CMD_GET_LOCK / CMD_SET_LOCK) and a
@@ -641,14 +766,14 @@ pub fn cmd_set_lock(seq: u8, locked: bool) -> Vec<u8> {
 }
 
 pub fn cmd_get_eq_band_enable(seq: u8, band: usize) -> Vec<u8> {
-    debug_assert!(
+    assert!(
         band < EQ_BAND_ADDRS.len(),
         "band index out of range: {band}"
     );
     cmd_get(seq, &EQ_BAND_ADDRS[band].0)
 }
 pub fn cmd_get_eq_band_gain(seq: u8, band: usize) -> Vec<u8> {
-    debug_assert!(
+    assert!(
         band < EQ_BAND_ADDRS.len(),
         "band index out of range: {band}"
     );
@@ -657,10 +782,11 @@ pub fn cmd_get_eq_band_gain(seq: u8, band: usize) -> Vec<u8> {
 
 // ── Public SET constructors ───────────────────────────────────────────────────
 
-/// Set manual gain. `gain_db` is clamped to 0–60.
-/// Encoded as `gain_db * 100` in 16-bit big-endian.
+/// Set manual gain. `gain_db` is the already-clamped value from `device.rs::set_gain`,
+/// which enforces the model-specific ceiling (60 dB MVX2U, 36 dB MV6).
+/// Encoded as `gain_db * 100` in 16-bit big-endian. Shared by both devices.
 pub fn cmd_set_gain(seq: u8, gain_db: u8) -> Vec<u8> {
-    let raw = (gain_db.min(60) as u16) * 100;
+    let raw = gain_db as u16 * 100;
     cmd_set(seq, &FEAT_GAIN, &raw.to_be_bytes())
 }
 
@@ -720,7 +846,7 @@ pub fn cmd_set_eq_enable(seq: u8, enabled: bool) -> Vec<u8> {
 
 /// Set EQ band enable. `band` is 0–4.
 pub fn cmd_set_eq_band_enable(seq: u8, band: usize, enabled: bool) -> Vec<u8> {
-    debug_assert!(
+    assert!(
         band < EQ_BAND_ADDRS.len(),
         "band index out of range: {band}"
     );
@@ -731,13 +857,80 @@ pub fn cmd_set_eq_band_enable(seq: u8, band: usize, enabled: bool) -> Vec<u8> {
 /// nearest even value (hardware supports −8, −6, −4, −2, 0, 2, 4, 6 only).
 /// Encoded as `gain_db * 10` in 16-bit signed big-endian.
 pub fn cmd_set_eq_band_gain(seq: u8, band: usize, gain_db: i8) -> Vec<u8> {
-    debug_assert!(
+    assert!(
         band < EQ_BAND_ADDRS.len(),
         "band index out of range: {band}"
     );
     let clamped = gain_db.clamp(-8, 6);
     let raw = (clamped as i16 * 10).to_be_bytes();
     cmd_set(seq, &EQ_BAND_ADDRS[band].1, &raw)
+}
+
+// ── MV6 SET constructors ──────────────────────────────────────────────────────
+
+/// Enable or disable the MV6 real-time denoiser.
+pub fn cmd_set_mv6_denoiser(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set(seq, &MV6_FEAT_DENOISER, &[u8::from(enabled)])
+}
+
+/// Enable or disable the MV6 popper stopper.
+pub fn cmd_set_mv6_popper_stopper(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set(seq, &MV6_FEAT_POPPER_STOPPER, &[u8::from(enabled)])
+}
+
+/// Enable or disable the MV6 mute button.
+/// `disabled = true` disables the physical mute button on the device.
+///
+/// Quirks confirmed by Wireshark capture against MOTIV app:
+///   - cmd bytes are [0x02, 0x02, 0x01] (CMD_SET_LOCK class, not CMD_SET_FEAT)
+///   - HDR_CONSTANT is 0x00 (not the usual 0x03)
+///   - no is_mix prefix — payload is [addr_hi, addr_lo, 0x60, enable_byte]
+///   - value encoding is inverted: 0x00=button disabled, 0x01=button active
+pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
+    let enable_byte: u8 = if disabled { 0x00 } else { 0x01 };
+    let mix_byte: u8 = 0x60;
+    let payload = [MV6_FEAT_MUTE_BTN_DISABLE[0], MV6_FEAT_MUTE_BTN_DISABLE[1], mix_byte, enable_byte];
+    let data_len = (3 + payload.len() + 2) as u8;
+
+    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
+    inner.push(HEADER_MAGIC[0]);
+    inner.push(HEADER_MAGIC[1]);
+    inner.push(seq);
+    inner.push(0x00); // HDR_CONSTANT: 0x00 for this command (not the usual 0x03)
+    inner.push(HDR_END);
+    inner.push(data_len);
+    inner.push(DATA_START);
+    inner.push(data_len);
+    inner.extend_from_slice(&CMD_SET_LOCK); // [02 02 01], not CMD_SET_FEAT [02 02 02]
+    inner.extend_from_slice(&payload);
+
+    let total_len = (inner.len() + 2) as u8;
+    let crc = crc16_ansi(&inner);
+
+    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
+    pkt.push(REPORT_ID);
+    pkt.push(total_len);
+    pkt.extend_from_slice(&inner);
+    pkt.push((crc >> 8) as u8);
+    pkt.push((crc & 0xFF) as u8);
+    pkt.resize(PACKET_SIZE, 0x00);
+    pkt
+}
+
+/// Set the MV6 tone character.
+/// `tone` is clamped to −10..+10 and encoded as `tone * 10` in 16-bit signed big-endian.
+/// -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
+pub fn cmd_set_mv6_tone(seq: u8, tone: i8) -> Vec<u8> {
+    let clamped = tone.clamp(-10, 10);
+    let raw = (clamped as i16 * 10).to_be_bytes();
+    cmd_set(seq, &MV6_FEAT_TONE, &raw)
+}
+
+/// Lock or unlock the MV6 gain in Manual mode.
+/// `locked = true` prevents gain changes; `false` allows them.
+/// Must be followed by a CONFIRM packet (handled by `send_set`).
+pub fn cmd_set_mv6_gain_lock(seq: u8, locked: bool) -> Vec<u8> {
+    cmd_set(seq, &MV6_FEAT_GAIN_LOCK, &[u8::from(locked)])
 }
 
 // ── Response decoder ──────────────────────────────────────────────────────────
@@ -760,7 +953,9 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                 return false;
             }
             let raw = u16::from_be_bytes([value[0], value[1]]);
-            state.gain_db = (raw / 100).min(60) as u8;
+            // No model-specific clamp here — apply_response is model-agnostic.
+            // The adjustment layer (adjust_focused) enforces device_model.max_gain_db().
+            state.gain_db = (raw / 100) as u8;
             true
         }
         f if f == FEAT_MUTE => {
@@ -842,6 +1037,44 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                 return false;
             }
             state.eq_enabled = value[0] != 0;
+            true
+        }
+        // ── MV6-specific features ─────────────────────────────────────────────
+        f if f == MV6_FEAT_DENOISER => {
+            if value.is_empty() {
+                return false;
+            }
+            state.denoiser_enabled = value[0] != 0;
+            true
+        }
+        f if f == MV6_FEAT_POPPER_STOPPER => {
+            if value.is_empty() {
+                return false;
+            }
+            state.popper_stopper_enabled = value[0] != 0;
+            true
+        }
+        f if f == MV6_FEAT_MUTE_BTN_DISABLE => {
+            if value.is_empty() {
+                return false;
+            }
+            state.mute_btn_disabled = value[0] != 0;
+            true
+        }
+        f if f == MV6_FEAT_TONE => {
+            if value.len() < 2 {
+                return false;
+            }
+            let raw = i16::from_be_bytes([value[0], value[1]]);
+            // Clamp and round to step: divide by 10, clamp to -10..+10.
+            state.tone = (raw / 10).clamp(-10, 10) as i8;
+            true
+        }
+        f if f == MV6_FEAT_GAIN_LOCK => {
+            if value.is_empty() {
+                return false;
+            }
+            state.mv6_gain_locked = value[0] != 0;
             true
         }
         _ => {
@@ -1009,13 +1242,6 @@ mod tests {
         // value at pkt[16..18]
         let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
         assert_eq!(raw, 3600, "36 dB must encode as 3600");
-    }
-
-    #[test]
-    fn set_gain_clamps_at_60() {
-        let pkt = cmd_set_gain(0, 200);
-        let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
-        assert_eq!(raw, 6000, "gain clamped to 60 dB = raw 6000");
     }
 
     #[test]
@@ -1298,11 +1524,12 @@ mod tests {
     }
 
     #[test]
-    fn apply_response_gain_clamps_at_60() {
+    fn apply_response_gain_no_clamp() {
         let mut state = DeviceState::default();
-        // raw 9000 / 100 = 90 dB, must clamp to 60
+        // apply_response is model-agnostic — it does not clamp to any model's max.
+        // raw 9000 / 100 = 90; the model-specific ceiling is enforced in adjust_focused.
         let _ = apply_response(FEAT_GAIN, &[0x23, 0x28], &mut state);
-        assert_eq!(state.gain_db, 60);
+        assert_eq!(state.gain_db, 90);
     }
 
     #[test]
@@ -1783,5 +2010,186 @@ mod tests {
         for w in seq.windows(2) {
             assert_eq!(w[0].cycle_next(), w[1]);
         }
+    }
+
+    // ── MV6 protocol tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn mv6_denoiser_packet_roundtrip() {
+        for (enabled, expected_byte) in [(false, 0x00u8), (true, 0x01u8)] {
+            let pkt = cmd_set_mv6_denoiser(0, enabled);
+            assert_eq!(pkt.len(), PACKET_SIZE);
+            assert_eq!(&pkt[14..16], &MV6_FEAT_DENOISER, "feature address mismatch");
+            assert_eq!(pkt[16], expected_byte);
+        }
+    }
+
+    #[test]
+    fn mv6_denoiser_apply_response_roundtrip() {
+        for (bytes, expected) in [(&[0x00u8][..], false), (&[0x01u8][..], true)] {
+            let mut state = DeviceState::default();
+            assert!(apply_response(MV6_FEAT_DENOISER, bytes, &mut state));
+            assert_eq!(state.denoiser_enabled, expected);
+        }
+    }
+
+    #[test]
+    fn mv6_denoiser_apply_response_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV6_FEAT_DENOISER, &[], &mut state));
+    }
+
+    #[test]
+    fn mv6_tone_packet_roundtrip() {
+        for (tone, expected_raw) in [(-10i8, -100i16), (0, 0), (10, 100)] {
+            let pkt = cmd_set_mv6_tone(0, tone);
+            assert_eq!(pkt.len(), PACKET_SIZE);
+            assert_eq!(&pkt[14..16], &MV6_FEAT_TONE, "feature address mismatch");
+            let encoded = i16::from_be_bytes([pkt[16], pkt[17]]);
+            assert_eq!(encoded, expected_raw, "tone encoding mismatch for {tone}");
+        }
+    }
+
+    #[test]
+    fn mv6_tone_clamps_to_range() {
+        // Values outside -10..+10 must be clamped before encoding.
+        let pkt_low = cmd_set_mv6_tone(0, -99);
+        let encoded_low = i16::from_be_bytes([pkt_low[16], pkt_low[17]]);
+        assert_eq!(encoded_low, -100, "clamped to -10 * 10");
+
+        let pkt_high = cmd_set_mv6_tone(0, 99);
+        let encoded_high = i16::from_be_bytes([pkt_high[16], pkt_high[17]]);
+        assert_eq!(encoded_high, 100, "clamped to +10 * 10");
+    }
+
+    #[test]
+    fn mv6_tone_apply_response_roundtrip() {
+        let cases: &[(&[u8], i8)] = &[
+            (&[0xFF, 0x9C], -10), // -100 / 10 = -10
+            (&[0x00, 0x00], 0),   // 0 = Natural
+            (&[0x00, 0x64], 10),  // +100 / 10 = +10
+        ];
+        for (bytes, expected) in cases {
+            let mut state = DeviceState::default();
+            assert!(apply_response(MV6_FEAT_TONE, bytes, &mut state));
+            assert_eq!(state.tone, *expected);
+        }
+    }
+
+    #[test]
+    fn mv6_tone_apply_response_short_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV6_FEAT_TONE, &[0x00], &mut state));
+    }
+
+    #[test]
+    fn mv6_popper_stopper_packet_has_correct_address() {
+        let pkt = cmd_set_mv6_popper_stopper(0, true);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        // Address confirmed by MOTIV app probe diff: [03 81] toggles with popper stopper.
+        assert_eq!(&pkt[14..16], &[0x03u8, 0x81]);
+        assert_eq!(pkt[16], 0x01);
+    }
+
+    #[test]
+    fn mv6_popper_stopper_apply_response_roundtrip() {
+        for (bytes, expected) in [(&[0x00u8][..], false), (&[0x01u8][..], true)] {
+            let mut state = DeviceState::default();
+            assert!(apply_response(MV6_FEAT_POPPER_STOPPER, bytes, &mut state));
+            assert_eq!(state.popper_stopper_enabled, expected);
+        }
+    }
+
+    #[test]
+    fn mv6_popper_stopper_apply_response_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV6_FEAT_POPPER_STOPPER, &[], &mut state));
+    }
+
+    #[test]
+    fn mv6_mute_btn_disable_packet_has_correct_address() {
+        // SET confirmed by Wireshark: cmd=[02 02 01], HDR_CONSTANT=0x00,
+        // inverted encoding (0x00=disabled, 0x01=active).
+        let pkt_on = cmd_set_mv6_mute_btn_disable(0, true);
+        assert_eq!(pkt_on.len(), PACKET_SIZE);
+        assert_eq!(pkt_on[5], 0x00, "HDR_CONSTANT must be 0x00");
+        assert_eq!(&pkt_on[10..13], &[0x02u8, 0x02, 0x01], "cmd must be [02 02 01]");
+        assert_eq!(&pkt_on[13..15], &MV6_FEAT_MUTE_BTN_DISABLE);
+        assert_eq!(pkt_on[15], 0x60, "mix_byte must be 0x60");
+        assert_eq!(pkt_on[16], 0x00, "disabled=true encodes as 0x00");
+
+        let pkt_off = cmd_set_mv6_mute_btn_disable(0, false);
+        assert_eq!(pkt_off[16], 0x01, "disabled=false encodes as 0x01");
+    }
+
+    #[test]
+    fn mv6_mute_btn_disable_apply_response_roundtrip() {
+        for (bytes, expected) in [(&[0x00u8][..], false), (&[0x01u8][..], true)] {
+            let mut state = DeviceState::default();
+            assert!(apply_response(MV6_FEAT_MUTE_BTN_DISABLE, bytes, &mut state));
+            assert_eq!(state.mute_btn_disabled, expected);
+        }
+    }
+
+    #[test]
+    fn mv6_mute_btn_disable_apply_response_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV6_FEAT_MUTE_BTN_DISABLE, &[], &mut state));
+    }
+
+    #[test]
+    fn device_model_max_gain_db() {
+        assert_eq!(DeviceModel::Mvx2u.max_gain_db(), 60);
+        assert_eq!(DeviceModel::Mv6.max_gain_db(), 36);
+    }
+
+    // ── MV6 gain lock ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn mv6_gain_lock_get_packet_structure() {
+        let pkt = cmd_get_mv6_gain_lock(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(&pkt[10..13], &CMD_GET_FEAT, "must use CMD_GET_FEAT");
+        assert_eq!(pkt[13], 0x00, "standard prefix must be 0x00");
+        assert_eq!(&pkt[14..16], &MV6_FEAT_GAIN_LOCK);
+    }
+
+    #[test]
+    fn mv6_gain_lock_set_packet_encodes_value() {
+        let pkt_lock = cmd_set_mv6_gain_lock(0, true);
+        assert_eq!(pkt_lock.len(), PACKET_SIZE);
+        assert_eq!(&pkt_lock[10..13], &CMD_SET_FEAT, "must use CMD_SET_FEAT");
+        assert_eq!(pkt_lock[13], 0x00, "standard prefix must be 0x00");
+        assert_eq!(&pkt_lock[14..16], &MV6_FEAT_GAIN_LOCK);
+        assert_eq!(pkt_lock[16], 0x01, "locked=true must encode as 0x01");
+
+        let pkt_unlock = cmd_set_mv6_gain_lock(0, false);
+        assert_eq!(pkt_unlock[16], 0x00, "locked=false must encode as 0x00");
+    }
+
+    #[test]
+    fn mv6_gain_lock_set_packet_has_valid_crc() {
+        for locked in [true, false] {
+            let pkt = cmd_set_mv6_gain_lock(0, locked);
+            let total_len = pkt[1] as usize;
+            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
+            let computed_crc = crc16_ansi(&pkt[2..total_len]);
+            assert_eq!(stored_crc, computed_crc, "CRC must be valid for locked={locked}");
+        }
+    }
+
+    #[test]
+    fn mv6_gain_lock_apply_response_roundtrip() {
+        for (bytes, expected) in [(&[0x00u8][..], false), (&[0x01u8][..], true)] {
+            let mut state = DeviceState::default();
+            assert!(apply_response(MV6_FEAT_GAIN_LOCK, bytes, &mut state));
+            assert_eq!(state.mv6_gain_locked, expected);
+        }
+    }
+
+    #[test]
+    fn mv6_gain_lock_apply_response_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV6_FEAT_GAIN_LOCK, &[], &mut state));
     }
 }

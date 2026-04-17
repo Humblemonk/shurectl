@@ -1,11 +1,14 @@
-//! shurectl — Interactive TUI configurator for the Shure MVX2U
+//! shurectl — Interactive TUI configurator for Shure USB microphones
+//!
+//! Supports:
+//!   - Shure MVX2U (XLR-to-USB audio interface)
+//!   - Shure MV6   (USB gaming microphone)
 //!
 //! Usage:
 //!   shurectl               # Connect to device, launch TUI
 //!   shurectl --demo        # Run without a device (for testing)
 //!   shurectl --list        # List detected devices and exit
-//!
-//! See README.md for platform-specific setup and permissions.
+//!   shurectl --device PATH # Open a specific device by HID path
 
 mod app;
 mod device;
@@ -21,37 +24,35 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    },
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, DeviceAction};
-use device::Mvx2u;
+use device::ShureDevice;
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
-use protocol::InputMode;
+use protocol::{DeviceModel, InputMode};
 
 #[derive(Parser)]
 #[command(
     name = "shurectl",
     version,
-    about = "shurectl — TUI configurator for the Shure MVX2U audio interface"
+    about = "shurectl — TUI configurator for Shure MVX2U and MV6 USB microphones"
 )]
 struct Cli {
     /// Run in demo mode without a real device
     #[arg(long, short)]
     demo: bool,
 
-    /// List connected MVX2U devices and exit
+    /// List connected Shure devices and exit
     #[arg(long, short)]
     list: bool,
 
     /// Open a specific device by its HID path.
-    /// Without this flag, the first detected MVX2U is opened.
+    /// Without this flag, the first detected device is opened (error if multiple found).
     /// Use --list to see available paths.
     #[arg(long, short = 'D')]
     device: Option<String>,
@@ -63,15 +64,15 @@ fn main() -> Result<()> {
     if cli.list {
         let devs = device::list_devices();
         if devs.is_empty() {
-            println!("No Shure MVX2U devices found.");
+            println!("No Shure MVX2U or MV6 devices found.");
             #[cfg(target_os = "linux")]
             println!("Check that the device is plugged in and the udev rule is installed.");
             #[cfg(not(target_os = "linux"))]
             println!("Check that the device is plugged in and accessible.");
         } else {
-            println!("Found {} MVX2U device(s):", devs.len());
+            println!("Found {} Shure device(s):", devs.len());
             for d in devs {
-                println!("  {} | S/N: {}", d.path, d.serial);
+                println!("  {} | {} | S/N: {}", d.path, d.model.display_name(), d.serial);
             }
         }
         return Ok(());
@@ -81,9 +82,9 @@ fn main() -> Result<()> {
         (None, true)
     } else {
         let open_result = if let Some(ref path) = cli.device {
-            Mvx2u::open_path(path)
+            ShureDevice::open_path(path)
         } else {
-            Mvx2u::open()
+            ShureDevice::open()
         };
         match open_result {
             Ok(d) => (Some(d), false),
@@ -95,8 +96,14 @@ fn main() -> Result<()> {
         }
     };
 
+    let device_model = device
+        .as_ref()
+        .map(|d| d.model)
+        .unwrap_or(DeviceModel::Mvx2u);
+
     let mut app = App {
         demo_mode,
+        device_model,
         ..App::default()
     };
 
@@ -104,8 +111,15 @@ fn main() -> Result<()> {
         match dev.get_state() {
             Ok(mut state) => {
                 state.serial_number = dev.serial_number.clone();
+                if dev.model == DeviceModel::Mv6 {
+                    let mv6 = presets::load_mv6_state();
+                    state.mute_btn_disabled = mv6.mute_btn_disabled;
+                }
                 app.device_state = state;
-                app.set_ok("Connected — state loaded from device.");
+                app.set_ok(format!(
+                    "Connected to {} — state loaded.",
+                    dev.model.display_name()
+                ));
             }
             Err(e) => {
                 app.set_err(format!("Connected but failed to read state: {e}"));
@@ -117,8 +131,6 @@ fn main() -> Result<()> {
 
     app.presets = presets::load_all_presets();
 
-    // Start the input level meter. _meter_stream must stay alive —
-    // dropping it stops the capture thread.
     let _meter_stream = if !demo_mode {
         match start_meter(Arc::clone(&app.meter_level), Arc::clone(&app.peak_window)) {
             MeterStatus::Running(s) => Some(s),
@@ -133,18 +145,14 @@ fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_event_loop(&mut terminal, &mut app, &device);
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -157,7 +165,7 @@ fn main() -> Result<()> {
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    device: &Option<Mvx2u>,
+    device: &Option<ShureDevice>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
@@ -193,7 +201,6 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
         || (code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL))
     {
-        // Quit is blocked while editing a preset name — Esc must be used first.
         if !app.editing_preset_name {
             app.should_quit = true;
         }
@@ -206,7 +213,6 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             KeyCode::Enter | KeyCode::Esc => {
                 app.editing_preset_name = false;
                 let i = app.editing_preset_index;
-                // Persist the updated name if the slot is filled.
                 if app.presets[i].is_some() {
                     return Some(DeviceAction::PersistPresetName(i));
                 }
@@ -219,11 +225,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
             KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
                 let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i] {
-                    // Cap name length at 40 characters.
-                    if slot.name.len() < 40 {
-                        slot.name.push(c);
-                    }
+                if let Some(slot) = &mut app.presets[i]
+                    && slot.name.len() < 40
+                {
+                    slot.name.push(c);
                 }
             }
             _ => {}
@@ -263,7 +268,6 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         KeyCode::Left | KeyCode::Char('h') => app.adjust_focused(-1),
         KeyCode::Right | KeyCode::Char('l') => app.adjust_focused(1),
         KeyCode::Enter | KeyCode::Char(' ') => {
-            // On PresetName: enter edit mode.
             if let app::Focus::PresetName(i) = app.focus
                 && app.presets[i].is_some()
             {
@@ -273,7 +277,6 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
             app.toggle_focused()
         }
-        // Preset-specific keys — only active on the Presets tab.
         KeyCode::Char('s') if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetName(i) | app::Focus::PresetActions(i) = app.focus {
                 Some(DeviceAction::SavePreset(i))
@@ -296,7 +299,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     }
 }
 
-fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
+fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceAction) {
     let result = match &action {
         DeviceAction::Refresh => {
             if let Some(dev) = device {
@@ -344,7 +347,7 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
         }
         DeviceAction::SetLock(locked) => {
             if *locked {
-                app.set_ok("Device locked — SET commands will be ignored until unlocked.");
+                app.set_ok("Device locked.");
             } else {
                 app.set_ok("Device unlocked.");
             }
@@ -382,6 +385,48 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             app.set_ok(format!("EQ Band {} → {:+} dB", band + 1, gain_db));
             send_if_connected(device, |d| d.set_eq_band_gain(*band, *gain_db))
         }
+        // ── MV6 actions ───────────────────────────────────────────────────────
+        DeviceAction::SetMv6Denoiser(en) => {
+            app.set_ok(format!("Denoiser → {}", if *en { "ON" } else { "OFF" }));
+            send_if_connected(device, |d| d.set_mv6_denoiser(*en))
+        }
+        DeviceAction::SetMv6PopperStopper(en) => {
+            app.set_ok(format!("Popper Stopper → {}", if *en { "ON" } else { "OFF" }));
+            send_if_connected(device, |d| d.set_mv6_popper_stopper(*en))
+        }
+        DeviceAction::SetMv6MuteBtnDisable(disabled) => {
+            app.set_ok(format!(
+                "Mute Button → {}",
+                if *disabled { "Disabled" } else { "Enabled" }
+            ));
+            if let Err(e) = presets::save_mv6_state(&presets::Mv6State {
+                mute_btn_disabled: *disabled,
+            }) {
+                eprintln!("Warning: failed to save MV6 state: {e}");
+            }
+            send_if_connected(device, |d| d.set_mv6_mute_btn_disable(*disabled))
+        }
+        DeviceAction::SetMv6Tone(tone) => {
+            let pct = *tone as i32 * 10;
+            let label = if pct < 0 {
+                format!("{}% Dark", pct.abs())
+            } else if pct > 0 {
+                format!("{}% Bright", pct)
+            } else {
+                "Natural".to_string()
+            };
+            app.set_ok(format!("Tone → {label}"));
+            send_if_connected(device, |d| d.set_mv6_tone(*tone))
+        }
+        DeviceAction::SetMv6GainLock(locked) => {
+            app.set_ok(if *locked {
+                "Gain locked.".to_string()
+            } else {
+                "Gain unlocked.".to_string()
+            });
+            send_if_connected(device, |d| d.set_mv6_gain_lock(*locked))
+        }
+        // ── Preset actions ────────────────────────────────────────────────────
         DeviceAction::SavePreset(i) => {
             let name = app.presets[*i]
                 .as_ref()
@@ -401,8 +446,16 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
             if let Some(slot) = &app.presets[*i].clone() {
                 slot.apply_to_device_state(&mut app.device_state);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
-                // Apply every setting to the device.
-                apply_preset_to_device(device, &app.device_state)
+                let result = apply_preset_to_device(device, &app.device_state, app.device_model);
+                // mute_btn_disabled cannot be read back from the MV6, so we persist
+                // the preset value to mv6_state.toml so a restart doesn't revert it.
+                if app.device_model == DeviceModel::Mv6
+                    && let Err(e) = presets::save_mv6_state(&presets::Mv6State {
+                        mute_btn_disabled: app.device_state.mute_btn_disabled,
+                    }) {
+                        eprintln!("Warning: failed to persist MV6 state after preset load: {e}");
+                    }
+                result
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
                 Ok(())
@@ -440,9 +493,9 @@ fn apply_action(app: &mut App, device: &Option<Mvx2u>, action: DeviceAction) {
     }
 }
 
-fn send_if_connected<F>(device: &Option<Mvx2u>, f: F) -> Result<()>
+fn send_if_connected<F>(device: &Option<ShureDevice>, f: F) -> Result<()>
 where
-    F: FnOnce(&Mvx2u) -> Result<()>,
+    F: FnOnce(&ShureDevice) -> Result<()>,
 {
     match device {
         Some(dev) => f(dev),
@@ -452,23 +505,38 @@ where
 
 /// Send every configurable field of `state` to the device.
 /// Called after loading a preset to bring the hardware into sync.
-fn apply_preset_to_device(device: &Option<Mvx2u>, state: &protocol::DeviceState) -> Result<()> {
+fn apply_preset_to_device(
+    device: &Option<ShureDevice>,
+    state: &protocol::DeviceState,
+    model: DeviceModel,
+) -> Result<()> {
     send_if_connected(device, |d| {
         d.set_mode(state.mode == InputMode::Auto)?;
         d.set_gain(state.gain_db)?;
-        d.set_auto_position(&state.auto_position)?;
-        d.set_auto_tone(&state.auto_tone)?;
-        d.set_auto_gain(&state.auto_gain)?;
         d.set_mute(state.muted)?;
-        d.set_phantom(state.phantom_power)?;
-        d.set_monitor_mix(state.monitor_mix)?;
-        d.set_limiter(state.limiter_enabled)?;
-        d.set_compressor(&state.compressor)?;
         d.set_hpf(&state.hpf)?;
-        d.set_eq_enable(state.eq_enabled)?;
-        for (band, eq) in state.eq_bands.iter().enumerate() {
-            d.set_eq_band_enable(band, eq.enabled)?;
-            d.set_eq_band_gain(band, eq.gain_db)?;
+        match model {
+            DeviceModel::Mvx2u => {
+                d.set_auto_position(&state.auto_position)?;
+                d.set_auto_tone(&state.auto_tone)?;
+                d.set_auto_gain(&state.auto_gain)?;
+                d.set_phantom(state.phantom_power)?;
+                d.set_monitor_mix(state.monitor_mix)?;
+                d.set_limiter(state.limiter_enabled)?;
+                d.set_compressor(&state.compressor)?;
+                d.set_eq_enable(state.eq_enabled)?;
+                for (band, eq) in state.eq_bands.iter().enumerate() {
+                    d.set_eq_band_enable(band, eq.enabled)?;
+                    d.set_eq_band_gain(band, eq.gain_db)?;
+                }
+            }
+            DeviceModel::Mv6 => {
+                d.set_mv6_denoiser(state.denoiser_enabled)?;
+                d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+                d.set_mv6_tone(state.tone)?;
+                d.set_mv6_gain_lock(state.mv6_gain_locked)?;
+            }
         }
         Ok(())
     })

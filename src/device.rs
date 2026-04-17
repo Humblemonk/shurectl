@@ -1,15 +1,12 @@
-//! Device I/O: wraps hidapi for the MVX2U.
+//! Device I/O: wraps hidapi for Shure USB microphones.
 //!
-//! The MVX2U exposes three USB interfaces:
-//!   Interface 0 – USB Audio (class 0x01, handled by the kernel's snd-usb-audio)
-//!   Interface 1 – USB Audio streaming
-//!   Interface 2 – HID configuration (the one we need)
+//! Supports two devices:
+//!   - Shure MVX2U (VID 0x14ED, PID 0x1013) — XLR-to-USB interface
+//!   - Shure MV6   (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!
-//! hidapi opens the HID configuration interface (interface 2) by matching VID/PID.
-//! On Linux, snd-usb-audio claims the audio interfaces, but hidapi uses /dev/hidrawN
-//! for the HID interface, bypassing the audio driver entirely — no kernel detach needed.
-//! On macOS, IOHidManager opens the HID interface alongside CoreAudio; the
-//! `macos-shared-device` hidapi feature enables non-exclusive access for this.
+//! Both devices expose a USB HID configuration interface alongside their
+//! audio interface. hidapi opens the HID interface via /dev/hidrawN on Linux,
+//! bypassing the audio driver entirely.
 //!
 //! # Transport
 //!
@@ -24,112 +21,145 @@
 //! # Sequence numbers
 //!
 //! Each packet carries an incrementing sequence number (0–255, wrapping). The
-//! device echoes this number in its response. We track it in `Mvx2u` and
+//! device echoes this number in its response. We track it in `ShureDevice` and
 //! increment after every `write()`.
+//!
+//! # Multi-device
+//!
+//! If only one Shure device is plugged in, `open()` opens it automatically.
+//! If multiple Shure devices are detected, `open()` returns an error directing
+//! the user to specify one with `--device`. Use `list_devices()` to enumerate.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use anyhow::{Context, Result, anyhow};
+use hidapi::{HidApi, HidDevice};
+
+use crate::protocol::{
+    self, DeviceModel, DeviceState, MV6_PID, PACKET_SIZE, PID, VID, apply_response, cmd_confirm,
+    cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor,
+    cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf,
+    cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_phantom,
+    cmd_get_mv6_denoiser,
+    cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_mv6_gain_lock, cmd_set_lock, parse_response,
+};
 
 #[cfg(target_os = "linux")]
 const ACCESS_HINT: &str = "ensure the udev rule is installed, or run with sudo";
 #[cfg(not(target_os = "linux"))]
 const ACCESS_HINT: &str = "ensure the device is plugged in and accessible";
-use hidapi::{HidApi, HidDevice};
-
-use crate::protocol::{
-    self, DeviceState, PACKET_SIZE, PID, VID, apply_response, cmd_confirm, cmd_get_auto_gain,
-    cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor, cmd_get_eq_band_enable,
-    cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf, cmd_get_limiter,
-    cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_phantom, cmd_set_lock,
-    parse_response,
-};
 
 /// How long to wait for a read response, in milliseconds.
 const READ_TIMEOUT_MS: i32 = 200;
 
-pub struct Mvx2u {
+/// A connected Shure USB microphone (MVX2U or MV6).
+pub struct ShureDevice {
     device: HidDevice,
+    /// Which device model this is — drives protocol and UI decisions.
+    pub model: DeviceModel,
     /// Packet sequence number. Increments after every write; wraps at 256.
     seq: AtomicU8,
     /// Serial number string read from the USB device descriptor at open time.
     pub serial_number: String,
 }
 
-impl Mvx2u {
-    /// Wrap an already-opened `HidDevice` into `Mvx2u`, reading the serial
-    /// number from the USB device descriptor.
-    fn from_hid_device(device: HidDevice) -> Self {
+impl ShureDevice {
+    fn from_hid_device(device: HidDevice, pid: u16) -> Self {
         device.set_blocking_mode(false).ok();
-        // Serial number is read from the USB string descriptor at open time —
-        // no HID packet exchange required.
         let serial_number = device
             .get_serial_number_string()
             .ok()
             .flatten()
             .unwrap_or_else(|| "(unknown)".to_string());
+        let model = if pid == MV6_PID {
+            DeviceModel::Mv6
+        } else {
+            DeviceModel::Mvx2u
+        };
         Self {
             device,
+            model,
             seq: AtomicU8::new(0),
             serial_number,
         }
     }
 
-    /// Open the first MVX2U found on the system.
+    /// Open the first (and only) Shure device found on the system.
+    ///
+    /// Returns an error if zero or more than one Shure device is detected.
+    /// Use `--device` to select a specific device when multiple are present.
     pub fn open() -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
-        let device = api.open(VID, PID).map_err(|e| {
-            anyhow!(
-                "Cannot open MVX2U (VID={:#06x} PID={:#06x}): {e}\n\
-                Hint: {ACCESS_HINT}.",
-                VID,
-                PID
-            )
-        })?;
-        Ok(Self::from_hid_device(device))
+
+        // Deduplicate by path — some devices expose multiple HID interfaces
+        // and hidapi enumerates each one separately under the same path.
+        let mut seen_paths = std::collections::HashSet::new();
+        let found: Vec<_> = api
+            .device_list()
+            .filter(|d| {
+                d.vendor_id() == VID
+                    && (d.product_id() == PID || d.product_id() == MV6_PID)
+                    && seen_paths.insert(d.path().to_string_lossy().into_owned())
+            })
+            .collect();
+
+        match found.len() {
+            0 => Err(anyhow!(
+                "No Shure MVX2U or MV6 device found.\nHint: {ACCESS_HINT}."
+            )),
+            1 => {
+                let info = found[0];
+                let pid = info.product_id();
+                let c_path =
+                    std::ffi::CString::new(info.path().to_string_lossy().as_ref())
+                        .map_err(|_| anyhow!("Device path contains a null byte"))?;
+                let device = api
+                    .open_path(c_path.as_c_str())
+                    .map_err(|e| anyhow!("Cannot open device: {e}\nHint: {ACCESS_HINT}."))?;
+                Ok(Self::from_hid_device(device, pid))
+            }
+            n => Err(anyhow!(
+                "{n} Shure devices found. Use --device to specify one.\n\
+                Run --list to see available devices and their paths."
+            )),
+        }
     }
 
-    /// Open the MVX2U at a specific HID device path (use `--list` to find paths).
-    ///
-    /// Returns an error if the path is not found in the device list or does
-    /// not identify a Shure MVX2U (VID/PID mismatch).
+    /// Open a Shure device at a specific HID device path.
     pub fn open_path(path: &str) -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
-        // Validate the path against the enumerated device list before opening.
-        // This catches both "no such hidraw node" and "wrong device type" with
-        // clear error messages, rather than a generic hidapi open failure.
         let info = api
             .device_list()
             .find(|d| d.path().to_string_lossy() == path)
             .ok_or_else(|| {
                 anyhow!("No device found at {path}. Use --list to see available devices.")
             })?;
-        if info.vendor_id() != VID || info.product_id() != PID {
+
+        let pid = info.product_id();
+        if info.vendor_id() != VID || (pid != PID && pid != MV6_PID) {
             return Err(anyhow!(
-                "{path} is not a Shure MVX2U (VID={:#06x} PID={:#06x}); \
-                expected VID={:#06x} PID={:#06x}.",
+                "{path} is not a supported Shure device \
+                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x} or {:#06x}.",
                 info.vendor_id(),
-                info.product_id(),
+                pid,
                 VID,
-                PID
+                PID,
+                MV6_PID,
             ));
         }
-        // Open by path. We validated above that this path exists and matches
-        // VID/PID, so any remaining error here is a permissions problem.
+
         let c_path = std::ffi::CString::new(path)
             .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
         let device = api
             .open_path(c_path.as_c_str())
             .map_err(|e| anyhow!("Cannot open {path}: {e}\nHint: {ACCESS_HINT}."))?;
-        Ok(Self::from_hid_device(device))
+        Ok(Self::from_hid_device(device, pid))
     }
 
-    /// Return the next sequence number and post-increment it (wraps at 256).
     fn next_seq(&self) -> u8 {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Write one packet to the device.
     fn write(&self, packet: &[u8]) -> Result<()> {
         let written = self.device.write(packet).context("HID write failed")?;
         if written == 0 {
@@ -138,10 +168,6 @@ impl Mvx2u {
         Ok(())
     }
 
-    /// Read one HID report, blocking up to `READ_TIMEOUT_MS`.
-    ///
-    /// Returns the raw bytes on success, or `Err` if the read failed (which
-    /// typically means the device was disconnected).
     fn read(&self) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; PACKET_SIZE];
         match self.device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
@@ -151,34 +177,29 @@ impl Mvx2u {
         }
     }
 
-    /// Send a SET command followed by a CONFIRM packet.
-    ///
-    /// Every SET on the MVX2U must be confirmed; the device will not apply the
-    /// change without the subsequent CONFIRM.
     fn send_set(&self, set_packet: &[u8]) -> Result<()> {
         self.write(set_packet)?;
         let confirm = cmd_confirm(self.next_seq());
         self.write(&confirm)
     }
 
-    /// Send a GET command and read back the response.
-    ///
-    /// Returns `Ok(Some((feat_addr, value)))` on a valid response, or
-    /// `Ok(None)` if the response was a CONFIRM or failed to parse.
     fn send_get(&self, get_packet: &[u8]) -> Result<Option<([u8; 2], Vec<u8>)>> {
         self.write(get_packet)?;
         let buf = self.read()?;
         Ok(parse_response(&buf))
     }
 
-    /// Fetch the complete device state by querying every feature individually.
-    ///
-    /// Returns a partially-filled `DeviceState` if some queries time out;
-    /// a hard `Err` is returned only if the transport itself fails.
+    /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<DeviceState> {
+        match self.model {
+            DeviceModel::Mvx2u => self.get_state_mvx2u(),
+            DeviceModel::Mv6 => self.get_state_mv6(),
+        }
+    }
+
+    fn get_state_mvx2u(&self) -> Result<DeviceState> {
         let mut state = DeviceState::default();
 
-        // Query lock state first — it is on a separate command class.
         let lock_pkt = cmd_get_lock(self.next_seq());
         if let Ok(Some((feat, value))) = self.send_get(&lock_pkt)
             && !apply_response(feat, &value, &mut state)
@@ -186,8 +207,6 @@ impl Mvx2u {
             eprintln!("get_state: unrecognised feature {feat:#04x?} in lock response");
         }
 
-        // Query every feature in order. Errors on individual reads are non-fatal
-        // (the default value stays in place); transport errors propagate.
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
             cmd_get_mute,
@@ -212,7 +231,6 @@ impl Mvx2u {
             }
         }
 
-        // EQ bands: enable + gain for each of the 5 bands
         for band in 0..5 {
             let en_pkt = cmd_get_eq_band_enable(self.next_seq(), band);
             if let Ok(Some((feat, value))) = self.send_get(&en_pkt)
@@ -235,69 +253,89 @@ impl Mvx2u {
         Ok(state)
     }
 
-    // ── SET commands ──────────────────────────────────────────────────────────
+    fn get_state_mv6(&self) -> Result<DeviceState> {
+        let mut state = DeviceState::default();
 
-    /// Set manual gain (0–60 dB).
-    pub fn set_gain(&self, gain_db: u8) -> Result<()> {
-        self.send_set(&protocol::cmd_set_gain(self.next_seq(), gain_db))
+        // MV6 shares gain, mute, HPF, and auto level addresses with the MVX2U.
+        // mute_btn_disabled is persisted host-side (see presets::Mv6State) because
+        // the device always returns the same value for that GET regardless of state.
+        let getters: &[fn(u8) -> Vec<u8>] = &[
+            cmd_get_gain,
+            cmd_get_mute,
+            cmd_get_hpf,
+            cmd_get_mode,
+            cmd_get_mv6_denoiser,
+            cmd_get_mv6_popper_stopper,
+            cmd_get_mv6_tone,
+            cmd_get_mv6_gain_lock,
+        ];
+
+        for getter in getters {
+            let pkt = getter(self.next_seq());
+            if let Ok(Some((feat, value))) = self.send_get(&pkt)
+                && !apply_response(feat, &value, &mut state)
+            {
+                eprintln!("get_state(mv6): unrecognised feature {feat:#04x?} in response");
+            }
+        }
+
+        Ok(state)
     }
 
-    /// Set input mode. `auto = true` selects Auto Level; `false` selects Manual.
+    // ── Shared SET commands ───────────────────────────────────────────────────
+
+    /// Set manual gain. Clamped to the model's maximum (60 dB MVX2U, 36 dB MV6).
+    pub fn set_gain(&self, gain_db: u8) -> Result<()> {
+        let clamped = gain_db.min(self.model.max_gain_db());
+        self.send_set(&protocol::cmd_set_gain(self.next_seq(), clamped))
+    }
+
     pub fn set_mode(&self, auto: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_mode(self.next_seq(), auto))
     }
 
-    /// Set mic position for Auto Level mode.
-    pub fn set_auto_position(&self, position: &protocol::MicPosition) -> Result<()> {
-        self.send_set(&protocol::cmd_set_auto_position(self.next_seq(), position))
-    }
-
-    /// Set tone preset for Auto Level mode.
-    pub fn set_auto_tone(&self, tone: &protocol::AutoTone) -> Result<()> {
-        self.send_set(&protocol::cmd_set_auto_tone(self.next_seq(), tone))
-    }
-
-    /// Set gain preset for Auto Level mode.
-    pub fn set_auto_gain(&self, gain: &protocol::AutoGain) -> Result<()> {
-        self.send_set(&protocol::cmd_set_auto_gain(self.next_seq(), gain))
-    }
-
-    /// Mute or unmute the microphone input.
     pub fn set_mute(&self, muted: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_mute(self.next_seq(), muted))
     }
 
-    /// Enable or disable 48 V phantom power.
-    pub fn set_phantom(&self, enabled: bool) -> Result<()> {
-        self.send_set(&protocol::cmd_set_phantom(self.next_seq(), enabled))
-    }
-
-    /// Set the direct-monitor mix (0–100). 0 = 100% mic; 100 = 100% playback.
-    pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
-        self.send_set(&protocol::cmd_set_mix(self.next_seq(), mix))
-    }
-
-    /// Enable or disable the output limiter.
-    pub fn set_limiter(&self, enabled: bool) -> Result<()> {
-        self.send_set(&protocol::cmd_set_limiter(self.next_seq(), enabled))
-    }
-
-    /// Set the compressor preset.
-    pub fn set_compressor(&self, preset: &protocol::CompressorPreset) -> Result<()> {
-        self.send_set(&protocol::cmd_set_compressor(self.next_seq(), preset))
-    }
-
-    /// Set the high-pass filter frequency.
     pub fn set_hpf(&self, freq: &protocol::HpfFrequency) -> Result<()> {
         self.send_set(&protocol::cmd_set_hpf(self.next_seq(), freq))
     }
 
-    /// Enable or disable the 5-band parametric EQ.
+    // ── MVX2U-only SET commands ───────────────────────────────────────────────
+
+    pub fn set_auto_position(&self, position: &protocol::MicPosition) -> Result<()> {
+        self.send_set(&protocol::cmd_set_auto_position(self.next_seq(), position))
+    }
+
+    pub fn set_auto_tone(&self, tone: &protocol::AutoTone) -> Result<()> {
+        self.send_set(&protocol::cmd_set_auto_tone(self.next_seq(), tone))
+    }
+
+    pub fn set_auto_gain(&self, gain: &protocol::AutoGain) -> Result<()> {
+        self.send_set(&protocol::cmd_set_auto_gain(self.next_seq(), gain))
+    }
+
+    pub fn set_phantom(&self, enabled: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_phantom(self.next_seq(), enabled))
+    }
+
+    pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mix(self.next_seq(), mix))
+    }
+
+    pub fn set_limiter(&self, enabled: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_limiter(self.next_seq(), enabled))
+    }
+
+    pub fn set_compressor(&self, preset: &protocol::CompressorPreset) -> Result<()> {
+        self.send_set(&protocol::cmd_set_compressor(self.next_seq(), preset))
+    }
+
     pub fn set_eq_enable(&self, enabled: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_eq_enable(self.next_seq(), enabled))
     }
 
-    /// Set an EQ band's enabled state. `band` is 0–4.
     pub fn set_eq_band_enable(&self, band: usize, enabled: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_eq_band_enable(
             self.next_seq(),
@@ -306,7 +344,6 @@ impl Mvx2u {
         ))
     }
 
-    /// Set an EQ band's gain (−8 to +6 dB, steps of 2). `band` is 0–4.
     pub fn set_eq_band_gain(&self, band: usize, gain_db: i8) -> Result<()> {
         self.send_set(&protocol::cmd_set_eq_band_gain(
             self.next_seq(),
@@ -315,33 +352,66 @@ impl Mvx2u {
         ))
     }
 
-    // ── Lock ──────────────────────────────────────────────────────────────────
-
-    /// Lock or unlock the device configuration.
-    /// When locked, the device ignores all SET commands until unlocked.
     pub fn set_lock(&self, locked: bool) -> Result<()> {
         self.send_set(&cmd_set_lock(self.next_seq(), locked))
     }
+
+    // ── MV6-only SET commands ─────────────────────────────────────────────────
+
+    pub fn set_mv6_denoiser(&self, enabled: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mv6_denoiser(self.next_seq(), enabled))
+    }
+
+    pub fn set_mv6_popper_stopper(&self, enabled: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mv6_popper_stopper(
+            self.next_seq(),
+            enabled,
+        ))
+    }
+
+    pub fn set_mv6_mute_btn_disable(&self, disabled: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mv6_mute_btn_disable(
+            self.next_seq(),
+            disabled,
+        ))
+    }
+
+    pub fn set_mv6_tone(&self, tone: i8) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mv6_tone(self.next_seq(), tone))
+    }
+
+    pub fn set_mv6_gain_lock(&self, locked: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mv6_gain_lock(self.next_seq(), locked))
+    }
 }
 
-/// Information about a detected MVX2U, returned by [`list_devices`].
+/// Information about a detected Shure device, returned by [`list_devices`].
 pub struct DeviceInfo {
-    /// Platform-specific HID device path (e.g. `/dev/hidraw3` on Linux).
     pub path: String,
-    /// USB serial number string, e.g. `MVX2U#3-7d84d19...`.
     pub serial: String,
+    pub model: DeviceModel,
 }
 
-/// Probe the system for MVX2U devices without opening them.
+/// Probe the system for supported Shure devices without opening them.
 pub fn list_devices() -> Vec<DeviceInfo> {
     let Ok(api) = HidApi::new() else {
         return vec![];
     };
+    let mut seen_paths = std::collections::HashSet::new();
     api.device_list()
-        .filter(|d| d.vendor_id() == VID && d.product_id() == PID)
+        .filter(|d| {
+            d.vendor_id() == VID
+                && (d.product_id() == PID || d.product_id() == MV6_PID)
+                && seen_paths.insert(d.path().to_string_lossy().into_owned())
+        })
         .map(|d| DeviceInfo {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or("(unknown)").to_owned(),
+            model: if d.product_id() == MV6_PID {
+                DeviceModel::Mv6
+            } else {
+                DeviceModel::Mvx2u
+            },
         })
         .collect()
 }

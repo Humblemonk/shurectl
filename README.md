@@ -1,7 +1,7 @@
 # shurectl
 
 An open-source terminal UI configurator for the **Shure MVX2U** XLR-to-USB audio
-interface on Linux and macOS. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+interface and **Shure MV6** microphone on Linux and macOS. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
@@ -32,13 +32,19 @@ Settings persist on the device after disconnect (no host software needed after c
 
 ### Linux — udev Rule (Required for Non-Root Access)
 
-Without a udev rule, `/dev/hidrawN` for the MVX2U is only accessible by root.
+Without a udev rule, `/dev/hidrawN` for the device is only accessible by root.
 
 Create `/etc/udev/rules.d/62-mvx2u.rules`:
 
 ```
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
 ```
+Create `/etc/udev/rules.d/62-mv6.rules`:
+
+```
+ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
+```
+
 Then reload udev and replug your device:
 
 ```bash
@@ -62,7 +68,7 @@ shurectl --list
 ### macOS — No Extra Setup Required
 
 On macOS, IOKit grants user-space access to HID devices without extra configuration.
-Plug in the MVX2U and run `shurectl --list` to confirm detection.
+Plug in your device and run `shurectl --list` to confirm detection.
 
 ---
 
@@ -104,7 +110,7 @@ cargo install --git https://github.com/Humblemonk/shurectl.git
 shurectl                         # Connect to first detected device and launch TUI
 shurectl --device <path>         # Connect to a specific device (use --list to find paths)
 shurectl --demo                  # Run without a device (explore the UI)
-shurectl --list                  # List detected MVX2U devices and exit
+shurectl --list                  # List detected Shure devices and exit
 ```
 
 ### Keyboard Shortcuts
@@ -155,7 +161,7 @@ On the **Presets tab**:
 src/
 ├── main.rs       — Entry point, event loop, CLI args
 ├── app.rs        — Application state, focus/tab navigation, DeviceAction events
-├── device.rs     — hidapi wrapper; open/send/receive for MVX2U
+├── device.rs     — hidapi wrapper; open/send/receive for Shure devices
 ├── meter.rs      — cpal audio capture; real-time dBFS metering, RollingWindow, PeakWindow
 ├── presets.rs    — Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
 ├── protocol.rs   — USB HID packet encoding, CRC-16/ANSI, command constructors, apply_response()
@@ -168,14 +174,14 @@ All command byte values, feature addresses, and packet structure details are doc
 
 ## Troubleshooting
 
-**"Cannot open MVX2U"** — device not found or a permissions issue.
+**"Cannot open device"** — device not found or a permissions issue.
 Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS, ensure no other software has exclusive access to the device.
 
 **Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;
 the device ignores gain commands in Auto Level mode. Switch to Manual mode first.
 
 **PipeWire/PulseAudio volume vs. device gain** — This tool controls the **hardware DSP gain**
-on the MVX2U itself, not the OS capture volume level. Both can be set independently.
+on the device itself, not the OS capture volume level. Both can be set independently.
 
 ---
 
@@ -195,7 +201,7 @@ issues during implementation. All code was reviewed and tested by the author bef
 ## Legal
 
 Protocol implementation is based on publicly documented USB HID packet captures
-by PennRobotics (shux project, Apache 2.0). No Shure software was used, decompiled,
+by PennRobotics (shux project, Apache 2.0) as well as author's own usbmon captures. No Shure software was used, decompiled,
 or examined in the creation of this tool.
 
 shurectl is not affiliated with or endorsed by Shure Incorporated.

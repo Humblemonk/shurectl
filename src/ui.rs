@@ -10,7 +10,8 @@ use ratatui::{
 
 use crate::app::{App, Focus, Tab};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, EQ_BAND_FREQS, HpfFrequency, InputMode, MicPosition,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, HpfFrequency, InputMode,
+    MicPosition,
 };
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -198,10 +199,123 @@ fn draw_main_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main_left(f: &mut Frame, app: &App, area: Rect) {
-    match app.device_state.mode {
-        InputMode::Auto => draw_main_left_auto(f, app, area),
-        InputMode::Manual => draw_main_left_manual(f, app, area),
+    match (app.device_model, app.device_state.mode) {
+        (DeviceModel::Mv6, InputMode::Manual) => draw_main_left_mv6_manual(f, app, area),
+        (DeviceModel::Mv6, InputMode::Auto) => draw_main_left_mv6_auto(f, app, area),
+        (DeviceModel::Mvx2u, InputMode::Auto) => draw_main_left_auto(f, app, area),
+        (DeviceModel::Mvx2u, InputMode::Manual) => draw_main_left_manual(f, app, area),
     }
+}
+
+fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(3), // gain gauge
+            Constraint::Length(3), // gain lock
+            Constraint::Length(4), // level meter
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+
+    let gain_focused = app.focus == Focus::Gain;
+    let gain = app.device_state.gain_db;
+    let gain_locked = app.device_state.mv6_gain_locked;
+    let gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(Line::from(vec![
+                    Span::styled("  GAIN  ", focused_style(gain_focused)),
+                    Span::styled(
+                        format!(" {} dB ", gain),
+                        Style::default().fg(if gain_locked { C_DIM } else { C_ACCENT }).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if gain_focused && !gain_locked { "  ◄ ► or ←→ to adjust" } else if gain_focused && gain_locked { "  🔒 locked" } else { "" },
+                        Style::default().fg(C_DIM),
+                    ),
+                ]))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if gain_focused {
+                    Style::default().fg(C_FOCUS)
+                } else {
+                    Style::default().fg(C_BORDER)
+                }),
+        )
+        .gauge_style(Style::default().fg(if gain_locked { C_DISABLED } else { C_ACCENT }).bg(C_SURFACE).add_modifier(
+            if gain_focused { Modifier::BOLD } else { Modifier::empty() },
+        ))
+        .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
+        .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
+    f.render_widget(gauge, rows[2]);
+
+    // ── Gain Lock ─────────────────────────────────────────────────────────────
+    let lock_focused = app.focus == Focus::GainLock;
+    let lock_icon = if gain_locked { "🔒" } else { "🔓" };
+    let gain_lock_p = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!("{lock_icon}  Gain Lock:  "),
+            Style::default().fg(C_DIM),
+        ),
+        if gain_locked {
+            Span::styled("LOCKED", Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+        },
+        Span::styled(
+            if lock_focused { "  [Enter] toggle" } else { "" },
+            Style::default().fg(C_DIM),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if lock_focused {
+                Style::default().fg(C_FOCUS)
+            } else if gain_locked {
+                Style::default().fg(C_ERROR)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .title(Span::styled(
+                "  Gain Lock  ",
+                if lock_focused {
+                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                } else if gain_locked {
+                    Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            )),
+    );
+    f.render_widget(gain_lock_p, rows[3]);
+
+    draw_meter(f, app, rows[4]);
+}
+
+fn draw_main_left_mv6_auto(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(4), // level meter
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+    draw_meter(f, app, rows[2]);
 }
 
 fn draw_main_left_manual(f: &mut Frame, app: &App, area: Rect) {
@@ -260,8 +374,8 @@ fn draw_main_left_manual(f: &mut Frame, app: &App, area: Rect) {
                     Modifier::empty()
                 },
             ))
-            .ratio(gain as f64 / 60.0)
-            .label(format!("{gain} / 60 dB"));
+            .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
+            .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
     f.render_widget(gauge, rows[2]);
 
     draw_main_shared(f, app, &rows[3..]);
@@ -497,7 +611,7 @@ fn draw_mute_block(f: &mut Frame, app: &App, area: Rect) {
 ///
 /// `rows` must have at least 4 elements (indices 0–3).
 fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
-    debug_assert!(
+    assert!(
         rows.len() >= 4,
         "draw_main_shared requires at least 4 row slots, got {}",
         rows.len()
@@ -624,100 +738,170 @@ fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
 fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
     let ds = &app.device_state;
 
-    // The mode-specific block (gain in Manual, auto sub-settings in Auto)
-    // is inserted between Mode and Muted.
-    let mode_specific_lines: Vec<Line> = match ds.mode {
-        InputMode::Manual => vec![Line::from(vec![
-            Span::styled("Gain        : ", Style::default().fg(C_DIM)),
-            Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
-        ])],
-        InputMode::Auto => vec![
-            Line::from(vec![
-                Span::styled("Position    : ", Style::default().fg(C_DIM)),
-                Span::styled(ds.auto_position.to_string(), Style::default().fg(C_TEXT)),
-            ]),
-            Line::from(vec![
-                Span::styled("Tone        : ", Style::default().fg(C_DIM)),
-                Span::styled(ds.auto_tone.to_string(), Style::default().fg(C_TEXT)),
-            ]),
-            Line::from(vec![
-                Span::styled("Auto Gain   : ", Style::default().fg(C_DIM)),
-                Span::styled(ds.auto_gain.to_string(), Style::default().fg(C_TEXT)),
-            ]),
-        ],
-    };
+    let lines = match app.device_model {
+        DeviceModel::Mvx2u => {
+            let mode_specific_lines: Vec<Line> = match ds.mode {
+                InputMode::Manual => vec![Line::from(vec![
+                    Span::styled("Gain        : ", Style::default().fg(C_DIM)),
+                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                ])],
+                InputMode::Auto => vec![
+                    Line::from(vec![
+                        Span::styled("Position    : ", Style::default().fg(C_DIM)),
+                        Span::styled(ds.auto_position.to_string(), Style::default().fg(C_TEXT)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Tone        : ", Style::default().fg(C_DIM)),
+                        Span::styled(ds.auto_tone.to_string(), Style::default().fg(C_TEXT)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Auto Gain   : ", Style::default().fg(C_DIM)),
+                        Span::styled(ds.auto_gain.to_string(), Style::default().fg(C_TEXT)),
+                    ]),
+                ],
+            };
 
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Mode        : ", Style::default().fg(C_DIM)),
-            Span::styled(ds.mode.to_string(), Style::default().fg(C_ACCENT)),
-        ]),
-    ];
-    lines.extend(mode_specific_lines);
-    lines.extend([
-        Line::from(vec![
-            Span::styled("Muted       : ", Style::default().fg(C_DIM)),
-            if ds.muted {
-                Span::styled("YES", Style::default().fg(C_ERROR))
+            let mut l = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Mode        : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.mode.to_string(), Style::default().fg(C_ACCENT)),
+                ]),
+            ];
+            l.extend(mode_specific_lines);
+            l.extend([
+                Line::from(vec![
+                    Span::styled("Muted       : ", Style::default().fg(C_DIM)),
+                    if ds.muted {
+                        Span::styled("YES", Style::default().fg(C_ERROR))
+                    } else {
+                        Span::styled("NO", Style::default().fg(C_SUCCESS))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Locked      : ", Style::default().fg(C_DIM)),
+                    if ds.locked {
+                        Span::styled("YES", Style::default().fg(C_ERROR))
+                    } else {
+                        Span::styled("NO", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Phantom Pwr : ", Style::default().fg(C_DIM)),
+                    if ds.phantom_power {
+                        Span::styled("48V ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("EQ          : ", Style::default().fg(C_DIM)),
+                    if ds.mode == InputMode::Auto {
+                        Span::styled("auto", Style::default().fg(C_DISABLED))
+                    } else if ds.eq_enabled {
+                        Span::styled("Enabled", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("Bypass", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("HPF         : ", Style::default().fg(C_DIM)),
+                    if ds.mode == InputMode::Auto {
+                        Span::styled("auto", Style::default().fg(C_DISABLED))
+                    } else {
+                        Span::styled(ds.hpf.to_string(), Style::default().fg(C_TEXT))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Limiter     : ", Style::default().fg(C_DIM)),
+                    if ds.mode == InputMode::Auto {
+                        Span::styled("auto", Style::default().fg(C_DISABLED))
+                    } else if ds.limiter_enabled {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Compressor  : ", Style::default().fg(C_DIM)),
+                    if ds.mode == InputMode::Auto {
+                        Span::styled("auto", Style::default().fg(C_DISABLED))
+                    } else {
+                        Span::styled(ds.compressor.to_string(), Style::default().fg(C_TEXT))
+                    },
+                ]),
+            ]);
+            l
+        }
+        DeviceModel::Mv6 => {
+            let pct = ds.tone as i32 * 10;
+            let tone_str = if pct < 0 {
+                format!("{}% Dark", pct.abs())
+            } else if pct > 0 {
+                format!("{}% Bright", pct)
             } else {
-                Span::styled("NO", Style::default().fg(C_SUCCESS))
-            },
-        ]),
-        Line::from(vec![
-            Span::styled("Locked      : ", Style::default().fg(C_DIM)),
-            if ds.locked {
-                Span::styled("YES", Style::default().fg(C_ERROR))
-            } else {
-                Span::styled("NO", Style::default().fg(C_DIM))
-            },
-        ]),
-        Line::from(vec![
-            Span::styled("Phantom Pwr : ", Style::default().fg(C_DIM)),
-            if ds.phantom_power {
-                Span::styled("48V ON", Style::default().fg(C_SUCCESS))
-            } else {
-                Span::styled("OFF", Style::default().fg(C_DIM))
-            },
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("EQ          : ", Style::default().fg(C_DIM)),
-            if ds.mode == InputMode::Auto {
-                Span::styled("auto", Style::default().fg(C_DISABLED))
-            } else if ds.eq_enabled {
-                Span::styled("Enabled", Style::default().fg(C_SUCCESS))
-            } else {
-                Span::styled("Bypass", Style::default().fg(C_DIM))
-            },
-        ]),
-        Line::from(vec![
-            Span::styled("HPF         : ", Style::default().fg(C_DIM)),
-            if ds.mode == InputMode::Auto {
-                Span::styled("auto", Style::default().fg(C_DISABLED))
-            } else {
-                Span::styled(ds.hpf.to_string(), Style::default().fg(C_TEXT))
-            },
-        ]),
-        Line::from(vec![
-            Span::styled("Limiter     : ", Style::default().fg(C_DIM)),
-            if ds.mode == InputMode::Auto {
-                Span::styled("auto", Style::default().fg(C_DISABLED))
-            } else if ds.limiter_enabled {
-                Span::styled("ON", Style::default().fg(C_SUCCESS))
-            } else {
-                Span::styled("OFF", Style::default().fg(C_DIM))
-            },
-        ]),
-        Line::from(vec![
-            Span::styled("Compressor  : ", Style::default().fg(C_DIM)),
-            if ds.mode == InputMode::Auto {
-                Span::styled("auto", Style::default().fg(C_DISABLED))
-            } else {
-                Span::styled(ds.compressor.to_string(), Style::default().fg(C_TEXT))
-            },
-        ]),
-    ]);
+                "Natural".to_string()
+            };
+            let mut l = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Mode        : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.mode.to_string(), Style::default().fg(C_ACCENT)),
+                ]),
+            ];
+            if ds.mode == InputMode::Manual {
+                l.push(Line::from(vec![
+                    Span::styled("Gain        : ", Style::default().fg(C_DIM)),
+                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                ]));
+            }
+            l.extend([
+                Line::from(vec![
+                    Span::styled("Muted       : ", Style::default().fg(C_DIM)),
+                    if ds.muted {
+                        Span::styled("YES", Style::default().fg(C_ERROR))
+                    } else {
+                        Span::styled("NO", Style::default().fg(C_SUCCESS))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Mute Btn    : ", Style::default().fg(C_DIM)),
+                    if ds.mute_btn_disabled {
+                        Span::styled("Disabled", Style::default().fg(C_WARN))
+                    } else {
+                        Span::styled("Enabled", Style::default().fg(C_TEXT))
+                    },
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Denoiser    : ", Style::default().fg(C_DIM)),
+                    if ds.denoiser_enabled {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Pop. Stopper: ", Style::default().fg(C_DIM)),
+                    if ds.popper_stopper_enabled {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Tone        : ", Style::default().fg(C_DIM)),
+                    Span::styled(tone_str, Style::default().fg(C_TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("HPF         : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.hpf.to_string(), Style::default().fg(C_TEXT)),
+                ]),
+            ]);
+            l
+        }
+    };
 
     let p = Paragraph::new(lines)
         .block(
@@ -913,9 +1097,256 @@ fn draw_meter(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auto Level locked notice (shared by EQ and Dynamics tabs)
+// MV6 EQ Tab — Tone control
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_auto_mode_locked_notice(f: &mut Frame, area: Rect, tab_name: &str) {
+fn draw_mv6_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+    let ds = &app.device_state;
+    let tone_foc = app.focus == Focus::Tone;
+    let tone = ds.tone;
+    let pct = tone as i32 * 10;
+    let tone_label = if pct < 0 {
+        format!("{}% Dark", pct.abs())
+    } else if pct > 0 {
+        format!("{}% Bright", pct)
+    } else {
+        "Natural".to_string()
+    };
+    let tone_ratio = (tone as f64 + 10.0) / 20.0;
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .margin(1)
+        .split(area);
+
+    let tone_gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(Line::from(vec![
+                    Span::styled("  TONE  ", focused_style(tone_foc)),
+                    Span::styled(
+                        format!(" {} ", tone_label),
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if tone_foc { "  ◄ ► to adjust" } else { "" },
+                        Style::default().fg(C_DIM),
+                    ),
+                ]))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if tone_foc {
+                    Style::default().fg(C_FOCUS)
+                } else {
+                    Style::default().fg(C_BORDER)
+                }),
+        )
+        .gauge_style(
+            Style::default()
+                .fg(Color::Rgb(50, 150, 220))
+                .bg(C_SURFACE)
+                .add_modifier(if tone_foc { Modifier::BOLD } else { Modifier::empty() }),
+        )
+        .ratio(tone_ratio)
+        .label(format!("Dark ◄─{:+}─► Bright", pct));
+    f.render_widget(tone_gauge, rows[0]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MV6 Dynamics Tab — Denoiser, Popper Stopper, Mute Button, HPF
+// ─────────────────────────────────────────────────────────────────────────────
+fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+    let ds = &app.device_state;
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .margin(1)
+        .split(area);
+
+    // ── Denoiser ──────────────────────────────────────────────────────────────
+    let den_foc = app.focus == Focus::Denoiser;
+    let den_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(C_DIM)),
+            bool_span(ds.denoiser_enabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Reduces background",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "noise in real time.",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if den_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled(
+                "  Denoiser  ",
+                focused_style(den_foc),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if den_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(den_p, cols[0]);
+
+    // ── Popper Stopper ────────────────────────────────────────────────────────
+    let pop_foc = app.focus == Focus::PopperStopper;
+    let pop_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(C_DIM)),
+            bool_span(ds.popper_stopper_enabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Reduces plosive",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "sounds (p, b, t).",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if pop_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled(
+                "  Popper Stopper  ",
+                focused_style(pop_foc),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if pop_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(pop_p, cols[1]);
+
+    // ── Mute Button Disable ───────────────────────────────────────────────────
+    let mbd_foc = app.focus == Focus::MuteBtnDisable;
+    let mbd_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Disabled: ", Style::default().fg(C_DIM)),
+            bool_span(ds.mute_btn_disabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Prevents the physical",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "mute button from",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled("toggling mute.", Style::default().fg(C_DIM))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if mbd_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled(
+                "  Mute Button  ",
+                focused_style(mbd_foc),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if mbd_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(mbd_p, cols[2]);
+
+    // ── HPF ───────────────────────────────────────────────────────────────────
+    let hpf_foc = app.focus == Focus::Hpf;
+    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
+        .iter()
+        .map(|freq| {
+            let selected = *freq == ds.hpf;
+            Line::from(vec![
+                Span::styled(
+                    if selected { "▶ " } else { "  " },
+                    Style::default().fg(C_ACCENT),
+                ),
+                Span::styled(
+                    freq.to_string(),
+                    if selected {
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(C_DIM)
+                    },
+                ),
+            ])
+        })
+        .collect();
+    let mut hpf_content = vec![Line::from("")];
+    hpf_content.extend(hpf_lines);
+    hpf_content.push(Line::from(""));
+    hpf_content.push(Line::from(Span::styled(
+        "[Enter] to cycle",
+        Style::default().fg(if hpf_foc { C_FOCUS } else { C_DISABLED }),
+    )));
+    let hpf_p = Paragraph::new(hpf_content).block(
+        Block::default()
+            .title(Span::styled(
+                "  High-Pass Filter  ",
+                if hpf_foc {
+                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if hpf_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(hpf_p, cols[3]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab locked / not-available notices
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Shown on EQ/Dynamics when MVX2U is in Auto Level mode.
+fn draw_tab_locked_notice(f: &mut Frame, area: Rect, tab_name: &str) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -933,7 +1364,10 @@ fn draw_auto_mode_locked_notice(f: &mut Frame, area: Rect, tab_name: &str) {
             Style::default().fg(C_DIM),
         )),
     ];
+    render_notice(f, area, lines);
+}
 
+fn render_notice(f: &mut Frame, area: Rect, lines: Vec<Line>) {
     let p = Paragraph::new(lines)
         .block(
             Block::default()
@@ -951,8 +1385,12 @@ fn draw_auto_mode_locked_notice(f: &mut Frame, area: Rect, tab_name: &str) {
 // EQ Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+    if app.device_model == DeviceModel::Mv6 {
+        draw_mv6_eq_tab(f, app, area);
+        return;
+    }
     if app.device_state.mode == InputMode::Auto {
-        draw_auto_mode_locked_notice(f, area, "EQ");
+        draw_tab_locked_notice(f, area, "EQ");
         return;
     }
     let chunks = Layout::default()
@@ -1130,8 +1568,12 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 // Dynamics Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+    if app.device_model == DeviceModel::Mv6 {
+        draw_mv6_dynamics_tab(f, app, area);
+        return;
+    }
     if app.device_state.mode == InputMode::Auto {
-        draw_auto_mode_locked_notice(f, area, "Dynamics");
+        draw_tab_locked_notice(f, area, "Dynamics");
         return;
     }
     let cols = Layout::default()
@@ -1373,7 +1815,7 @@ fn draw_preset_name_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
 
     let summary_line = match &app.presets[index] {
         Some(slot) if !editing => {
-            Line::from(Span::styled(slot.summary(), Style::default().fg(C_DIM)))
+            Line::from(Span::styled(slot.summary(app.device_model), Style::default().fg(C_DIM)))
         }
         _ => Line::from(""),
     };
@@ -1486,7 +1928,14 @@ fn draw_preset_actions_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
     let ds = &app.device_state;
-    let lines = vec![
+    let model = app.device_model;
+
+    let (vid_pid, gain_range) = match model {
+        DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
+        DeviceModel::Mv6 => ("14ED:1026", "0–36 dB"),
+    };
+
+    let mut lines = vec![
         Line::from(Span::styled(
             "  Device Information",
             Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
@@ -1497,11 +1946,8 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("Shure Inc.", Style::default().fg(C_TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  Product      : ", Style::default().fg(C_DIM)),
-            Span::styled(
-                "shurectl / MVX2U Digital Audio Interface",
-                Style::default().fg(C_TEXT),
-            ),
+            Span::styled("  Model        : ", Style::default().fg(C_DIM)),
+            Span::styled(model.display_name(), Style::default().fg(C_TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  Serial No.   : ", Style::default().fg(C_DIM)),
@@ -1509,7 +1955,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  USB VID/PID  : ", Style::default().fg(C_DIM)),
-            Span::styled("14ED:1013", Style::default().fg(C_TEXT)),
+            Span::styled(vid_pid, Style::default().fg(C_TEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -1519,28 +1965,43 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Gain Range   : ", Style::default().fg(C_DIM)),
-            Span::styled("0–60 dB", Style::default().fg(C_TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Phantom Pwr  : ", Style::default().fg(C_DIM)),
-            Span::styled("48V", Style::default().fg(C_TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  EQ           : ", Style::default().fg(C_DIM)),
-            Span::styled("5-band parametric", Style::default().fg(C_TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  HPF          : ", Style::default().fg(C_DIM)),
-            Span::styled("Off / 75 Hz / 150 Hz", Style::default().fg(C_TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Compressor   : ", Style::default().fg(C_DIM)),
-            Span::styled("Off / Light / Medium / Heavy", Style::default().fg(C_TEXT)),
+            Span::styled(gain_range, Style::default().fg(C_TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  Presets      : ", Style::default().fg(C_DIM)),
-            Span::styled("4 slots", Style::default().fg(C_TEXT)),
+            Span::styled("4 slots (host-side TOML)", Style::default().fg(C_TEXT)),
         ]),
+    ];
+
+    let cap_rows: &[(&str, &str)] = match model {
+        DeviceModel::Mvx2u => &[
+            ("  Phantom Pwr  : ", "48V"),
+            ("  EQ           : ", "5-band parametric"),
+            ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
+            ("  Compressor   : ", "Off / Light / Medium / Heavy"),
+            ("  Limiter      : ", "On / Off"),
+            ("  Monitor Mix  : ", "0–100%"),
+            ("  Auto Level   : ", "On / Off"),
+            ("  Config Lock  : ", "On / Off"),
+        ],
+        DeviceModel::Mv6 => &[
+            ("  Denoiser     : ", "On / Off"),
+            ("  Popper Stop. : ", "On / Off"),
+            ("  Tone         : ", "Dark (−100%) → Natural → Bright (+100%)"),
+            ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
+            ("  Auto Level   : ", "On / Off"),
+            ("  Mute Button  : ", "Enable / Disable"),
+        ],
+    };
+
+    for (label, value) in cap_rows {
+        lines.push(Line::from(vec![
+            Span::styled(*label, Style::default().fg(C_DIM)),
+            Span::styled(*value, Style::default().fg(C_TEXT)),
+        ]));
+    }
+
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled(
             concat!(
@@ -1550,11 +2011,14 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             ),
             Style::default().fg(C_DIM),
         )),
-        Line::from(Span::styled(
+    ]);
+
+    if model == DeviceModel::Mvx2u {
+        lines.push(Line::from(Span::styled(
             "  Protocol reverse-engineered by PennRobotics/shux (Apache 2.0)",
             Style::default().fg(C_DISABLED),
-        )),
-    ];
+        )));
+    }
 
     let p = Paragraph::new(lines)
         .block(
