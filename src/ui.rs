@@ -2024,13 +2024,6 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         )),
     ]);
 
-    if model == DeviceModel::Mvx2u {
-        lines.push(Line::from(Span::styled(
-            "  Protocol reverse-engineered by PennRobotics/shux (Apache 2.0)",
-            Style::default().fg(C_DISABLED),
-        )));
-    }
-
     let p = Paragraph::new(lines)
         .block(
             Block::default()
