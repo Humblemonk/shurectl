@@ -187,7 +187,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 
 ## Acknowledgements
 
-Protocol reverse-engineering credit goes to **PennRobotics** and the
+Initial protocol reverse-engineering credit goes to **PennRobotics** and the
 [shux project](https://gitlab.com/PennRobotics/shux) (Apache 2.0), without which
 this tool would not exist. If you find shurectl useful, consider starring their
 repository.
