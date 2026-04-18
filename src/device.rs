@@ -96,11 +96,7 @@ impl ShureDevice {
         let mut seen_paths = std::collections::HashSet::new();
         let found: Vec<_> = api
             .device_list()
-            .filter(|d| {
-                d.vendor_id() == VID
-                    && (d.product_id() == PID || d.product_id() == MV6_PID)
-                    && seen_paths.insert(d.path().to_string_lossy().into_owned())
-            })
+            .filter(|d| is_shure_device(d, &mut seen_paths))
             .collect();
 
         match found.len() {
@@ -188,6 +184,18 @@ impl ShureDevice {
         Ok(parse_response(&buf))
     }
 
+    /// Send each getter, apply the response to `state`, and log any unrecognised features.
+    fn run_getters(&self, getters: &[fn(u8) -> Vec<u8>], state: &mut DeviceState, context: &str) {
+        for getter in getters {
+            let pkt = getter(self.next_seq());
+            if let Ok(Some((feat, value))) = self.send_get(&pkt)
+                && !apply_response(feat, &value, state)
+            {
+                eprintln!("{context}: unrecognised feature {feat:#04x?} in response");
+            }
+        }
+    }
+
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<DeviceState> {
         match self.model {
@@ -221,14 +229,7 @@ impl ShureDevice {
             cmd_get_eq_enable,
         ];
 
-        for getter in getters {
-            let pkt = getter(self.next_seq());
-            if let Ok(Some((feat, value))) = self.send_get(&pkt)
-                && !apply_response(feat, &value, &mut state)
-            {
-                eprintln!("get_state: unrecognised feature {feat:#04x?} in response");
-            }
-        }
+        self.run_getters(getters, &mut state, "get_state");
 
         for band in 0..5 {
             let en_pkt = cmd_get_eq_band_enable(self.next_seq(), band);
@@ -269,14 +270,7 @@ impl ShureDevice {
             cmd_get_mv6_gain_lock,
         ];
 
-        for getter in getters {
-            let pkt = getter(self.next_seq());
-            if let Ok(Some((feat, value))) = self.send_get(&pkt)
-                && !apply_response(feat, &value, &mut state)
-            {
-                eprintln!("get_state(mv6): unrecognised feature {feat:#04x?} in response");
-            }
-        }
+        self.run_getters(getters, &mut state, "get_state(mv6)");
 
         Ok(state)
     }
@@ -391,6 +385,19 @@ pub struct DeviceInfo {
     pub model: DeviceModel,
 }
 
+/// Returns `true` if `d` is a supported Shure device that has not been seen before.
+///
+/// `seen_paths` is used to deduplicate entries — hidapi may enumerate the same
+/// physical device multiple times when it exposes more than one HID interface.
+fn is_shure_device(
+    d: &hidapi::DeviceInfo,
+    seen_paths: &mut std::collections::HashSet<String>,
+) -> bool {
+    d.vendor_id() == VID
+        && (d.product_id() == PID || d.product_id() == MV6_PID)
+        && seen_paths.insert(d.path().to_string_lossy().into_owned())
+}
+
 /// Probe the system for supported Shure devices without opening them.
 pub fn list_devices() -> Vec<DeviceInfo> {
     let Ok(api) = HidApi::new() else {
@@ -398,11 +405,7 @@ pub fn list_devices() -> Vec<DeviceInfo> {
     };
     let mut seen_paths = std::collections::HashSet::new();
     api.device_list()
-        .filter(|d| {
-            d.vendor_id() == VID
-                && (d.product_id() == PID || d.product_id() == MV6_PID)
-                && seen_paths.insert(d.path().to_string_lossy().into_owned())
-        })
+        .filter(|d| is_shure_device(d, &mut seen_paths))
         .map(|d| DeviceInfo {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or("(unknown)").to_owned(),

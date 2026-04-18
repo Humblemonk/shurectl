@@ -564,13 +564,27 @@ mod tests {
         }
     }
 
+    /// Serialise `slot` to TOML and deserialise it again, returning the decoded copy.
+    fn toml_roundtrip(slot: &PresetSlot) -> PresetSlot {
+        let toml_str = toml::to_string_pretty(slot).expect("serialise");
+        toml::from_str(&toml_str).expect("deserialise")
+    }
+
+    /// Write `slot` to a temp file and reload it, returning the loaded copy.
+    fn write_and_reload(slot: &PresetSlot) -> PresetSlot {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("preset_1.toml");
+        let text = toml::to_string_pretty(slot).expect("serialise");
+        std::fs::write(&path, &text).expect("write");
+        toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("deserialise")
+    }
+
     #[test]
     fn preset_slot_roundtrip_toml() {
         let state = example_state();
         let slot = PresetSlot::from_device_state("My Preset", &state);
 
-        let toml_str = toml::to_string_pretty(&slot).expect("serialise");
-        let decoded: PresetSlot = toml::from_str(&toml_str).expect("deserialise");
+        let decoded = toml_roundtrip(&slot);
 
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "My Preset");
@@ -619,15 +633,7 @@ mod tests {
         let state = example_state();
         let slot = PresetSlot::from_device_state("Roundtrip", &state);
 
-        // Use a temp dir so tests are hermetic.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("preset_1.toml");
-
-        let text = toml::to_string_pretty(&slot).expect("serialise");
-        std::fs::write(&path, &text).expect("write");
-
-        let loaded: PresetSlot =
-            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("deserialise");
+        let loaded = write_and_reload(&slot);
 
         assert_eq!(slot, loaded);
     }
@@ -703,8 +709,7 @@ mod tests {
         let state = mv6_example_state();
         let slot = PresetSlot::from_device_state("MV6 Preset", &state);
 
-        let toml_str = toml::to_string_pretty(&slot).expect("serialise");
-        let decoded: PresetSlot = toml::from_str(&toml_str).expect("deserialise");
+        let decoded = toml_roundtrip(&slot);
 
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "MV6 Preset");
@@ -756,14 +761,7 @@ mod tests {
         let state = mv6_example_state(); // mute_btn_disabled = true
         let slot = PresetSlot::from_device_state("MV6 File", &state);
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("preset_1.toml");
-
-        let text = toml::to_string_pretty(&slot).expect("serialise");
-        std::fs::write(&path, &text).expect("write");
-
-        let loaded: PresetSlot =
-            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("deserialise");
+        let loaded = write_and_reload(&slot);
 
         assert!(
             loaded.mute_btn_disabled,
