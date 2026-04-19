@@ -1,9 +1,17 @@
 # shurectl
 
-An open-source terminal UI configurator for the **Shure MVX2U** XLR-to-USB audio
-interface and **Shure MV6** microphone on Linux and macOS. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+An open-source terminal UI configurator for the Shure XLR-to-USB audio
+interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
+
+---
+
+## Supported Devices
+- MVX2U Gen 2 - Digital Audio Interface
+- MV6 - USB Gaming Microphone
+
+---
 
 ## Features
 
