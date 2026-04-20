@@ -8,7 +8,7 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 ---
 
 ## Supported Devices
-- MVX2U Gen 2 - Digital Audio Interface
+- MVX2U Gen 1 - Digital Audio Interface
 - MV6 - USB Gaming Microphone
 
 ---
