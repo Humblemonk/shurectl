@@ -15,24 +15,32 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 
 ## Features
 
-- **Gain** — 0–60 dB with live gauge display
-- **Input Mode** — Auto Level / Manual toggle
-- **Mic Mute** — toggle with ribbon-mic phantom power warning
-- **Phantom Power** — 48V on/off
+### All Devices
+- **Gain Control** — Auto Level / Manual toggle
+- **Mic Mute** — toggle mute
 - **Monitor Mix** — mic vs. playback blend slider
-- **5-band Parametric EQ** — per-band enable, gain (−8 to +6 dB in 2 dB steps)
-- **Limiter** — enable/disable
 - **Compressor** — Off / Light / Medium / Heavy
 - **High-Pass Filter** — Off / 75 Hz / 150 Hz
-- **Panel Lock** — lock the physical panel controls on the device
-- **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright), gain environment (Quiet/Normal/Loud)
-- **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
 - **Real-time Level Meter** — dBFS input meter with peak-hold display
+- **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
 - **Device Info** — serial number
 - **Demo mode** — run without a device plugged in (`--demo`)
 
-All settings are sent to the device in real-time as you adjust them.
-Settings persist on the device after disconnect (no host software needed after configuration).
+### MVX2U
+- **Gain range** — 0–60 dB
+- **Phantom Power** — 48V on/off; warns if enabled when muting ribbon mics
+- **5-band Parametric EQ** — per-band enable, gain (−8 to +6 dB in 2 dB steps)
+- **Limiter** — enable/disable
+- **Panel Lock** — lock the physical panel controls on the device
+- **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright), gain environment (Quiet/Normal/Loud)
+
+### MV6
+- **Gain range** — 0–36 dB
+- **Tone** — Dark / Natural / Bright
+- **Real-time Denoiser** — enable/disable
+- **Popper Stopper** — enable/disable
+- **Mute Button Disable** — prevent accidental mutes
+- **Gain Lock** — hardware freeze of the gain control (Manual mode only)
 
 ---
 
