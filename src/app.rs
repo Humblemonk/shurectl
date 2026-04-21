@@ -523,7 +523,6 @@ impl App {
 #[derive(Debug)]
 pub enum DeviceAction {
     SetGain(u8),
-    /// Carry the full `InputMode` so callers never have to interpret a bare bool.
     SetMode(InputMode),
     SetAutoPosition(MicPosition),
     SetAutoTone(AutoTone),
@@ -551,11 +550,8 @@ pub enum DeviceAction {
     /// Uses the same 0–100 encoding as MVX2U but requires HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
     // ── Preset actions ────────────────────────────────────────────────────────
-    /// Save current device state to preset slot `usize`.
     SavePreset(usize),
-    /// Load preset slot `usize` and apply all settings to the device.
     LoadPreset(usize),
-    /// Delete the preset file for slot `usize`.
     DeletePreset(usize),
     /// Write the (already in-memory-updated) preset name for slot `usize` back to disk.
     PersistPresetName(usize),

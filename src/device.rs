@@ -256,9 +256,6 @@ impl ShureDevice {
     fn get_state_mv6(&self) -> Result<DeviceState> {
         let mut state = DeviceState::default();
 
-        // MV6 shares gain, mute, HPF, and auto level addresses with the MVX2U.
-        // mute_btn_disable GET uses CMD_GET_LOCK class with a non-standard payload layout;
-        // parse_response handles it correctly via MV6_FEAT_MUTE_BTN_DISABLE_RESP=[0x00,0x60].
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
             cmd_get_mute,

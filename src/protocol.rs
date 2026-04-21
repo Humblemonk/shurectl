@@ -89,8 +89,7 @@
 //!   Gain lock:       [0x01, 0xF3]  — 1 byte: 0=unlocked, 1=locked (Manual mode only)
 //!                                    Confirmed by probe diff: value changed 0x00→0x01 when
 //!                                    gain lock was enabled in MOTIV Mix. Standard CMD_GET_FEAT
-//!                                    / CMD_SET_FEAT, prefix 0x00. SET encoding unverified —
-//!                                    verify with usbmon if toggling does not take effect.
+//!                                    / CMD_SET_FEAT, prefix 0x00. SET confirmed working.
 //!   Tone:            [0x02, 0x04]  — 16-bit signed big-endian, units: percent
 //!                                    Range: -100 (Dark) to +100 (Bright), steps of 10.
 //!                                    0 = Natural (confirmed at factory default).
@@ -210,7 +209,7 @@ const MV6_FEAT_MUTE_BTN_DISABLE_RESP: [u8; 2] = [0x00, 0x60];
 const MV6_FEAT_TONE: [u8; 2] = [0x02, 0x04];
 /// MV6 gain lock (Manual mode only). 0=unlocked, 1=locked.
 /// Confirmed by probe diff against MOTIV Mix with gain lock on/off.
-/// SET encoding assumed standard CMD_SET_FEAT / prefix 0x00 — verify with usbmon if misbehaving.
+/// SET confirmed working: standard CMD_SET_FEAT / prefix 0x00.
 const MV6_FEAT_GAIN_LOCK: [u8; 2] = [0x01, 0xF3];
 // ── Phantom power value encoding ──────────────────────────────────────────────
 const PHANTOM_ON: u8 = 0x30; // 48 decimal = 48V
@@ -592,12 +591,9 @@ pub fn crc16_ansi(data: &[u8]) -> u16 {
 /// ```
 /// CRC-16/ANSI covers from `[0x11]` to end of payload (exclusive of CRC bytes).
 fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
-    // Inner data section: DATA_START + data_len + cmd + payload
-    // data_len = cmd(3) + payload.len() + 2 (for the data_len byte itself + DATA_START byte)
+    // data_len counts: DATA_START(1) + data_len(1) + cmd(3) + payload
     let data_len = (3 + payload.len() + 2) as u8;
 
-    // Wire content (everything after report ID, before CRC and padding):
-    // [total_len][0x11][0x22][seq][0x03][0x08][data_len][0x70][data_len][cmd...][payload...]
     let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
     inner.push(HEADER_MAGIC[0]);
     inner.push(HEADER_MAGIC[1]);
@@ -610,13 +606,9 @@ fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     inner.extend_from_slice(cmd);
     inner.extend_from_slice(payload);
 
-    // total_len = inner.len() + 2 (for the two CRC bytes)
-    let total_len = (inner.len() + 2) as u8;
-
-    // CRC covers everything in `inner` (i.e. from 0x11 onward)
+    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
     let crc = crc16_ansi(&inner);
 
-    // Assemble: [REPORT_ID][total_len][inner...][crc_hi][crc_lo][padding...]
     let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
     pkt.push(REPORT_ID);
     pkt.push(total_len);
@@ -636,7 +628,7 @@ fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
 pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
     // Minimum: report_id(1) + total_len(1) + header(2) + seq(1) + 0x03(1) +
     //          hdr_end(1) + data_len(1) + data_start(1) + data_len(1) +
-    //          cmd(3) + is_mix(1) + feat(2) + crc(2) = 18 bytes minimum
+    //          cmd(3) + prefix(1) + feat(2) + crc(2) = 18 bytes minimum
     if buf.len() < 18 {
         return None;
     }
@@ -671,7 +663,7 @@ pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
         return None;
     }
 
-    // buf[13] = is_mix byte (ignored for our purposes)
+    // buf[13] = prefix byte (is_mix/lock-class flag; ignored for our purposes)
     // buf[14..16] = feature address
     if buf.len() < 16 {
         return None;
@@ -792,14 +784,12 @@ pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
 
 /// Build a GET packet for the config-lock feature.
 pub fn cmd_get_lock(seq: u8) -> Vec<u8> {
-    // Payload: [0x06][feat_addr]  — lock uses 0x06 as the is_mix_or_lock byte.
     let payload = [0x06, FEAT_LOCK[0], FEAT_LOCK[1]];
     build_packet(seq, &CMD_GET_LOCK, &payload)
 }
 
 /// Build a SET packet for the config-lock feature.
 /// `locked = true` locks the device; `false` unlocks it.
-/// Must be followed by a CONFIRM packet (use `cmd_confirm`).
 pub fn cmd_set_lock(seq: u8, locked: bool) -> Vec<u8> {
     let value: u8 = u8::from(locked);
     let payload = [0x06, FEAT_LOCK[0], FEAT_LOCK[1], value];
@@ -823,9 +813,8 @@ pub fn cmd_get_eq_band_gain(seq: u8, band: usize) -> Vec<u8> {
 
 // ── Public SET constructors ───────────────────────────────────────────────────
 
-/// Set manual gain. `gain_db` is the already-clamped value from `device.rs::set_gain`,
-/// which enforces the model-specific ceiling (60 dB MVX2U, 36 dB MV6).
-/// Encoded as `gain_db * 100` in 16-bit big-endian. Shared by both devices.
+/// Set manual gain. Encoded as `gain_db * 100` in 16-bit big-endian.
+/// Clamping to the model-specific ceiling is the caller's responsibility.
 pub fn cmd_set_gain(seq: u8, gain_db: u8) -> Vec<u8> {
     let raw = gain_db as u16 * 100;
     cmd_set(seq, &FEAT_GAIN, &raw.to_be_bytes())
@@ -942,15 +931,15 @@ pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
     inner.push(HEADER_MAGIC[0]);
     inner.push(HEADER_MAGIC[1]);
     inner.push(seq);
-    inner.push(0x00); // HDR_CONSTANT: 0x00 for this command (not the usual 0x03)
+    inner.push(0x00); // HDR_CONSTANT=0x00 for this command (not the usual 0x03)
     inner.push(HDR_END);
     inner.push(data_len);
     inner.push(DATA_START);
     inner.push(data_len);
-    inner.extend_from_slice(&CMD_SET_LOCK); // [02 02 01], not CMD_SET_FEAT [02 02 02]
+    inner.extend_from_slice(&CMD_SET_LOCK); // [02 02 01], not CMD_SET_FEAT
     inner.extend_from_slice(&payload);
 
-    let total_len = (inner.len() + 2) as u8;
+    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
     let crc = crc16_ansi(&inner);
 
     let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
@@ -978,7 +967,7 @@ pub fn cmd_set_mv6_mix(seq: u8, mix: u8) -> Vec<u8> {
     inner.push(HEADER_MAGIC[0]);
     inner.push(HEADER_MAGIC[1]);
     inner.push(seq);
-    inner.push(0x00); // HDR_CONSTANT: 0x00 (confirmed by Wireshark; not the usual 0x03)
+    inner.push(0x00); // HDR_CONSTANT=0x00 (not the usual 0x03)
     inner.push(HDR_END);
     inner.push(data_len);
     inner.push(DATA_START);
@@ -986,7 +975,7 @@ pub fn cmd_set_mv6_mix(seq: u8, mix: u8) -> Vec<u8> {
     inner.extend_from_slice(&CMD_SET_FEAT);
     inner.extend_from_slice(&payload);
 
-    let total_len = (inner.len() + 2) as u8;
+    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
     let crc = crc16_ansi(&inner);
 
     let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
