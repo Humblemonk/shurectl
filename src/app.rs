@@ -221,8 +221,8 @@ impl App {
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
     // MV6 Main cycles (mirrors MVX2U structure, no extra controls):
-    //   Manual: Mode → Mute → Gain → GainLock → (wrap)
-    //   Auto:   Mode → Mute → (wrap)
+    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → (wrap)
     //
     // MV6 EQ:      Tone (slider only, no bands)
     // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
@@ -237,9 +237,11 @@ impl App {
             (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
             (Tab::Main, Focus::Gain, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
-            (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::MonitorMix,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
             (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::MonitorMix,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
             (Tab::Main, _, DeviceModel::Mv6, _) => Focus::Mode,
 
             // ── MVX2U Manual cycle ────────────────────────────────────────────
@@ -303,12 +305,14 @@ impl App {
             &self.device_state.mode,
         ) {
             // ── MV6 Main reverse ──────────────────────────────────────────────
-            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::MonitorMix,
             (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
             (Tab::Main, Focus::Gain, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
             (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::MonitorMix,
             (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
             (Tab::Main, _, DeviceModel::Mv6, _) => Focus::Mode,
 
             // ── MVX2U Manual reverse ──────────────────────────────────────────
@@ -380,11 +384,16 @@ impl App {
             Focus::MonitorMix => {
                 let m = &mut self.device_state.monitor_mix;
                 if delta > 0 {
-                    *m = (*m + 5).min(100);
+                    *m = (*m + 1).min(100);
                 } else {
-                    *m = m.saturating_sub(5);
+                    *m = m.saturating_sub(1);
                 }
-                Some(DeviceAction::SetMonitorMix(self.device_state.monitor_mix))
+                let mix = self.device_state.monitor_mix;
+                if self.device_model == DeviceModel::Mv6 {
+                    Some(DeviceAction::SetMv6MonitorMix(mix))
+                } else {
+                    Some(DeviceAction::SetMonitorMix(mix))
+                }
             }
             Focus::Tone => {
                 let t = &mut self.device_state.tone;
@@ -538,6 +547,9 @@ pub enum DeviceAction {
     /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
     SetMv6Tone(i8),
     SetMv6GainLock(bool),
+    /// Monitor mix: 0 = full mic, 100 = full playback. MV6 only.
+    /// Uses the same 0–100 encoding as MVX2U but requires HDR_CONSTANT=0x00 on the wire.
+    SetMv6MonitorMix(u8),
     // ── Preset actions ────────────────────────────────────────────────────────
     /// Save current device state to preset slot `usize`.
     SavePreset(usize),
@@ -787,12 +799,13 @@ mod tests {
 
     #[test]
     fn mv6_main_tab_manual_mode_focus_cycles_forward_and_back() {
-        // MV6 Manual: Mode → Mute → Gain → GainLock → Mode
+        // MV6 Manual: Mode → Mute → Gain → GainLock → MonitorMix → Mode
         let forward = [
             Focus::Mode,
             Focus::Mute,
             Focus::Gain,
             Focus::GainLock,
+            Focus::MonitorMix,
             Focus::Mode, // wrap
         ];
         let mut app = App::default();
@@ -806,14 +819,37 @@ mod tests {
             assert_eq!(app.focus, *expected, "focus_next: expected {expected:?}");
         }
 
-        // Backward from Mode wraps to GainLock
+        // Backward from Mode wraps to MonitorMix
         app.focus = Focus::Mode;
         app.focus_prev();
-        assert_eq!(app.focus, Focus::GainLock);
+        assert_eq!(app.focus, Focus::MonitorMix);
 
-        // Backward from GainLock goes to Gain
+        // Backward from MonitorMix goes to GainLock
         app.focus_prev();
-        assert_eq!(app.focus, Focus::Gain);
+        assert_eq!(app.focus, Focus::GainLock);
+    }
+
+    #[test]
+    fn mv6_main_tab_auto_mode_focus_cycles_forward_and_back() {
+        // MV6 Auto: Mode → Mute → MonitorMix → Mode
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.active_tab = Tab::Main;
+        app.device_state.mode = InputMode::Auto;
+        app.focus = Focus::Mode;
+
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Mute);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::MonitorMix);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Mode); // wrap
+
+        // Backward from Mode wraps to MonitorMix
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::MonitorMix);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Mute);
     }
 
     #[test]
@@ -903,10 +939,10 @@ mod tests {
     }
 
     #[test]
-    fn adjust_monitor_mix_steps_by_five_and_clamps() {
+    fn adjust_monitor_mix_steps_by_one_and_clamps() {
         let mut app = App::default();
         app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 95;
+        app.device_state.monitor_mix = 99;
 
         app.adjust_focused(1);
         assert_eq!(app.device_state.monitor_mix, 100);
@@ -917,11 +953,40 @@ mod tests {
             "monitor mix must not exceed 100"
         );
 
-        app.device_state.monitor_mix = 3;
+        app.device_state.monitor_mix = 1;
         app.adjust_focused(-1);
         assert_eq!(
             app.device_state.monitor_mix, 0,
             "monitor mix must not underflow"
+        );
+    }
+
+    #[test]
+    fn adjust_monitor_mix_dispatches_set_mv6_monitor_mix_for_mv6() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.focus = Focus::MonitorMix;
+        app.device_state.monitor_mix = 50;
+
+        let action = app.adjust_focused(1);
+        assert_eq!(app.device_state.monitor_mix, 51);
+        assert!(
+            matches!(action, Some(DeviceAction::SetMv6MonitorMix(51))),
+            "MV6 must dispatch SetMv6MonitorMix, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn adjust_monitor_mix_dispatches_set_monitor_mix_for_mvx2u() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mvx2u;
+        app.focus = Focus::MonitorMix;
+        app.device_state.monitor_mix = 50;
+
+        let action = app.adjust_focused(1);
+        assert!(
+            matches!(action, Some(DeviceAction::SetMonitorMix(51))),
+            "MVX2U must dispatch SetMonitorMix, got {action:?}"
         );
     }
 

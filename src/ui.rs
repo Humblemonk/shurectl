@@ -216,6 +216,7 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(3), // gain gauge
             Constraint::Length(3), // gain lock
             Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -317,6 +318,7 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(gain_lock_p, rows[3]);
 
     draw_meter(f, app, rows[4]);
+    draw_monitor_mix_gauge(f, app, rows[5]);
 }
 
 fn draw_main_left_mv6_auto(f: &mut Frame, app: &App, area: Rect) {
@@ -326,6 +328,7 @@ fn draw_main_left_mv6_auto(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(3), // mode
             Constraint::Length(3), // mute
             Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -334,6 +337,7 @@ fn draw_main_left_mv6_auto(f: &mut Frame, app: &App, area: Rect) {
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
     draw_meter(f, app, rows[2]);
+    draw_monitor_mix_gauge(f, app, rows[3]);
 }
 
 fn draw_main_left_manual(f: &mut Frame, app: &App, area: Rect) {
@@ -619,25 +623,9 @@ fn draw_mute_block(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-/// Renders the controls shared by both Manual and Auto layouts that follow
-/// the mode-specific top section: Level Meter, Monitor Mix, Phantom Power,
-/// Config Lock.
-///
-/// Control order follows the signal chain: observe the level produced by the
-/// gain you just set, adjust monitoring, then the rarely-changed setup
-/// controls (phantom, lock) at the bottom.
-///
-/// `rows` must have at least 4 elements (indices 0–3).
-fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
-    assert!(
-        rows.len() >= 4,
-        "draw_main_shared requires at least 4 row slots, got {}",
-        rows.len()
-    );
-    // ── Level Meter ───────────────────────────────────────────────────────────
-    draw_meter(f, app, rows[0]);
-
-    // ── Monitor Mix ───────────────────────────────────────────────────────────
+/// Renders the monitor mix gauge. Used by both MVX2U (via draw_main_shared)
+/// and MV6 (directly in draw_main_left_mv6_manual / draw_main_left_mv6_auto).
+fn draw_monitor_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
     let mm_focused = app.focus == Focus::MonitorMix;
     let mix = app.device_state.monitor_mix;
     let mix_gauge = Gauge::default()
@@ -662,7 +650,29 @@ fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
         .gauge_style(Style::default().fg(Color::Rgb(50, 150, 220)).bg(C_SURFACE))
         .ratio(mix as f64 / 100.0)
         .label(format!("Mic ◄─{:3}%─► Playback", mix));
-    f.render_widget(mix_gauge, rows[1]);
+    f.render_widget(mix_gauge, area);
+}
+
+/// Renders the controls shared by both Manual and Auto layouts that follow
+/// the mode-specific top section: Level Meter, Monitor Mix, Phantom Power,
+/// Config Lock.
+///
+/// Control order follows the signal chain: observe the level produced by the
+/// gain you just set, adjust monitoring, then the rarely-changed setup
+/// controls (phantom, lock) at the bottom.
+///
+/// `rows` must have at least 4 elements (indices 0–3).
+fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
+    assert!(
+        rows.len() >= 4,
+        "draw_main_shared requires at least 4 row slots, got {}",
+        rows.len()
+    );
+    // ── Level Meter ───────────────────────────────────────────────────────────
+    draw_meter(f, app, rows[0]);
+
+    // ── Monitor Mix ───────────────────────────────────────────────────────────
+    draw_monitor_mix_gauge(f, app, rows[1]);
 
     // ── Phantom Power ─────────────────────────────────────────────────────────
     let ph_focused = app.focus == Focus::Phantom;
