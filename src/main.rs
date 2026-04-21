@@ -116,10 +116,6 @@ fn main() -> Result<()> {
         match dev.get_state() {
             Ok(mut state) => {
                 state.serial_number = dev.serial_number.clone();
-                if dev.model == DeviceModel::Mv6 {
-                    let mv6 = presets::load_mv6_state();
-                    state.mute_btn_disabled = mv6.mute_btn_disabled;
-                }
                 app.device_state = state;
                 app.set_ok(format!(
                     "Connected to {} — state loaded.",
@@ -407,11 +403,6 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
                 "Mute Button → {}",
                 if *disabled { "Disabled" } else { "Enabled" }
             ));
-            if let Err(e) = presets::save_mv6_state(&presets::Mv6State {
-                mute_btn_disabled: *disabled,
-            }) {
-                eprintln!("Warning: failed to save MV6 state: {e}");
-            }
             send_if_connected(device, |d| d.set_mv6_mute_btn_disable(*disabled))
         }
         DeviceAction::SetMv6Tone(tone) => {
@@ -434,6 +425,10 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             });
             send_if_connected(device, |d| d.set_mv6_gain_lock(*locked))
         }
+        DeviceAction::SetMv6MonitorMix(m) => {
+            app.set_ok(format!("Monitor mix → {}%", m));
+            send_if_connected(device, |d| d.set_mv6_monitor_mix(*m))
+        }
         // ── Preset actions ────────────────────────────────────────────────────
         DeviceAction::SavePreset(i) => {
             let name = app.presets[*i]
@@ -454,17 +449,7 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             if let Some(slot) = &app.presets[*i].clone() {
                 slot.apply_to_device_state(&mut app.device_state);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
-                let result = apply_preset_to_device(device, &app.device_state, app.device_model);
-                // mute_btn_disabled cannot be read back from the MV6, so we persist
-                // the preset value to mv6_state.toml so a restart doesn't revert it.
-                if app.device_model == DeviceModel::Mv6
-                    && let Err(e) = presets::save_mv6_state(&presets::Mv6State {
-                        mute_btn_disabled: app.device_state.mute_btn_disabled,
-                    })
-                {
-                    eprintln!("Warning: failed to persist MV6 state after preset load: {e}");
-                }
-                result
+                apply_preset_to_device(device, &app.device_state, app.device_model)
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
                 Ok(())
@@ -545,6 +530,7 @@ fn apply_preset_to_device(
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
                 d.set_mv6_tone(state.tone)?;
                 d.set_mv6_gain_lock(state.mv6_gain_locked)?;
+                d.set_mv6_monitor_mix(state.monitor_mix)?;
             }
         }
         Ok(())

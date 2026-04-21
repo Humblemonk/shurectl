@@ -180,7 +180,7 @@ pub fn start_meter(level: Arc<AtomicI32>, peak_window: Arc<Mutex<PeakWindow>>) -
         SampleFormat::U16 => {
             build_stream::<u16>(&device, &stream_config, level, peak_window, err_fn)
         }
-        // cpal 0.15 added more formats; handle them all the same way.
+        // Fallback for any other sample formats.
         _ => build_stream::<f32>(&device, &stream_config, level, peak_window, err_fn),
     };
 

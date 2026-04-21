@@ -69,15 +69,27 @@
 //!   Denoiser:        [0x01, 0x58]  — 1 byte: 0=off, 1=on  (GET-readable, confirmed)
 //!   Auto level:      [0x01, 0x85]  — 1 byte: 0=manual, 1=auto
 //!   Popper stopper:  [0x03, 0x81]  — 1 byte: 0=off, 1=on  (confirmed by MOTIV app probe diff)
-//!   Mute btn disable:[0x0C, 0x00]  — SET uses cmd [02 02 01], HDR_CONSTANT=0x00,
+//!   Mute btn disable:[0x0C, 0x00]  — GET uses cmd [01 02 01], HDR_CONSTANT=0x03,
+//!                                    payload [addr_hi, addr_lo, 0x60].
+//!                                    SET uses cmd [02 02 01], HDR_CONSTANT=0x00,
 //!                                    payload [addr_hi, addr_lo, 0x60, enable_byte].
 //!                                    enable_byte: 0x00=disabled, 0x01=active (inverted).
-//!                                    State persisted host-side; GET unreliable.
+//!                                    parse_response sees feat_addr=[0x00, 0x60] because
+//!                                    addr bytes appear at payload[0..2]. GET confirmed
+//!                                    reliable by Wireshark — state read from device.
+//!   Monitor mix:     [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback. Same address
+//!                                    as MVX2U FEAT_MIX. SET confirmed by Wireshark capture
+//!                                    of MOTIV app: HDR_CONSTANT=0x00 (not the usual 0x03),
+//!                                    CMD_SET_FEAT [02 02 02], prefix 0x00, value is 0–100.
+//!                                    GET uses standard framing (HDR_CONSTANT=0x03, prefix
+//!                                    0x00) — confirmed by Wireshark. Device only responds
+//!                                    to GET after at least one SET has been issued; a fresh
+//!                                    device returns nothing (explains why probe sweep missed
+//!                                    it). See cmd_get_mv6_mix() / cmd_set_mv6_mix().
 //!   Gain lock:       [0x01, 0xF3]  — 1 byte: 0=unlocked, 1=locked (Manual mode only)
 //!                                    Confirmed by probe diff: value changed 0x00→0x01 when
 //!                                    gain lock was enabled in MOTIV Mix. Standard CMD_GET_FEAT
-//!                                    / CMD_SET_FEAT, prefix 0x00. SET encoding unverified —
-//!                                    verify with usbmon if toggling does not take effect.
+//!                                    / CMD_SET_FEAT, prefix 0x00. SET confirmed working.
 //!   Tone:            [0x02, 0x04]  — 16-bit signed big-endian, units: percent
 //!                                    Range: -100 (Dark) to +100 (Bright), steps of 10.
 //!                                    0 = Natural (confirmed at factory default).
@@ -182,15 +194,22 @@ const MV6_FEAT_DENOISER: [u8; 2] = [0x01, 0x58];
 /// popper stopper in MOTIV changes this address between [00] and [01].
 const MV6_FEAT_POPPER_STOPPER: [u8; 2] = [0x03, 0x81];
 /// MV6 mute button disable. Address [0x0C, 0x00] confirmed by Wireshark capture.
-/// SET uses cmd [02 02 01], HDR_CONSTANT=0x00, inverted encoding (0x00=disabled, 0x01=active).
-/// State is persisted host-side in mv6_state.toml since GET is unreliable.
+/// SET uses cmd [02 02 01], HDR_CONSTANT=0x00, payload [addr_hi, addr_lo, 0x60, enable_byte].
+/// GET uses cmd [01 02 01], HDR_CONSTANT=0x03, payload [addr_hi, addr_lo, 0x60].
+/// In both GET and SET the address bytes appear at payload[0..2] with 0x60 at payload[2],
+/// so parse_response sees feat_addr=[0x00, 0x60] and value at the following byte.
+/// enable_byte: 0x00=disabled, 0x01=active (inverted). GET confirmed reliable by Wireshark.
 const MV6_FEAT_MUTE_BTN_DISABLE: [u8; 2] = [0x0C, 0x00];
+/// The feature address as seen by parse_response for mute button disable GET/SET responses.
+/// Because the payload layout puts [addr_hi=0x0C, addr_lo=0x00, mix=0x60] at bytes 13–15,
+/// parse_response reads feat_addr from bytes 14–15 as [0x00, 0x60].
+const MV6_FEAT_MUTE_BTN_DISABLE_RESP: [u8; 2] = [0x00, 0x60];
 /// MV6 tone character. 16-bit signed big-endian, units: percent.
 /// Range: -100 (Dark) to +100 (Bright) in steps of 10. 0 = Natural (default).
 const MV6_FEAT_TONE: [u8; 2] = [0x02, 0x04];
 /// MV6 gain lock (Manual mode only). 0=unlocked, 1=locked.
 /// Confirmed by probe diff against MOTIV Mix with gain lock on/off.
-/// SET encoding assumed standard CMD_SET_FEAT / prefix 0x00 — verify with usbmon if misbehaving.
+/// SET confirmed working: standard CMD_SET_FEAT / prefix 0x00.
 const MV6_FEAT_GAIN_LOCK: [u8; 2] = [0x01, 0xF3];
 // ── Phantom power value encoding ──────────────────────────────────────────────
 const PHANTOM_ON: u8 = 0x30; // 48 decimal = 48V
@@ -235,7 +254,7 @@ pub struct DeviceState {
     /// Popper stopper. MV6 only. Address [0x03, 0x81] confirmed by MOTIV app probe diff.
     pub popper_stopper_enabled: bool,
     /// Mute button disable. MV6 only. Address [0x0C, 0x00] confirmed by Wireshark capture.
-    /// State persisted host-side in mv6_state.toml; see presets::Mv6State.
+    /// GET uses CMD_GET_LOCK with inverted encoding; read from device at startup.
     pub mute_btn_disabled: bool,
     /// Tone character. MV6 only. Range: -10 to +10 (displayed as × 10%).
     /// -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
@@ -572,12 +591,9 @@ pub fn crc16_ansi(data: &[u8]) -> u16 {
 /// ```
 /// CRC-16/ANSI covers from `[0x11]` to end of payload (exclusive of CRC bytes).
 fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
-    // Inner data section: DATA_START + data_len + cmd + payload
-    // data_len = cmd(3) + payload.len() + 2 (for the data_len byte itself + DATA_START byte)
+    // data_len counts: DATA_START(1) + data_len(1) + cmd(3) + payload
     let data_len = (3 + payload.len() + 2) as u8;
 
-    // Wire content (everything after report ID, before CRC and padding):
-    // [total_len][0x11][0x22][seq][0x03][0x08][data_len][0x70][data_len][cmd...][payload...]
     let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
     inner.push(HEADER_MAGIC[0]);
     inner.push(HEADER_MAGIC[1]);
@@ -590,13 +606,9 @@ fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     inner.extend_from_slice(cmd);
     inner.extend_from_slice(payload);
 
-    // total_len = inner.len() + 2 (for the two CRC bytes)
-    let total_len = (inner.len() + 2) as u8;
-
-    // CRC covers everything in `inner` (i.e. from 0x11 onward)
+    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
     let crc = crc16_ansi(&inner);
 
-    // Assemble: [REPORT_ID][total_len][inner...][crc_hi][crc_lo][padding...]
     let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
     pkt.push(REPORT_ID);
     pkt.push(total_len);
@@ -616,7 +628,7 @@ fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
 pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
     // Minimum: report_id(1) + total_len(1) + header(2) + seq(1) + 0x03(1) +
     //          hdr_end(1) + data_len(1) + data_start(1) + data_len(1) +
-    //          cmd(3) + is_mix(1) + feat(2) + crc(2) = 18 bytes minimum
+    //          cmd(3) + prefix(1) + feat(2) + crc(2) = 18 bytes minimum
     if buf.len() < 18 {
         return None;
     }
@@ -651,7 +663,7 @@ pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
         return None;
     }
 
-    // buf[13] = is_mix byte (ignored for our purposes)
+    // buf[13] = prefix byte (is_mix/lock-class flag; ignored for our purposes)
     // buf[14..16] = feature address
     if buf.len() < 16 {
         return None;
@@ -742,6 +754,27 @@ pub fn cmd_get_mv6_tone(seq: u8) -> Vec<u8> {
 pub fn cmd_get_mv6_gain_lock(seq: u8) -> Vec<u8> {
     cmd_get(seq, &MV6_FEAT_GAIN_LOCK)
 }
+/// GET for MV6 monitor mix. Uses standard framing (HDR_CONSTANT=0x03, prefix=0x00).
+/// Confirmed by Wireshark capture. Note: the device only responds after at least one
+/// SET has been issued — a fresh device returns nothing, which is why the probe sweep
+/// found no response before shurectl first wrote a value.
+pub fn cmd_get_mv6_mix(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &FEAT_MIX)
+}
+
+/// GET for MV6 mute button disable state.
+/// Uses CMD_GET_LOCK class with payload [addr_hi=0x0C, addr_lo=0x00, mix_byte=0x60].
+/// parse_response will return feat_addr=[0x00, 0x60] (MV6_FEAT_MUTE_BTN_DISABLE_RESP)
+/// with value[0]: 0x00=button disabled, 0x01=button active (inverted encoding).
+/// Confirmed reliable by Wireshark — device correctly reflects current state.
+pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
+    let payload = [
+        MV6_FEAT_MUTE_BTN_DISABLE[0],
+        MV6_FEAT_MUTE_BTN_DISABLE[1],
+        0x60,
+    ];
+    build_packet(seq, &CMD_GET_LOCK, &payload)
+}
 
 // ── Lock command constructors ─────────────────────────────────────────────────
 //
@@ -751,14 +784,12 @@ pub fn cmd_get_mv6_gain_lock(seq: u8) -> Vec<u8> {
 
 /// Build a GET packet for the config-lock feature.
 pub fn cmd_get_lock(seq: u8) -> Vec<u8> {
-    // Payload: [0x06][feat_addr]  — lock uses 0x06 as the is_mix_or_lock byte.
     let payload = [0x06, FEAT_LOCK[0], FEAT_LOCK[1]];
     build_packet(seq, &CMD_GET_LOCK, &payload)
 }
 
 /// Build a SET packet for the config-lock feature.
 /// `locked = true` locks the device; `false` unlocks it.
-/// Must be followed by a CONFIRM packet (use `cmd_confirm`).
 pub fn cmd_set_lock(seq: u8, locked: bool) -> Vec<u8> {
     let value: u8 = u8::from(locked);
     let payload = [0x06, FEAT_LOCK[0], FEAT_LOCK[1], value];
@@ -782,9 +813,8 @@ pub fn cmd_get_eq_band_gain(seq: u8, band: usize) -> Vec<u8> {
 
 // ── Public SET constructors ───────────────────────────────────────────────────
 
-/// Set manual gain. `gain_db` is the already-clamped value from `device.rs::set_gain`,
-/// which enforces the model-specific ceiling (60 dB MVX2U, 36 dB MV6).
-/// Encoded as `gain_db * 100` in 16-bit big-endian. Shared by both devices.
+/// Set manual gain. Encoded as `gain_db * 100` in 16-bit big-endian.
+/// Clamping to the model-specific ceiling is the caller's responsibility.
 pub fn cmd_set_gain(seq: u8, gain_db: u8) -> Vec<u8> {
     let raw = gain_db as u16 * 100;
     cmd_set(seq, &FEAT_GAIN, &raw.to_be_bytes())
@@ -901,15 +931,51 @@ pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
     inner.push(HEADER_MAGIC[0]);
     inner.push(HEADER_MAGIC[1]);
     inner.push(seq);
-    inner.push(0x00); // HDR_CONSTANT: 0x00 for this command (not the usual 0x03)
+    inner.push(0x00); // HDR_CONSTANT=0x00 for this command (not the usual 0x03)
     inner.push(HDR_END);
     inner.push(data_len);
     inner.push(DATA_START);
     inner.push(data_len);
-    inner.extend_from_slice(&CMD_SET_LOCK); // [02 02 01], not CMD_SET_FEAT [02 02 02]
+    inner.extend_from_slice(&CMD_SET_LOCK); // [02 02 01], not CMD_SET_FEAT
     inner.extend_from_slice(&payload);
 
-    let total_len = (inner.len() + 2) as u8;
+    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
+    let crc = crc16_ansi(&inner);
+
+    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
+    pkt.push(REPORT_ID);
+    pkt.push(total_len);
+    pkt.extend_from_slice(&inner);
+    pkt.push((crc >> 8) as u8);
+    pkt.push((crc & 0xFF) as u8);
+    pkt.resize(PACKET_SIZE, 0x00);
+    pkt
+}
+
+/// Set the MV6 monitor mix level.
+///
+/// `mix` is clamped to 0–100: 0 = full mic in headphones, 100 = full playback.
+/// Uses the same FEAT_MIX address as the MVX2U [0x01, 0x86], but requires
+/// HDR_CONSTANT=0x00 (confirmed by Wireshark capture of MOTIV app SET packet).
+/// GET uses standard framing — see cmd_get_mv6_mix().
+pub fn cmd_set_mv6_mix(seq: u8, mix: u8) -> Vec<u8> {
+    let value = mix.min(100);
+    let payload = [0x00, FEAT_MIX[0], FEAT_MIX[1], value];
+    let data_len = (3 + payload.len() + 2) as u8;
+
+    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
+    inner.push(HEADER_MAGIC[0]);
+    inner.push(HEADER_MAGIC[1]);
+    inner.push(seq);
+    inner.push(0x00); // HDR_CONSTANT=0x00 (not the usual 0x03)
+    inner.push(HDR_END);
+    inner.push(data_len);
+    inner.push(DATA_START);
+    inner.push(data_len);
+    inner.extend_from_slice(&CMD_SET_FEAT);
+    inner.extend_from_slice(&payload);
+
+    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
     let crc = crc16_ansi(&inner);
 
     let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
@@ -1059,11 +1125,12 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             state.popper_stopper_enabled = value[0] != 0;
             true
         }
-        f if f == MV6_FEAT_MUTE_BTN_DISABLE => {
+        f if f == MV6_FEAT_MUTE_BTN_DISABLE_RESP => {
             if value.is_empty() {
                 return false;
             }
-            state.mute_btn_disabled = value[0] != 0;
+            // Inverted encoding: 0x00=button disabled, 0x01=button active.
+            state.mute_btn_disabled = value[0] == 0x00;
             true
         }
         f if f == MV6_FEAT_TONE => {
@@ -1291,6 +1358,59 @@ mod tests {
     fn set_mix_clamps_at_100() {
         let pkt = cmd_set_mix(0, 200);
         assert_eq!(pkt[16], 100);
+    }
+
+    // ── MV6 monitor mix ───────────────────────────────────────────────────────
+
+    #[test]
+    fn mv6_get_mix_uses_standard_framing() {
+        // Confirmed by Wireshark: GET uses HDR_CONSTANT=0x03 and prefix=0x00.
+        let pkt = cmd_get_mv6_mix(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(pkt[5], 0x03, "GET must use standard HDR_CONSTANT=0x03");
+        assert_eq!(&pkt[10..13], &CMD_GET_FEAT, "must use CMD_GET_FEAT");
+        assert_eq!(pkt[13], 0x00, "prefix must be 0x00");
+        assert_eq!(&pkt[14..16], &FEAT_MIX, "must use FEAT_MIX address");
+    }
+
+    #[test]
+    fn mv6_set_mix_uses_hdr_constant_zero() {
+        // Confirmed by Wireshark capture: HDR_CONSTANT must be 0x00, not 0x03.
+        let pkt = cmd_set_mv6_mix(0, 62);
+        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00 for MV6 mix SET");
+    }
+
+    #[test]
+    fn mv6_set_mix_uses_feat_mix_address() {
+        let pkt = cmd_set_mv6_mix(0, 50);
+        assert_eq!(&pkt[10..13], &CMD_SET_FEAT, "must use CMD_SET_FEAT");
+        assert_eq!(pkt[13], 0x00, "prefix must be 0x00");
+        assert_eq!(&pkt[14..16], &FEAT_MIX, "must use FEAT_MIX address");
+        assert_eq!(pkt[16], 50, "value must be encoded directly");
+    }
+
+    #[test]
+    fn mv6_set_mix_clamps_at_100() {
+        let pkt = cmd_set_mv6_mix(0, 200);
+        assert_eq!(pkt[16], 100, "must clamp to 100");
+    }
+
+    #[test]
+    fn mv6_set_mix_confirmed_capture_value() {
+        // Wireshark capture showed value 0x3e (62) when MOTIV mic level was 62%.
+        let pkt = cmd_set_mv6_mix(0, 62);
+        assert_eq!(pkt[16], 0x3e, "62% must encode as 0x3e");
+    }
+
+    #[test]
+    fn mv6_set_mix_has_valid_crc() {
+        for mix in [0u8, 41, 62, 100] {
+            let pkt = cmd_set_mv6_mix(0, mix);
+            let total_len = pkt[1] as usize;
+            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
+            let computed_crc = crc16_ansi(&pkt[2..total_len]);
+            assert_eq!(stored_crc, computed_crc, "CRC must be valid for mix={mix}");
+        }
     }
 
     #[test]
@@ -2132,18 +2252,47 @@ mod tests {
     }
 
     #[test]
+    fn mv6_mute_btn_disable_get_packet_structure() {
+        // GET confirmed by Wireshark: cmd=[01 02 01] (CMD_GET_LOCK), HDR_CONSTANT=0x03,
+        // payload=[0x0C, 0x00, 0x60]. parse_response sees feat_addr=[0x00, 0x60].
+        let pkt = cmd_get_mv6_mute_btn_disable(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(pkt[5], 0x03, "GET must use standard HDR_CONSTANT=0x03");
+        assert_eq!(&pkt[10..13], &CMD_GET_LOCK, "must use CMD_GET_LOCK");
+        assert_eq!(
+            pkt[13], MV6_FEAT_MUTE_BTN_DISABLE[0],
+            "addr_hi must be 0x0C"
+        );
+        assert_eq!(
+            pkt[14], MV6_FEAT_MUTE_BTN_DISABLE[1],
+            "addr_lo must be 0x00"
+        );
+        assert_eq!(pkt[15], 0x60, "mix_byte must be 0x60");
+    }
+
+    #[test]
     fn mv6_mute_btn_disable_apply_response_roundtrip() {
-        for (bytes, expected) in [(&[0x00u8][..], false), (&[0x01u8][..], true)] {
+        // Response uses inverted encoding: 0x00=disabled, 0x01=active.
+        // feat_addr in response is MV6_FEAT_MUTE_BTN_DISABLE_RESP=[0x00, 0x60].
+        for (bytes, expected_disabled) in [(&[0x00u8][..], true), (&[0x01u8][..], false)] {
             let mut state = DeviceState::default();
-            assert!(apply_response(MV6_FEAT_MUTE_BTN_DISABLE, bytes, &mut state));
-            assert_eq!(state.mute_btn_disabled, expected);
+            assert!(apply_response(
+                MV6_FEAT_MUTE_BTN_DISABLE_RESP,
+                bytes,
+                &mut state
+            ));
+            assert_eq!(state.mute_btn_disabled, expected_disabled);
         }
     }
 
     #[test]
     fn mv6_mute_btn_disable_apply_response_empty_returns_false() {
         let mut state = DeviceState::default();
-        assert!(!apply_response(MV6_FEAT_MUTE_BTN_DISABLE, &[], &mut state));
+        assert!(!apply_response(
+            MV6_FEAT_MUTE_BTN_DISABLE_RESP,
+            &[],
+            &mut state
+        ));
     }
 
     #[test]

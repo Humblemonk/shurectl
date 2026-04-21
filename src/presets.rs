@@ -271,46 +271,6 @@ pub fn load_all_presets() -> [Option<PresetSlot>; PRESET_COUNT] {
     })
 }
 
-// ── MV6 persistent state ──────────────────────────────────────────────────────
-//
-// Some MV6 settings cannot be read back from the device (the mute button disable
-// state always returns the same value regardless of what was set). We persist
-// these host-side in ~/.config/shurectl/mv6_state.toml.
-
-/// Host-side persistent state for MV6 settings that cannot be read from the device.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct Mv6State {
-    /// Whether the physical mute button is disabled.
-    #[serde(default)]
-    pub mute_btn_disabled: bool,
-}
-
-/// Load MV6 persistent state from `~/.config/shurectl/mv6_state.toml`.
-/// Returns default (all false) if the file does not exist or cannot be parsed.
-pub fn load_mv6_state() -> Mv6State {
-    let path = match config_dir() {
-        Ok(dir) => dir.join("mv6_state.toml"),
-        Err(_) => return Mv6State::default(),
-    };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return Mv6State::default(),
-    };
-    toml::from_str(&text).unwrap_or_default()
-}
-
-/// Save MV6 persistent state to `~/.config/shurectl/mv6_state.toml`.
-pub fn save_mv6_state(state: &Mv6State) -> Result<()> {
-    let path = config_dir()?.join("mv6_state.toml");
-    let text = toml::to_string_pretty(state).context("Failed to serialise MV6 state")?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &text)
-        .with_context(|| format!("Failed to write MV6 state: {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("Failed to rename MV6 state file: {}", path.display()))?;
-    Ok(())
-}
-
 // ── Serialisable mirror types ─────────────────────────────────────────────────
 //
 // We use separate mirror enums with `#[derive(Serialize, Deserialize)]` rather
@@ -688,7 +648,7 @@ mod tests {
             auto_gain: AutoGain::Normal,
             muted: false,
             phantom_power: false,
-            monitor_mix: 0,
+            monitor_mix: 62,
             limiter_enabled: false,
             compressor: CompressorPreset::Off,
             hpf: HpfFrequency::Hz75,
@@ -719,6 +679,10 @@ mod tests {
         assert!(decoded.mute_btn_disabled);
         assert_eq!(decoded.tone, 5);
         assert_eq!(decoded.hpf, SerHpfFrequency::Hz75);
+        assert_eq!(
+            decoded.monitor_mix, 62,
+            "monitor_mix must survive TOML roundtrip"
+        );
     }
 
     #[test]

@@ -40,8 +40,8 @@ use crate::protocol::{
     cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor,
     cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf,
     cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
-    cmd_get_mv6_gain_lock, cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_phantom,
-    cmd_set_lock, parse_response,
+    cmd_get_mv6_gain_lock, cmd_get_mv6_mix, cmd_get_mv6_mute_btn_disable,
+    cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_phantom, cmd_set_lock, parse_response,
 };
 
 #[cfg(target_os = "linux")]
@@ -256,9 +256,6 @@ impl ShureDevice {
     fn get_state_mv6(&self) -> Result<DeviceState> {
         let mut state = DeviceState::default();
 
-        // MV6 shares gain, mute, HPF, and auto level addresses with the MVX2U.
-        // mute_btn_disabled is persisted host-side (see presets::Mv6State) because
-        // the device always returns the same value for that GET regardless of state.
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
             cmd_get_mute,
@@ -268,6 +265,8 @@ impl ShureDevice {
             cmd_get_mv6_popper_stopper,
             cmd_get_mv6_tone,
             cmd_get_mv6_gain_lock,
+            cmd_get_mv6_mix,
+            cmd_get_mv6_mute_btn_disable,
         ];
 
         self.run_getters(getters, &mut state, "get_state(mv6)");
@@ -375,6 +374,10 @@ impl ShureDevice {
 
     pub fn set_mv6_gain_lock(&self, locked: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_mv6_gain_lock(self.next_seq(), locked))
+    }
+
+    pub fn set_mv6_monitor_mix(&self, mix: u8) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mv6_mix(self.next_seq(), mix))
     }
 }
 
