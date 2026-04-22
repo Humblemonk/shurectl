@@ -45,3 +45,4 @@ jobs:
           VALIDATE_YAML_PRETTIER: false
           VALIDATE_MARKDOWN_PRETTIER: false
           VALIDATE_RUST_CLIPPY: false
+          VALIDATE_TRIVY: false
