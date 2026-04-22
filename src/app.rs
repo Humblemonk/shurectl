@@ -1557,6 +1557,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mv6_dynamics_tab_focus_cycles_all_four_controls() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv6;
+        app.active_tab = Tab::Dynamics;
+        app.focus = Focus::Denoiser;
+
+        // Forward: Denoiser → PopperStopper → MuteBtnDisable → Hpf → Denoiser
+        app.focus_next();
+        assert_eq!(app.focus, Focus::PopperStopper);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::MuteBtnDisable);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Hpf);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Denoiser); // wrap
+
+        // Backward: Denoiser → Hpf → MuteBtnDisable → PopperStopper → Denoiser
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Hpf);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::MuteBtnDisable);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::PopperStopper);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Denoiser); // wrap
+    }
+
     // ── preset focus / toggle ─────────────────────────────────────────────────
 
     #[test]
