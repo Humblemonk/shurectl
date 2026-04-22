@@ -205,10 +205,22 @@ impl App {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
             },
+            (Tab::Main, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
+                InputMode::Manual => Focus::Gain,
+                InputMode::Auto => Focus::Mode,
+            },
             (Tab::Eq, DeviceModel::Mv6) => Focus::Tone,
             (Tab::Eq, DeviceModel::Mvx2u) => Focus::EqEnable,
+            (Tab::Eq, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
+                InputMode::Auto => Focus::Tone,
+                InputMode::Manual => Focus::EqBandSelect,
+            },
             (Tab::Dynamics, DeviceModel::Mv6) => Focus::Denoiser,
             (Tab::Dynamics, DeviceModel::Mvx2u) => Focus::Limiter,
+            (Tab::Dynamics, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
+                InputMode::Auto => Focus::Denoiser,
+                InputMode::Manual => Focus::Limiter,
+            },
             (Tab::Presets, _) => Focus::PresetName(0),
             (Tab::Info, _) => Focus::None,
         };
@@ -264,6 +276,57 @@ impl App {
 
             // ── MV6 EQ (Tone only) ────────────────────────────────────────────
             (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
+
+            // ── MVX2U Gen 2 Main cycle ────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Gain, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::GainLock,
+            (Tab::Main, Focus::GainLock, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::MonitorMix
+            }
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::Phantom
+            }
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::MonitorMix,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
+                Focus::Phantom
+            }
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
+
+            // ── MVX2U Gen 2 EQ (Tone in Auto, 5-band in Manual) ──────────────
+            (Tab::Eq, _, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Tone,
+            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::EqGain(self.eq_selected_band)
+            }
+            (Tab::Eq, Focus::EqGain(_), DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::EqBandSelect
+            }
+            (Tab::Eq, _, DeviceModel::Mvx2uGen2, _) => Focus::EqBandSelect,
+
+            // ── MVX2U Gen 2 Dynamics ──────────────────────────────────────────
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mvx2uGen2, _) => Focus::Compressor,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mvx2uGen2, _) => Focus::Denoiser,
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::PopperStopper
+            }
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::Hpf
+            }
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::Limiter
+            }
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
+                Focus::PopperStopper
+            }
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
+                Focus::Hpf
+            }
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Denoiser,
+            (Tab::Dynamics, _, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Limiter,
+            (Tab::Dynamics, _, DeviceModel::Mvx2uGen2, _) => Focus::Denoiser,
 
             // ── MVX2U EQ ──────────────────────────────────────────────────────
             (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => Focus::EqBandSelect,
@@ -337,6 +400,57 @@ impl App {
             // ── MV6 EQ ────────────────────────────────────────────────────────
             (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
 
+            // ── MVX2U Gen 2 Main reverse ──────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Phantom,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mode,
+            (Tab::Main, Focus::Gain, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::GainLock, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::GainLock
+            }
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::MonitorMix
+            }
+            (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Phantom,
+            (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
+                Focus::MonitorMix
+            }
+            (Tab::Main, _, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
+
+            // ── MVX2U Gen 2 EQ reverse ────────────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Tone,
+            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::EqGain(self.eq_selected_band)
+            }
+            (Tab::Eq, Focus::EqGain(_), DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::EqBandSelect
+            }
+            (Tab::Eq, _, DeviceModel::Mvx2uGen2, _) => Focus::EqBandSelect,
+
+            // ── MVX2U Gen 2 Dynamics reverse ──────────────────────────────────
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mvx2uGen2, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mvx2uGen2, _) => Focus::Limiter,
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::Compressor
+            }
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::Denoiser
+            }
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::PopperStopper
+            }
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Hpf,
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
+                Focus::Denoiser
+            }
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
+                Focus::PopperStopper
+            }
+            (Tab::Dynamics, _, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Limiter,
+            (Tab::Dynamics, _, DeviceModel::Mvx2uGen2, _) => Focus::Denoiser,
+
             // ── MVX2U EQ reverse ──────────────────────────────────────────────
             (Tab::Eq, Focus::EqEnable, DeviceModel::Mvx2u, _) => {
                 Focus::EqGain(self.eq_selected_band)
@@ -389,10 +503,11 @@ impl App {
                     *m = m.saturating_sub(1);
                 }
                 let mix = self.device_state.monitor_mix;
-                if self.device_model == DeviceModel::Mv6 {
-                    Some(DeviceAction::SetMv6MonitorMix(mix))
-                } else {
-                    Some(DeviceAction::SetMonitorMix(mix))
+                match self.device_model {
+                    DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 => {
+                        Some(DeviceAction::SetMv6MonitorMix(mix))
+                    }
+                    DeviceModel::Mvx2u => Some(DeviceAction::SetMonitorMix(mix)),
                 }
             }
             Focus::Tone => {
@@ -409,8 +524,12 @@ impl App {
                 None
             }
             Focus::EqGain(b) => {
+                let step: i32 = match self.device_model {
+                    DeviceModel::Mvx2uGen2 => 5, // 0.5 dB steps
+                    _ => 20,                     // 2.0 dB steps
+                };
                 let band = &mut self.device_state.eq_bands[b];
-                let new_gain = ((band.gain_db as i32) + delta * 2).clamp(-8, 6) as i8;
+                let new_gain = ((band.gain_db as i32) + delta * step).clamp(-80, 60) as i16;
                 band.gain_db = new_gain;
                 Some(DeviceAction::SetEqBandGain(b, band.gain_db))
             }
@@ -426,9 +545,10 @@ impl App {
                     InputMode::Auto => InputMode::Manual,
                     InputMode::Manual => InputMode::Auto,
                 };
-                self.focus = match self.device_state.mode {
-                    InputMode::Auto => Focus::AutoPosition,
-                    InputMode::Manual => Focus::Gain,
+                self.focus = match (self.device_model, self.device_state.mode) {
+                    (DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
+                    (_, InputMode::Manual) => Focus::Gain,
+                    (_, InputMode::Auto) => Focus::Mute,
                 };
                 Some(DeviceAction::SetMode(self.device_state.mode))
             }
@@ -537,8 +657,9 @@ pub enum DeviceAction {
     SetEqEnable(bool),
     /// `usize` is band index 0–4.
     SetEqBandEnable(usize, bool),
-    /// `usize` is band index 0–4; `i8` is gain in dB (−8..+6, steps of 2).
-    SetEqBandGain(usize, i8),
+    /// `usize` is band index 0–4; `i16` is gain in tenths of dB (−80..+60).
+    /// Gen 1 steps: multiples of 20. Gen 2 steps: multiples of 5.
+    SetEqBandGain(usize, i16),
     // ── MV6-specific actions ──────────────────────────────────────────────────
     SetMv6Denoiser(bool),
     SetMv6PopperStopper(bool),
@@ -555,6 +676,8 @@ pub enum DeviceAction {
     DeletePreset(usize),
     /// Write the (already in-memory-updated) preset name for slot `usize` back to disk.
     PersistPresetName(usize),
+    /// Zero all 5 EQ band gains. Gen 1: leaves EQ master and per-band enables untouched.
+    FlattenEq,
     Refresh,
 }
 
@@ -987,6 +1110,20 @@ mod tests {
     }
 
     #[test]
+    fn adjust_monitor_mix_dispatches_set_mv6_monitor_mix_for_gen2() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mvx2uGen2;
+        app.focus = Focus::MonitorMix;
+        app.device_state.monitor_mix = 50;
+
+        let action = app.adjust_focused(1);
+        assert!(
+            matches!(action, Some(DeviceAction::SetMv6MonitorMix(51))),
+            "Gen 2 must dispatch SetMv6MonitorMix (same wire framing), got {action:?}"
+        );
+    }
+
+    #[test]
     fn adjust_eq_band_select_cycles_through_five_bands() {
         let mut app = App::default();
         app.active_tab = Tab::Eq;
@@ -1005,36 +1142,57 @@ mod tests {
     }
 
     #[test]
-    fn adjust_eq_gain_clamps_at_plus_six_and_minus_eight() {
+    fn adjust_eq_gain_clamps_at_plus_sixty_and_minus_eighty_tenths() {
+        // Gen 1: steps of 20 tenths (2.0 dB)
         let mut app = App::default();
         app.active_tab = Tab::Eq;
         app.focus = Focus::EqGain(0);
-        app.device_state.eq_bands[0].gain_db = 6;
+        app.device_state.eq_bands[0].gain_db = 60;
 
         app.adjust_focused(1);
         assert_eq!(
-            app.device_state.eq_bands[0].gain_db, 6,
-            "EQ gain must not exceed +6"
+            app.device_state.eq_bands[0].gain_db, 60,
+            "EQ gain must not exceed +60 tenths (+6.0 dB)"
         );
 
-        app.device_state.eq_bands[0].gain_db = -8;
+        app.device_state.eq_bands[0].gain_db = -80;
         app.adjust_focused(-1);
         assert_eq!(
-            app.device_state.eq_bands[0].gain_db, -8,
-            "EQ gain must not go below -8"
+            app.device_state.eq_bands[0].gain_db, -80,
+            "EQ gain must not go below -80 tenths (-8.0 dB)"
         );
     }
 
     #[test]
-    fn adjust_eq_gain_steps_by_two_and_returns_action() {
+    fn adjust_eq_gain_gen1_steps_by_twenty_tenths() {
         let mut app = App::default();
+        app.device_model = DeviceModel::Mvx2u;
         app.active_tab = Tab::Eq;
         app.focus = Focus::EqGain(2);
         app.device_state.eq_bands[2].gain_db = 0;
 
         let action = app.adjust_focused(1);
-        assert_eq!(app.device_state.eq_bands[2].gain_db, 2);
-        assert!(matches!(action, Some(DeviceAction::SetEqBandGain(2, 2))));
+        assert_eq!(
+            app.device_state.eq_bands[2].gain_db, 20,
+            "Gen 1 step must be 20 tenths"
+        );
+        assert!(matches!(action, Some(DeviceAction::SetEqBandGain(2, 20))));
+    }
+
+    #[test]
+    fn adjust_eq_gain_gen2_steps_by_five_tenths() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mvx2uGen2;
+        app.active_tab = Tab::Eq;
+        app.focus = Focus::EqGain(2);
+        app.device_state.eq_bands[2].gain_db = 0;
+
+        let action = app.adjust_focused(1);
+        assert_eq!(
+            app.device_state.eq_bands[2].gain_db, 5,
+            "Gen 2 step must be 5 tenths"
+        );
+        assert!(matches!(action, Some(DeviceAction::SetEqBandGain(2, 5))));
     }
 
     #[test]

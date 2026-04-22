@@ -1,8 +1,9 @@
 //! Device I/O: wraps hidapi for Shure USB microphones.
 //!
-//! Supports two devices:
-//!   - Shure MVX2U (VID 0x14ED, PID 0x1013) — XLR-to-USB interface
-//!   - Shure MV6   (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//! Supports three devices:
+//!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
+//!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2)
+//!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!
 //! Both devices expose a USB HID configuration interface alongside their
 //! audio interface. hidapi opens the HID interface via /dev/hidrawN on Linux,
@@ -36,8 +37,8 @@ use anyhow::{Context, Result, anyhow};
 use hidapi::{HidApi, HidDevice};
 
 use crate::protocol::{
-    self, DeviceModel, DeviceState, MV6_PID, PACKET_SIZE, PID, VID, apply_response, cmd_confirm,
-    cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor,
+    self, DeviceModel, DeviceState, MV6_PID, MVX2U_GEN2_PID, PACKET_SIZE, PID, VID, apply_response,
+    cmd_confirm, cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor,
     cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf,
     cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
     cmd_get_mv6_gain_lock, cmd_get_mv6_mix, cmd_get_mv6_mute_btn_disable,
@@ -71,10 +72,10 @@ impl ShureDevice {
             .ok()
             .flatten()
             .unwrap_or_else(|| "(unknown)".to_string());
-        let model = if pid == MV6_PID {
-            DeviceModel::Mv6
-        } else {
-            DeviceModel::Mvx2u
+        let model = match pid {
+            MV6_PID => DeviceModel::Mv6,
+            MVX2U_GEN2_PID => DeviceModel::Mvx2uGen2,
+            _ => DeviceModel::Mvx2u,
         };
         Self {
             device,
@@ -101,7 +102,7 @@ impl ShureDevice {
 
         match found.len() {
             0 => Err(anyhow!(
-                "No Shure MVX2U or MV6 device found.\nHint: {ACCESS_HINT}."
+                "No Shure MVX2U, MVX2U Gen 2, or MV6 device found.\nHint: {ACCESS_HINT}."
             )),
             1 => {
                 let info = found[0];
@@ -131,14 +132,15 @@ impl ShureDevice {
             })?;
 
         let pid = info.product_id();
-        if info.vendor_id() != VID || (pid != PID && pid != MV6_PID) {
+        if info.vendor_id() != VID || (pid != PID && pid != MV6_PID && pid != MVX2U_GEN2_PID) {
             return Err(anyhow!(
                 "{path} is not a supported Shure device \
-                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x} or {:#06x}.",
+                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, or {:#06x}.",
                 info.vendor_id(),
                 pid,
                 VID,
                 PID,
+                MVX2U_GEN2_PID,
                 MV6_PID,
             ));
         }
@@ -200,6 +202,7 @@ impl ShureDevice {
     pub fn get_state(&self) -> Result<DeviceState> {
         match self.model {
             DeviceModel::Mvx2u => self.get_state_mvx2u(),
+            DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(),
             DeviceModel::Mv6 => self.get_state_mv6(),
         }
     }
@@ -246,6 +249,44 @@ impl ShureDevice {
             {
                 eprintln!(
                     "get_state: unrecognised feature {feat:#04x?} in EQ band {band} gain response"
+                );
+            }
+        }
+
+        Ok(state)
+    }
+
+    fn get_state_mvx2u_gen2(&self) -> Result<DeviceState> {
+        let mut state = DeviceState::default();
+
+        // Gen 2 shares most getters with Gen 1 but has no config lock, no EQ master
+        // enable, and no per-band enable. It adds denoiser, popper stopper, gain lock,
+        // tone, and uses the MV6-style monitor mix framing.
+        let getters: &[fn(u8) -> Vec<u8>] = &[
+            cmd_get_gain,
+            cmd_get_mute,
+            cmd_get_phantom,
+            cmd_get_mode,
+            cmd_get_mv6_mix, // same address as Gen 1 mix; GET uses standard framing
+            cmd_get_hpf,
+            cmd_get_limiter,
+            cmd_get_compressor,
+            cmd_get_mv6_denoiser,
+            cmd_get_mv6_popper_stopper,
+            cmd_get_mv6_tone,
+            cmd_get_mv6_gain_lock,
+        ];
+
+        self.run_getters(getters, &mut state, "get_state(mvx2u_gen2)");
+
+        // Gen 2 has 5-band EQ gain (no master enable, no per-band enable toggle).
+        for band in 0..5 {
+            let gain_pkt = cmd_get_eq_band_gain(self.next_seq(), band);
+            if let Ok(Some((feat, value))) = self.send_get(&gain_pkt)
+                && !apply_response(feat, &value, &mut state)
+            {
+                eprintln!(
+                    "get_state(mvx2u_gen2): unrecognised feature {feat:#04x?} in EQ band {band} gain response"
                 );
             }
         }
@@ -336,11 +377,12 @@ impl ShureDevice {
         ))
     }
 
-    pub fn set_eq_band_gain(&self, band: usize, gain_db: i8) -> Result<()> {
+    pub fn set_eq_band_gain(&self, band: usize, gain_tenths: i16) -> Result<()> {
         self.send_set(&protocol::cmd_set_eq_band_gain(
             self.next_seq(),
             band,
-            gain_db,
+            gain_tenths,
+            self.model,
         ))
     }
 
@@ -397,7 +439,7 @@ fn is_shure_device(
     seen_paths: &mut std::collections::HashSet<String>,
 ) -> bool {
     d.vendor_id() == VID
-        && (d.product_id() == PID || d.product_id() == MV6_PID)
+        && (d.product_id() == PID || d.product_id() == MVX2U_GEN2_PID || d.product_id() == MV6_PID)
         && seen_paths.insert(d.path().to_string_lossy().into_owned())
 }
 
@@ -412,10 +454,10 @@ pub fn list_devices() -> Vec<DeviceInfo> {
         .map(|d| DeviceInfo {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or("(unknown)").to_owned(),
-            model: if d.product_id() == MV6_PID {
-                DeviceModel::Mv6
-            } else {
-                DeviceModel::Mvx2u
+            model: match d.product_id() {
+                MV6_PID => DeviceModel::Mv6,
+                MVX2U_GEN2_PID => DeviceModel::Mvx2uGen2,
+                _ => DeviceModel::Mvx2u,
             },
         })
         .collect()

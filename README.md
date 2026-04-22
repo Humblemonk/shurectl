@@ -8,8 +8,9 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 ---
 
 ## Supported Devices
-- MVX2U Gen 1 - Digital Audio Interface
-- MV6 - USB Gaming Microphone
+- MVX2U Gen 1 — Digital Audio Interface
+- MVX2U Gen 2 — Digital Audio Interface
+- MV6 — USB Gaming Microphone
 
 ---
 
@@ -26,13 +27,20 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 - **Device Info** — serial number
 - **Demo mode** — run without a device plugged in (`--demo`)
 
-### MVX2U
+### MVX2U Gen 1
 - **Gain range** — 0–60 dB
 - **Phantom Power** — 48V on/off; warns if enabled when muting ribbon mics
 - **5-band Parametric EQ** — per-band enable, gain (−8 to +6 dB in 2 dB steps)
 - **Limiter** — enable/disable
 - **Panel Lock** — lock the physical panel controls on the device
 - **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright), gain environment (Quiet/Normal/Loud)
+
+### MVX2U Gen 2 -  Builds on Gen 1 features with the following
+- **5-band Parametric EQ** — gain (−8 to +6 dB in 0.5 dB steps)
+- **Tone** — Dark / Natural / Bright
+- **Real-time Denoiser** — enable/disable
+- **Popper Stopper** — enable/disable
+- **Gain Lock** — hardware freeze of the gain control (Manual mode only)
 
 ### MV6
 - **Gain range** — 0–36 dB
@@ -46,18 +54,15 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 
 ## Platform Setup
 
-### Linux — udev Rule (Required for Non-Root Access)
+### Linux — udev Rules (Required for Non-Root Access)
 
 Without a udev rule, `/dev/hidrawN` for the device is only accessible by root.
 
-Create `/etc/udev/rules.d/62-mvx2u.rules`:
+Create `/etc/udev/rules.d/62-shurectl.rules`:
 
 ```
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
-```
-Create `/etc/udev/rules.d/62-mv6.rules`:
-
-```
+ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1033", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
 ```
 
@@ -72,13 +77,8 @@ Verify the device appears:
 
 ```bash
 shurectl --list
-# Found 1 MVX2U device(s):
-#   /dev/hidraw2 | S/N: MVX2U-XXXXXXXX
-
-# With multiple devices:
-# Found 2 MVX2U device(s):
-#   /dev/hidraw3 | S/N: MVX2U#3-7d84d19...
-#   /dev/hidraw2 | S/N: MVX2U#3-17b7a6c...
+# Found 1 Shure device(s):
+#   /dev/hidraw2 | Shure MVX2U Gen 2 | S/N: MVX2U GEN 2#2-a646351d...
 ```
 
 ### macOS — No Extra Setup Required
@@ -139,6 +139,7 @@ shurectl --list                  # List detected Shure devices and exit
 | `←` / `h` | Decrease value |
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
+| `f` | Flatten EQ (zero all bands) — EQ tab, Gen 1 and Gen 2 only |
 | `r` | Refresh state from device |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` | Delete preset (on Presets tab, focused slot) |

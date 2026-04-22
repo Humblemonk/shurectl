@@ -40,7 +40,7 @@ use protocol::{DeviceModel, InputMode};
 #[command(
     name = "shurectl",
     version,
-    about = "shurectl — TUI configurator for Shure MVX2U and MV6 USB microphones"
+    about = "shurectl — TUI configurator for Shure MVX2U, MVX2U Gen 2, and MV6 USB microphones"
 )]
 struct Cli {
     /// Run in demo mode without a real device
@@ -64,7 +64,7 @@ fn main() -> Result<()> {
     if cli.list {
         let devs = device::list_devices();
         if devs.is_empty() {
-            println!("No Shure MVX2U or MV6 devices found.");
+            println!("No Shure MVX2U, MVX2U Gen 2, or MV6 devices found.");
             #[cfg(target_os = "linux")]
             println!("Check that the device is plugged in and the udev rule is installed.");
             #[cfg(not(target_os = "linux"))]
@@ -285,6 +285,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 None
             }
         }
+        KeyCode::Char('f') if app.active_tab == app::Tab::Eq => Some(DeviceAction::FlattenEq),
         KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetActions(i) = app.focus {
                 if app.presets[i].is_some() {
@@ -382,9 +383,22 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             ));
             send_if_connected(device, |d| d.set_eq_band_enable(*band, *en))
         }
-        DeviceAction::SetEqBandGain(band, gain_db) => {
-            app.set_ok(format!("EQ Band {} → {:+} dB", band + 1, gain_db));
-            send_if_connected(device, |d| d.set_eq_band_gain(*band, *gain_db))
+        DeviceAction::SetEqBandGain(band, gain_tenths) => {
+            let db = *gain_tenths as f32 / 10.0;
+            app.set_ok(format!("EQ Band {} → {:+.1} dB", band + 1, db));
+            send_if_connected(device, |d| d.set_eq_band_gain(*band, *gain_tenths))
+        }
+        DeviceAction::FlattenEq => {
+            for band in app.device_state.eq_bands.iter_mut() {
+                band.gain_db = 0;
+            }
+            app.set_ok("EQ flattened.");
+            send_if_connected(device, |d| {
+                for band in 0..5 {
+                    d.set_eq_band_gain(band, 0)?;
+                }
+                Ok(())
+            })
         }
         // ── MV6 actions ───────────────────────────────────────────────────────
         DeviceAction::SetMv6Denoiser(en) => {
@@ -521,6 +535,19 @@ fn apply_preset_to_device(
                 d.set_eq_enable(state.eq_enabled)?;
                 for (band, eq) in state.eq_bands.iter().enumerate() {
                     d.set_eq_band_enable(band, eq.enabled)?;
+                    d.set_eq_band_gain(band, eq.gain_db)?;
+                }
+            }
+            DeviceModel::Mvx2uGen2 => {
+                d.set_phantom(state.phantom_power)?;
+                d.set_mv6_monitor_mix(state.monitor_mix)?;
+                d.set_limiter(state.limiter_enabled)?;
+                d.set_compressor(&state.compressor)?;
+                d.set_mv6_denoiser(state.denoiser_enabled)?;
+                d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+                d.set_mv6_tone(state.tone)?;
+                d.set_mv6_gain_lock(state.mv6_gain_locked)?;
+                for (band, eq) in state.eq_bands.iter().enumerate() {
                     d.set_eq_band_gain(band, eq.gain_db)?;
                 }
             }

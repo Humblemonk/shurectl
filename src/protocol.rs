@@ -1,11 +1,12 @@
 //! Shure USB HID Protocol Implementation
 //!
-//! Covers two devices:
-//!   - Shure MVX2U  (VID 0x14ED, PID 0x1013) — XLR-to-USB interface
-//!   - Shure MV6    (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//! Covers three devices:
+//!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
+//!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2, new DSP)
+//!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!
-//! Both devices use the same packet framing, CRC algorithm, and command
-//! class structure. Feature addresses differ between models.
+//! All devices use the same packet framing, CRC algorithm, and command
+//! class structure. Feature addresses and encodings differ between models.
 //!
 //! Packet structure (64 bytes total, written via hidapi):
 //!
@@ -27,13 +28,14 @@
 //!
 //! USB IDs:
 //!   Vendor ID:  0x14ED  (Shure)
-//!   Product ID: 0x1013  (MVX2U)
+//!   Product ID: 0x1013  (MVX2U Gen 1)
+//!   Product ID: 0x1033  (MVX2U Gen 2)
 //!   Product ID: 0x1026  (MV6)
 //!
 //! Every SET command must be followed by a CONFIRM packet (CMD_CONFIRM).
 //! GET commands receive a response on the next `read()`.
 //!
-//! ── MVX2U Feature addresses (2 bytes) ────────────────────────────────────────
+//! ── MVX2U Gen 1 Feature addresses (2 bytes) ──────────────────────────────────
 //!   Config lock:    [0x00, 0xA6]  — 1 byte: 0=unlocked, 1=locked
 //!                                   Uses CMD_GET_LOCK / CMD_SET_LOCK (last byte 0x01, not 0x02)
 //!                                   Payload prefix byte is 0x06 (not 0x00 or 0x01)
@@ -51,10 +53,41 @@
 //!   Monitor mix:    [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback
 //!   EQ master:      [0x02, 0x00]  — 1 byte: 0=bypass, 1=enabled
 //!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band)
-//!   EQ band gain:   [0x02, 0xN4]  — 16-bit signed big-endian, units: gain_db * 10
+//!   EQ band gain:   [0x02, 0xN4]  — Gen 1: 16-bit signed big-endian, units: gain_db * 10
+//!                                   Gen 2: 8-bit signed (i8), units: gain_db * 10
+//!                                   Same address; wire width distinguishes the model.
+//!                                   Confirmed by probe capture against Gen 2 firmware.
 //!
 //! EQ bands have fixed center frequencies: 100, 250, 1000, 4000, 10000 Hz.
 //! Frequency and Q are not adjustable on this device.
+//!
+//! ── MVX2U Gen 2 Feature addresses (2 bytes) ──────────────────────────────────
+//! Confirmed by probe sweep against Gen 2 firmware (PID 0x1033).
+//!
+//!   Gain (manual):  [0x01, 0x02]  — same as Gen 1 (16-bit BE, gain_db * 100, 0–60 dB)
+//!   Mute:           [0x01, 0x04]  — same as Gen 1
+//!   HPF:            [0x01, 0x06]  — same as Gen 1
+//!   Limiter:        [0x01, 0x51]  — same as Gen 1
+//!   Denoiser:       [0x01, 0x58]  — same as MV6: 0=off, 1=on (confirmed by probe)
+//!   Compressor:     [0x01, 0x5C]  — same as Gen 1
+//!   Phantom (48V):  [0x01, 0x66]  — same as Gen 1
+//!   Auto level:     [0x01, 0x85]  — same as Gen 1: 0=manual, 1=auto
+//!   Monitor mix:    [0x01, 0x86]  — same address; SET uses HDR_CONSTANT=0x00 (like MV6)
+//!   Gain lock:      [0x01, 0xF3]  — same as MV6 (confirmed by probe diff)
+//!   Tone slider:    [0x02, 0x04]  — same as MV6: 16-bit signed BE, units: percent
+//!                                   Range: -100 (Dark) to +100 (Bright), steps of 10.
+//!                                   Present in both Auto and Manual modes.
+//!   EQ band gain:   [0x02, 0xN4]  — 8-bit signed (i8), units: gain_db * 10
+//!                                   Gen 2 uses 1-byte encoding vs Gen 1's 2-byte i16.
+//!                                   Same addresses as Gen 1. Range: -8 to +6 dB, 0.5 dB steps.
+//!   EQ band freq:   [0x02, 0xN1]  — read-only 16-bit BE Hz value (100/250/1k/4k/10k)
+//!                                   Gen 2 exposes center frequencies as readable registers.
+//!                                   We do not read these; EQ_BAND_FREQS matches confirmed values.
+//!   Popper stopper: [0x03, 0x81]  — same as MV6 (confirmed by probe)
+//!
+//!   ABSENT on Gen 2 (vs Gen 1): config lock [0x00, 0xA6], EQ master [0x02, 0x00],
+//!   EQ band enable [0x02, 0xN0], auto position [0x01, 0x82], auto tone [0x01, 0x83],
+//!   auto gain [0x01, 0x87]. Gen 2 has no per-band enable and no master EQ toggle.
 //!
 //! ── MV6 Feature addresses (2 bytes) ──────────────────────────────────────────
 //! All confirmed by GET probe against firmware 1.3.0.6 unless noted.
@@ -95,8 +128,10 @@
 //!                                    0 = Natural (confirmed at factory default).
 
 pub const VID: u16 = 0x14ED;
-/// MVX2U: XLR-to-USB audio interface.
+/// MVX2U Gen 1: XLR-to-USB audio interface.
 pub const PID: u16 = 0x1013;
+/// MVX2U Gen 2: XLR-to-USB interface with new DSP (denoiser, popper stopper, tone, gain lock).
+pub const MVX2U_GEN2_PID: u16 = 0x1033;
 /// MV6: USB gaming microphone.
 pub const MV6_PID: u16 = 0x1026;
 
@@ -105,6 +140,7 @@ pub const MV6_PID: u16 = 0x1026;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeviceModel {
     Mvx2u,
+    Mvx2uGen2,
     Mv6,
 }
 
@@ -112,7 +148,7 @@ impl DeviceModel {
     /// Maximum manual gain in dB for this device.
     pub fn max_gain_db(&self) -> u8 {
         match self {
-            DeviceModel::Mvx2u => 60,
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => 60,
             DeviceModel::Mv6 => 36,
         }
     }
@@ -121,6 +157,7 @@ impl DeviceModel {
     pub fn display_name(&self) -> &'static str {
         match self {
             DeviceModel::Mvx2u => "Shure MVX2U",
+            DeviceModel::Mvx2uGen2 => "Shure MVX2U Gen 2",
             DeviceModel::Mv6 => "Shure MV6",
         }
     }
@@ -241,11 +278,12 @@ pub struct DeviceState {
     /// Compressor preset. MVX2U only.
     pub compressor: CompressorPreset,
     pub hpf: HpfFrequency,
-    /// 5-band parametric EQ master enable. MVX2U only.
+    /// 5-band parametric EQ master enable. MVX2U Gen 1 only. Gen 2 has no master toggle.
     pub eq_enabled: bool,
-    /// 5 EQ bands at fixed frequencies (100, 250, 1k, 4k, 10k Hz). MVX2U only.
+    /// 5 EQ bands at fixed frequencies (100, 250, 1k, 4k, 10k Hz). MVX2U Gen 1 and Gen 2.
+    /// `gain_db` is in tenths of dB. `enabled` is unused on Gen 2 (always active).
     pub eq_bands: [EqBand; 5],
-    /// Config lock (ignores SET commands while locked). MVX2U only.
+    /// Config lock (ignores SET commands while locked). MVX2U Gen 1 only.
     pub locked: bool,
 
     // ── MV6-specific fields ───────────────────────────────────────────────────
@@ -547,13 +585,19 @@ impl std::fmt::Display for HpfFrequency {
 /// One of the 5 parametric EQ bands.
 ///
 /// Center frequencies are fixed by hardware: 100, 250, 1000, 4000, 10000 Hz.
-/// Q is not adjustable. Only gain (−8 to +6 dB in steps of 2) and
-/// enabled/disabled are settable.
+/// Q is not adjustable.
+///
+/// `gain_db` is stored in **tenths of dB** (e.g. `−65` = −6.5 dB).
+///
+/// Gen 1 range: −8.0 to +6.0 dB in steps of 2.0 dB (step = 20 tenths).
+///   Wire format: 16-bit signed big-endian (value already in tenths, no multiply needed).
+/// Gen 2 range: −8.0 to +6.0 dB in steps of 0.5 dB (step = 5 tenths).
+///   Wire format: 8-bit signed i8 (value already in tenths, no multiply needed).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EqBand {
-    /// Gain in dB, range −8 to +6 in steps of 2.
-    pub gain_db: i8,
-    /// Whether this band is active.
+    /// Gain in tenths of dB. Gen 1 range: −80..+60 (steps of 20). Gen 2: −80..+60 (steps of 5).
+    pub gain_db: i16,
+    /// Whether this band is active. Gen 2 devices have no per-band enable; always true.
     pub enabled: bool,
 }
 
@@ -883,17 +927,30 @@ pub fn cmd_set_eq_band_enable(seq: u8, band: usize, enabled: bool) -> Vec<u8> {
     cmd_set(seq, &EQ_BAND_ADDRS[band].0, &[u8::from(enabled)])
 }
 
-/// Set EQ band gain. `gain_db` is clamped to −8..+6 and rounded to the
-/// nearest even value (hardware supports −8, −6, −4, −2, 0, 2, 4, 6 only).
-/// Encoded as `gain_db * 10` in 16-bit signed big-endian.
-pub fn cmd_set_eq_band_gain(seq: u8, band: usize, gain_db: i8) -> Vec<u8> {
+/// Set EQ band gain. `gain_db` is in tenths of dB, clamped to −80..+60.
+///
+/// Wire encoding is model-specific:
+///   - Gen 1 (Mvx2u):      16-bit signed big-endian (value in tenths, no multiply)
+///   - Gen 2 (Mvx2uGen2):  8-bit signed i8 (value in tenths, no multiply)
+///
+/// Gen 1 callers should pass multiples of 20 (2.0 dB steps).
+/// Gen 2 callers should pass multiples of 5 (0.5 dB steps).
+pub fn cmd_set_eq_band_gain(seq: u8, band: usize, gain_tenths: i16, model: DeviceModel) -> Vec<u8> {
     assert!(
         band < EQ_BAND_ADDRS.len(),
         "band index out of range: {band}"
     );
-    let clamped = gain_db.clamp(-8, 6);
-    let raw = (clamped as i16 * 10).to_be_bytes();
-    cmd_set(seq, &EQ_BAND_ADDRS[band].1, &raw)
+    let clamped = gain_tenths.clamp(-80, 60);
+    match model {
+        DeviceModel::Mvx2uGen2 => {
+            // Gen 2: 1-byte signed encoding confirmed by probe capture.
+            cmd_set(seq, &EQ_BAND_ADDRS[band].1, &[clamped as i8 as u8])
+        }
+        _ => {
+            // Gen 1: 2-byte signed big-endian encoding.
+            cmd_set(seq, &EQ_BAND_ADDRS[band].1, &clamped.to_be_bytes())
+        }
+    }
 }
 
 // ── MV6 SET constructors ──────────────────────────────────────────────────────
@@ -1160,11 +1217,17 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                     return true;
                 }
                 if feat_addr == *gain_addr {
-                    if value.len() < 2 {
+                    // Gen 1 returns 2-byte i16 (value in tenths of dB).
+                    // Gen 2 returns 1-byte i8 (value in tenths of dB).
+                    // The length of the response determines which encoding was used.
+                    let gain_tenths: i16 = if value.len() >= 2 {
+                        i16::from_be_bytes([value[0], value[1]])
+                    } else if value.len() == 1 {
+                        value[0] as i8 as i16
+                    } else {
                         return false;
-                    }
-                    let raw = i16::from_be_bytes([value[0], value[1]]);
-                    state.eq_bands[i].gain_db = (raw / 10).clamp(-8, 6) as i8;
+                    };
+                    state.eq_bands[i].gain_db = gain_tenths.clamp(-80, 60);
                     return true;
                 }
             }
@@ -1467,27 +1530,54 @@ mod tests {
     }
 
     #[test]
-    fn eq_band_gain_encoding() {
-        // +3 dB → 30 → 0x001E
-        let pkt = cmd_set_eq_band_gain(0, 0, 3);
+    fn eq_band_gain_encoding_gen1() {
+        // Gen 1: 16-bit signed BE. +3.0 dB = 30 tenths → 0x001E
+        let pkt = cmd_set_eq_band_gain(0, 0, 30, DeviceModel::Mvx2u);
         let raw = i16::from_be_bytes([pkt[16], pkt[17]]);
-        assert_eq!(raw, 30, "+3 dB must encode as 30");
+        assert_eq!(raw, 30, "+3.0 dB (30 tenths) must encode as 30 in i16 BE");
 
-        // -6 dB → -60 → 0xFFC4
-        let pkt = cmd_set_eq_band_gain(0, 1, -6);
+        // -6.0 dB = -60 tenths → 0xFFC4
+        let pkt = cmd_set_eq_band_gain(0, 1, -60, DeviceModel::Mvx2u);
         let raw = i16::from_be_bytes([pkt[16], pkt[17]]);
-        assert_eq!(raw, -60, "-6 dB must encode as -60");
+        assert_eq!(
+            raw, -60,
+            "-6.0 dB (-60 tenths) must encode as -60 in i16 BE"
+        );
+    }
+
+    #[test]
+    fn eq_band_gain_encoding_gen2() {
+        // Gen 2: 1-byte signed. -6.5 dB = -65 tenths → 0xBF (confirmed by probe)
+        let pkt = cmd_set_eq_band_gain(0, 0, -65, DeviceModel::Mvx2uGen2);
+        assert_eq!(pkt[16], 0xBF, "-6.5 dB (-65 tenths) must encode as 0xBF");
+        assert_eq!(pkt.len(), PACKET_SIZE, "packet must be 64 bytes");
+
+        // +4.0 dB = +40 tenths → 0x28 (confirmed by probe)
+        let pkt = cmd_set_eq_band_gain(0, 4, 40, DeviceModel::Mvx2uGen2);
+        assert_eq!(pkt[16], 0x28, "+4.0 dB (+40 tenths) must encode as 0x28");
     }
 
     #[test]
     fn eq_band_gain_clamps() {
-        let pkt_hi = cmd_set_eq_band_gain(0, 0, 127);
+        // Gen 1: clamp to +60 tenths (+6.0 dB) and -80 tenths (-8.0 dB)
+        let pkt_hi = cmd_set_eq_band_gain(0, 0, 1000, DeviceModel::Mvx2u);
         let raw_hi = i16::from_be_bytes([pkt_hi[16], pkt_hi[17]]);
-        assert_eq!(raw_hi, 60, "+127 dB must clamp to +6 dB (raw 60)");
+        assert_eq!(raw_hi, 60, "1000 tenths must clamp to +60 (Gen 1)");
 
-        let pkt_lo = cmd_set_eq_band_gain(0, 0, -128);
+        let pkt_lo = cmd_set_eq_band_gain(0, 0, -1000, DeviceModel::Mvx2u);
         let raw_lo = i16::from_be_bytes([pkt_lo[16], pkt_lo[17]]);
-        assert_eq!(raw_lo, -80, "-128 dB must clamp to -8 dB (raw -80)");
+        assert_eq!(raw_lo, -80, "-1000 tenths must clamp to -80 (Gen 1)");
+
+        // Gen 2: same clamp, 1-byte encoding
+        let pkt_hi2 = cmd_set_eq_band_gain(0, 0, 1000, DeviceModel::Mvx2uGen2);
+        assert_eq!(pkt_hi2[16], 60u8, "1000 tenths must clamp to 60 (Gen 2)");
+
+        let pkt_lo2 = cmd_set_eq_band_gain(0, 0, -1000, DeviceModel::Mvx2uGen2);
+        assert_eq!(
+            pkt_lo2[16],
+            (-80i8) as u8,
+            "-1000 tenths must clamp to -80 (Gen 2)"
+        );
     }
 
     #[test]
@@ -1495,14 +1585,18 @@ mod tests {
         // Band 0 (100 Hz): enable=0x0210, gain=0x0214
         let en_pkt = cmd_set_eq_band_enable(0, 0, true);
         assert_eq!(&en_pkt[14..16], &[0x02u8, 0x10]);
-        let gain_pkt = cmd_set_eq_band_gain(0, 0, 0);
+        let gain_pkt = cmd_set_eq_band_gain(0, 0, 0, DeviceModel::Mvx2u);
         assert_eq!(&gain_pkt[14..16], &[0x02u8, 0x14]);
 
         // Band 4 (10kHz): enable=0x0250, gain=0x0254
         let en_pkt4 = cmd_set_eq_band_enable(0, 4, false);
         assert_eq!(&en_pkt4[14..16], &[0x02u8, 0x50]);
-        let gain_pkt4 = cmd_set_eq_band_gain(0, 4, 0);
+        let gain_pkt4 = cmd_set_eq_band_gain(0, 4, 0, DeviceModel::Mvx2u);
         assert_eq!(&gain_pkt4[14..16], &[0x02u8, 0x54]);
+
+        // Gen 2 uses the same gain addresses
+        let gain_pkt_g2 = cmd_set_eq_band_gain(0, 0, 0, DeviceModel::Mvx2uGen2);
+        assert_eq!(&gain_pkt_g2[14..16], &[0x02u8, 0x14]);
     }
 
     #[test]
@@ -1740,12 +1834,12 @@ mod tests {
         // Table: (band_index, gain_addr, raw_hi, raw_lo, expected_gain_db)
         // gain_addr = EQ_BAND_ADDRS[i].1; raw = gain_db * 10 as i16 big-endian.
         // Bands: 0=100Hz(0x14), 1=250Hz(0x24), 2=1kHz(0x34), 3=4kHz(0x44), 4=10kHz(0x54)
-        let cases: &[(usize, [u8; 2], u8, u8, i8)] = &[
-            (0, [0x02, 0x14], 0x00, 0x28, 4),  // +4 dB = raw 40
-            (1, [0x02, 0x24], 0xFF, 0xC4, -6), // -6 dB = raw -60
-            (2, [0x02, 0x34], 0x00, 0x1E, 3),  // +3 dB = raw 30
-            (3, [0x02, 0x44], 0xFF, 0xD8, -4), // -4 dB = raw -40
-            (4, [0x02, 0x54], 0x00, 0x3C, 6),  // +6 dB = raw 60
+        let cases: &[(usize, [u8; 2], u8, u8, i16)] = &[
+            (0, [0x02, 0x14], 0x00, 0x28, 40),  // +4.0 dB = 40 tenths
+            (1, [0x02, 0x24], 0xFF, 0xC4, -60), // -6.0 dB = -60 tenths
+            (2, [0x02, 0x34], 0x00, 0x1E, 30),  // +3.0 dB = 30 tenths
+            (3, [0x02, 0x44], 0xFF, 0xD8, -40), // -4.0 dB = -40 tenths
+            (4, [0x02, 0x54], 0x00, 0x3C, 60),  // +6.0 dB = 60 tenths
         ];
         for &(band, addr, hi, lo, expected_db) in cases {
             let mut state = DeviceState::default();
@@ -2298,6 +2392,7 @@ mod tests {
     #[test]
     fn device_model_max_gain_db() {
         assert_eq!(DeviceModel::Mvx2u.max_gain_db(), 60);
+        assert_eq!(DeviceModel::Mvx2uGen2.max_gain_db(), 60);
         assert_eq!(DeviceModel::Mv6.max_gain_db(), 36);
     }
 
@@ -2352,5 +2447,48 @@ mod tests {
     fn mv6_gain_lock_apply_response_empty_returns_false() {
         let mut state = DeviceState::default();
         assert!(!apply_response(MV6_FEAT_GAIN_LOCK, &[], &mut state));
+    }
+
+    // ── Gen 2 EQ band gain apply_response ─────────────────────────────────────
+
+    #[test]
+    fn eq_band_gain_apply_response_gen1_two_bytes() {
+        // Gen 1: 2-byte i16 response → stored directly as tenths
+        let cases: &[(&[u8], i16)] = &[
+            (&[0x00, 0x1E], 30),  // +3.0 dB
+            (&[0xFF, 0xC4], -60), // -6.0 dB
+            (&[0x00, 0x00], 0),   // 0 dB
+            (&[0x00, 0x3C], 60),  // +6.0 dB (max)
+            (&[0xFF, 0xB0], -80), // -8.0 dB (min)
+        ];
+        for (bytes, expected) in cases {
+            let mut state = DeviceState::default();
+            assert!(apply_response([0x02, 0x14], bytes, &mut state));
+            assert_eq!(state.eq_bands[0].gain_db, *expected);
+        }
+    }
+
+    #[test]
+    fn eq_band_gain_apply_response_gen2_one_byte() {
+        // Gen 2: 1-byte i8 response — values confirmed by probe capture
+        let cases: &[(&[u8], i16)] = &[
+            (&[0xBF], -65), // -6.5 dB (probe confirmed)
+            (&[0xE7], -25), // -2.5 dB (probe confirmed)
+            (&[0x14], 20),  // +2.0 dB (probe confirmed)
+            (&[0xE2], -30), // -3.0 dB (probe confirmed)
+            (&[0x28], 40),  // +4.0 dB (probe confirmed)
+            (&[0x00], 0),   // 0 dB
+        ];
+        for (bytes, expected) in cases {
+            let mut state = DeviceState::default();
+            assert!(apply_response([0x02, 0x14], bytes, &mut state));
+            assert_eq!(state.eq_bands[0].gain_db, *expected);
+        }
+    }
+
+    #[test]
+    fn eq_band_gain_apply_response_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response([0x02, 0x14], &[], &mut state));
     }
 }
