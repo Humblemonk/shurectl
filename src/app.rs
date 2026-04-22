@@ -683,8 +683,8 @@ pub enum DeviceAction {
     /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
     SetMv6Tone(i8),
     SetMv6GainLock(bool),
-    /// Monitor mix: 0 = full mic, 100 = full playback. MV6 only.
-    /// Uses the same 0–100 encoding as MVX2U but requires HDR_CONSTANT=0x00 on the wire.
+    /// Monitor mix: 0 = full mic, 100 = full playback. MV6 and MVX2U Gen 2.
+    /// Uses the same 0–100 encoding as MVX2U Gen 1 but requires HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
     // ── Preset actions ────────────────────────────────────────────────────────
     SavePreset(usize),

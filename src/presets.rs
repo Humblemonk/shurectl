@@ -46,8 +46,8 @@ pub struct PresetSlot {
     pub auto_gain: SerAutoGain,
     #[serde(default)]
     pub phantom_power: bool,
-    #[serde(default)]
     /// Monitor mix: 0 = 100% mic, 100 = 100% playback.
+    #[serde(default)]
     pub monitor_mix: u8,
     #[serde(default)]
     pub limiter_enabled: bool,

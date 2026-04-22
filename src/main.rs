@@ -1,8 +1,9 @@
 //! shurectl — Interactive TUI configurator for Shure USB microphones
 //!
 //! Supports:
-//!   - Shure MVX2U (XLR-to-USB audio interface)
-//!   - Shure MV6   (USB gaming microphone)
+//!   - Shure MVX2U Gen 1 (XLR-to-USB audio interface)
+//!   - Shure MVX2U Gen 2 (XLR-to-USB interface with updated DSP)
+//!   - Shure MV6          (USB gaming microphone)
 //!
 //! Usage:
 //!   shurectl               # Connect to device, launch TUI
