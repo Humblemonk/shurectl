@@ -334,7 +334,7 @@ impl ShureDevice {
         self.send_set(&protocol::cmd_set_hpf(self.next_seq(), freq))
     }
 
-    // ── MVX2U-only SET commands ───────────────────────────────────────────────
+    // ── MVX2U Gen 1 and Gen 2 SET commands ───────────────────────────────────
 
     pub fn set_auto_position(&self, position: &protocol::MicPosition) -> Result<()> {
         self.send_set(&protocol::cmd_set_auto_position(self.next_seq(), position))

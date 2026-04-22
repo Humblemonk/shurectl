@@ -108,8 +108,8 @@
 //!                                    payload [addr_hi, addr_lo, 0x60, enable_byte].
 //!                                    enable_byte: 0x00=disabled, 0x01=active (inverted).
 //!                                    parse_response sees feat_addr=[0x00, 0x60] because
-//!                                    addr bytes appear at payload[0..2]. GET confirmed
-//!                                    reliable by Wireshark — state read from device.
+//!                                    the address bytes land at payload[0..2] (0x00, 0x60).
+//!                                    GET confirmed reliable by Wireshark.
 //!   Monitor mix:     [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback. Same address
 //!                                    as MVX2U FEAT_MIX. SET confirmed by Wireshark capture
 //!                                    of MOTIV app: HDR_CONSTANT=0x00 (not the usual 0x03),
@@ -248,6 +248,7 @@ const MV6_FEAT_TONE: [u8; 2] = [0x02, 0x04];
 /// Confirmed by probe diff against MOTIV Mix with gain lock on/off.
 /// SET confirmed working: standard CMD_SET_FEAT / prefix 0x00.
 const MV6_FEAT_GAIN_LOCK: [u8; 2] = [0x01, 0xF3];
+
 // ── Phantom power value encoding ──────────────────────────────────────────────
 const PHANTOM_ON: u8 = 0x30; // 48 decimal = 48V
 const PHANTOM_OFF: u8 = 0x00;
