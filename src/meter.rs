@@ -343,7 +343,7 @@ mod tests {
         let t = Instant::now();
         w.push(t, -200);
         w.push(t, -150);
-        // Both are within the 2-second window; max should be -150.
+        // Both are within the 2-second window; max should be -150 (i.e. -15.0 dBFS).
         assert_eq!(w.max(), Some(-150));
     }
 

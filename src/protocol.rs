@@ -36,6 +36,8 @@
 //! GET commands receive a response on the next `read()`.
 //!
 //! ── MVX2U Gen 1 Feature addresses (2 bytes) ──────────────────────────────────
+//! Confirmed by GET probe against Gen 1 firmware (PID 0x1013).
+//!
 //!   Config lock:    [0x00, 0xA6]  — 1 byte: 0=unlocked, 1=locked
 //!                                   Uses CMD_GET_LOCK / CMD_SET_LOCK (last byte 0x01, not 0x02)
 //!                                   Payload prefix byte is 0x06 (not 0x00 or 0x01)
@@ -49,7 +51,7 @@
 //!   Auto position:  [0x01, 0x82]  — 1 byte: 0=Near, 1=Far
 //!   Auto tone:      [0x01, 0x83]  — 1 byte: 0=Dark, 1=Natural, 2=Bright
 //!   Auto gain:      [0x01, 0x87]  — 4 bytes big-endian u32: 0=Quiet, 1=Normal, 2=Loud
-//!                                   NOTE: 4-byte width unverified; verify with usbmon if misbehaving.
+//!                                   Decoder accepts both 1-byte and 4-byte responses defensively.
 //!   Monitor mix:    [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback
 //!   EQ master:      [0x02, 0x00]  — 1 byte: 0=bypass, 1=enabled
 //!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band)
@@ -203,7 +205,7 @@ const FEAT_AUTO_POSITION: [u8; 2] = [0x01, 0x82];
 const FEAT_AUTO_TONE: [u8; 2] = [0x01, 0x83];
 /// Gain preset for Auto Level mode: encoded as 4-byte big-endian u32.
 /// Values: 0=Quiet, 1=Normal, 2=Loud.
-/// NOTE: 4-byte encoding sourced from shux reverse-engineering; verify with usbmon if misbehaving.
+/// Decoder accepts both 1-byte and 4-byte responses defensively (see AutoGain::from_be_bytes).
 const FEAT_AUTO_GAIN: [u8; 2] = [0x01, 0x87];
 const FEAT_EQ: [u8; 2] = [0x02, 0x00];
 
@@ -455,7 +457,6 @@ impl AutoGain {
     }
 
     /// Encodes as 4-byte big-endian u32.
-    /// NOTE: 4-byte width sourced from shux; verify with usbmon if misbehaving.
     pub(crate) fn as_be_bytes(&self) -> [u8; 4] {
         let v: u32 = match self {
             AutoGain::Quiet => 0,
@@ -892,8 +893,7 @@ pub fn cmd_set_auto_tone(seq: u8, tone: &AutoTone) -> Vec<u8> {
     cmd_set(seq, &FEAT_AUTO_TONE, &[tone.as_byte()])
 }
 
-/// Set gain preset for Auto Level mode.
-/// Encoded as 4-byte big-endian u32 per shux reverse-engineering.
+/// Set gain preset for Auto Level mode. Encoded as 4-byte big-endian u32.
 pub fn cmd_set_auto_gain(seq: u8, gain: &AutoGain) -> Vec<u8> {
     cmd_set(seq, &FEAT_AUTO_GAIN, &gain.as_be_bytes())
 }
