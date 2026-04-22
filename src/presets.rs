@@ -126,6 +126,33 @@ impl PresetSlot {
         state.mv6_gain_locked = self.mv6_gain_locked;
     }
 
+    /// Format the denoiser state as a display string.
+    fn denoiser_str(&self) -> &'static str {
+        if self.denoiser_enabled {
+            "Denoiser on"
+        } else {
+            "Denoiser off"
+        }
+    }
+
+    /// Format the popper stopper state as a display string.
+    fn popper_str(&self) -> &'static str {
+        if self.popper_stopper_enabled {
+            "Popper on"
+        } else {
+            "Popper off"
+        }
+    }
+
+    /// Format the tone value as a display string.
+    fn tone_str(&self) -> String {
+        match self.tone {
+            0 => "Natural".to_string(),
+            t if t > 0 => format!("{}% Bright", t as i32 * 10),
+            t => format!("{}% Dark", (t as i32 * 10).abs()),
+        }
+    }
+
     /// One-line summary of the key settings for display in the TUI.
     ///
     /// The model is needed because MVX2U and MV6 have different configurable
@@ -139,21 +166,9 @@ impl PresetSlot {
 
         match model {
             DeviceModel::Mv6 => {
-                let denoiser_str = if self.denoiser_enabled {
-                    "Denoiser on"
-                } else {
-                    "Denoiser off"
-                };
-                let popper_str = if self.popper_stopper_enabled {
-                    "Popper on"
-                } else {
-                    "Popper off"
-                };
-                let tone_str = match self.tone {
-                    0 => "Natural".to_string(),
-                    t if t > 0 => format!("{}% Bright", t as i32 * 10),
-                    t => format!("{}% Dark", (t as i32 * 10).abs()),
-                };
+                let denoiser_str = self.denoiser_str();
+                let popper_str = self.popper_str();
+                let tone_str = self.tone_str();
                 format!(
                     "{}dB · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str}",
                     self.gain_db
@@ -165,21 +180,9 @@ impl PresetSlot {
                 } else {
                     "48V off"
                 };
-                let denoiser_str = if self.denoiser_enabled {
-                    "Denoiser on"
-                } else {
-                    "Denoiser off"
-                };
-                let popper_str = if self.popper_stopper_enabled {
-                    "Popper on"
-                } else {
-                    "Popper off"
-                };
-                let tone_str = match self.tone {
-                    0 => "Natural".to_string(),
-                    t if t > 0 => format!("{}% Bright", t as i32 * 10),
-                    t => format!("{}% Dark", (t as i32 * 10).abs()),
-                };
+                let denoiser_str = self.denoiser_str();
+                let popper_str = self.popper_str();
+                let tone_str = self.tone_str();
                 match InputMode::from(self.mode) {
                     InputMode::Auto => {
                         format!(

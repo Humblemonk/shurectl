@@ -269,13 +269,13 @@ pub struct DeviceState {
     /// Gain preset for Auto Level mode. MVX2U only.
     pub auto_gain: AutoGain,
     pub muted: bool,
-    /// 48V phantom power. MVX2U only (XLR input).
+    /// 48V phantom power. MVX2U Gen 1 and Gen 2 only (XLR input).
     pub phantom_power: bool,
-    /// Monitor mix: 0 = 100% mic, 100 = 100% playback. MVX2U only.
+    /// Monitor mix: 0 = 100% mic, 100 = 100% playback. MVX2U Gen 1, Gen 2, and MV6.
     pub monitor_mix: u8,
-    /// Limiter. MVX2U only.
+    /// Limiter. MVX2U Gen 1 and Gen 2 only.
     pub limiter_enabled: bool,
-    /// Compressor preset. MVX2U only.
+    /// Compressor preset. MVX2U Gen 1 and Gen 2 only.
     pub compressor: CompressorPreset,
     pub hpf: HpfFrequency,
     /// 5-band parametric EQ master enable. MVX2U Gen 1 only. Gen 2 has no master toggle.
@@ -286,18 +286,18 @@ pub struct DeviceState {
     /// Config lock (ignores SET commands while locked). MVX2U Gen 1 only.
     pub locked: bool,
 
-    // ── MV6-specific fields ───────────────────────────────────────────────────
-    /// Real-time denoiser. MV6 only.
+    // ── MV6 and MVX2U Gen 2 fields ───────────────────────────────────────────
+    /// Real-time denoiser. MV6 and MVX2U Gen 2.
     pub denoiser_enabled: bool,
-    /// Popper stopper. MV6 only. Address [0x03, 0x81] confirmed by MOTIV app probe diff.
+    /// Popper stopper. MV6 and MVX2U Gen 2. Address [0x03, 0x81] confirmed by MOTIV app probe diff.
     pub popper_stopper_enabled: bool,
     /// Mute button disable. MV6 only. Address [0x0C, 0x00] confirmed by Wireshark capture.
     /// GET uses CMD_GET_LOCK with inverted encoding; read from device at startup.
     pub mute_btn_disabled: bool,
-    /// Tone character. MV6 only. Range: -10 to +10 (displayed as × 10%).
+    /// Tone character. MV6 and MVX2U Gen 2. Range: -10 to +10 (displayed as × 10%).
     /// -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
     pub tone: i8,
-    /// Gain lock (Manual mode only). MV6 only. Prevents gain from being changed
+    /// Gain lock (Manual mode only). MV6 and MVX2U Gen 2. Prevents gain from being changed
     /// while locked. Address [0x01, 0xF3] confirmed by probe diff.
     pub mv6_gain_locked: bool,
 

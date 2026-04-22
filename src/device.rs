@@ -186,6 +186,21 @@ impl ShureDevice {
         Ok(parse_response(&buf))
     }
 
+    /// Fetch all 5 EQ band gain values and apply them to `state`.
+    /// Used by both Gen 1 and Gen 2 state readback.
+    fn fetch_eq_band_gains(&self, state: &mut DeviceState, context: &str) {
+        for band in 0..5 {
+            let gain_pkt = cmd_get_eq_band_gain(self.next_seq(), band);
+            if let Ok(Some((feat, value))) = self.send_get(&gain_pkt)
+                && !apply_response(feat, &value, state)
+            {
+                eprintln!(
+                    "{context}: unrecognised feature {feat:#04x?} in EQ band {band} gain response"
+                );
+            }
+        }
+    }
+
     /// Send each getter, apply the response to `state`, and log any unrecognised features.
     fn run_getters(&self, getters: &[fn(u8) -> Vec<u8>], state: &mut DeviceState, context: &str) {
         for getter in getters {
@@ -243,15 +258,8 @@ impl ShureDevice {
                     "get_state: unrecognised feature {feat:#04x?} in EQ band {band} enable response"
                 );
             }
-            let gain_pkt = cmd_get_eq_band_gain(self.next_seq(), band);
-            if let Ok(Some((feat, value))) = self.send_get(&gain_pkt)
-                && !apply_response(feat, &value, &mut state)
-            {
-                eprintln!(
-                    "get_state: unrecognised feature {feat:#04x?} in EQ band {band} gain response"
-                );
-            }
         }
+        self.fetch_eq_band_gains(&mut state, "get_state");
 
         Ok(state)
     }
@@ -280,16 +288,7 @@ impl ShureDevice {
         self.run_getters(getters, &mut state, "get_state(mvx2u_gen2)");
 
         // Gen 2 has 5-band EQ gain (no master enable, no per-band enable toggle).
-        for band in 0..5 {
-            let gain_pkt = cmd_get_eq_band_gain(self.next_seq(), band);
-            if let Ok(Some((feat, value))) = self.send_get(&gain_pkt)
-                && !apply_response(feat, &value, &mut state)
-            {
-                eprintln!(
-                    "get_state(mvx2u_gen2): unrecognised feature {feat:#04x?} in EQ band {band} gain response"
-                );
-            }
-        }
+        self.fetch_eq_band_gains(&mut state, "get_state(mvx2u_gen2)");
 
         Ok(state)
     }

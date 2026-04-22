@@ -160,8 +160,10 @@ impl App {
 
     /// Returns true when a tab should be inaccessible given the current device state.
     ///
-    /// MVX2U: EQ and Dynamics are locked in Auto Level mode (device manages them).
-    /// MV6:   EQ (Tone) and Dynamics are always accessible.
+    /// MVX2U Gen 1: EQ and Dynamics are locked in Auto Level mode — the device
+    /// manages those parameters itself and rejects SETs while in Auto.
+    /// MVX2U Gen 2 and MV6: EQ and Dynamics are always accessible regardless of mode,
+    /// so only Gen 1 is gated here.
     pub fn is_tab_locked(&self, tab: Tab) -> bool {
         matches!(
             (tab, self.device_model, self.device_state.mode),
@@ -228,11 +230,25 @@ impl App {
 
     // ── Focus cycling within a tab ────────────────────────────────────────────
     //
-    // MVX2U Main cycles:
+    // MVX2U Gen 1 Main cycles:
     //   Manual: Mode → Mute → Gain → MonitorMix → Phantom → Lock → (wrap)
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
-    // MV6 Main cycles (mirrors MVX2U structure, no extra controls):
+    // MVX2U Gen 2 Main cycles:
+    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → Phantom → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → Phantom → (wrap)
+    //
+    // MVX2U Gen 2 EQ cycles:
+    //   Auto:   Tone (slider only)
+    //   Manual: EqBandSelect → EqGain(band) → (wrap)
+    //
+    // MVX2U Gen 2 Dynamics cycles:
+    //   Manual: Limiter → Compressor → Denoiser → PopperStopper → Hpf → (wrap)
+    //   Auto:   Denoiser → PopperStopper → Hpf → (wrap)
+    //   Note: if mode switches while Focus is on Limiter/Compressor (Manual-only),
+    //   the next focus_next/prev call self-corrects to Denoiser via the catchall arm.
+    //
+    // MV6 Main cycles:
     //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → (wrap)
     //   Auto:   Mode → Mute → MonitorMix → (wrap)
     //
