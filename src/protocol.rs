@@ -36,6 +36,8 @@
 //! GET commands receive a response on the next `read()`.
 //!
 //! ── MVX2U Gen 1 Feature addresses (2 bytes) ──────────────────────────────────
+//! Confirmed by GET probe against Gen 1 firmware (PID 0x1013).
+//!
 //!   Config lock:    [0x00, 0xA6]  — 1 byte: 0=unlocked, 1=locked
 //!                                   Uses CMD_GET_LOCK / CMD_SET_LOCK (last byte 0x01, not 0x02)
 //!                                   Payload prefix byte is 0x06 (not 0x00 or 0x01)
@@ -49,8 +51,7 @@
 //!   Auto position:  [0x01, 0x82]  — 1 byte: 0=Near, 1=Far
 //!   Auto tone:      [0x01, 0x83]  — 1 byte: 0=Dark, 1=Natural, 2=Bright
 //!   Auto gain:      [0x01, 0x87]  — 4 bytes big-endian u32: 0=Quiet, 1=Normal, 2=Loud
-//!                                   Encoded as 4-byte big-endian u32; decoder accepts both
-//!                                   1-byte and 4-byte responses defensively.
+//!                                   Decoder accepts both 1-byte and 4-byte responses defensively.
 //!   Monitor mix:    [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback
 //!   EQ master:      [0x02, 0x00]  — 1 byte: 0=bypass, 1=enabled
 //!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band)
@@ -892,8 +893,7 @@ pub fn cmd_set_auto_tone(seq: u8, tone: &AutoTone) -> Vec<u8> {
     cmd_set(seq, &FEAT_AUTO_TONE, &[tone.as_byte()])
 }
 
-/// Set gain preset for Auto Level mode.
-/// Encoded as 4-byte big-endian u32.
+/// Set gain preset for Auto Level mode. Encoded as 4-byte big-endian u32.
 pub fn cmd_set_auto_gain(seq: u8, gain: &AutoGain) -> Vec<u8> {
     cmd_set(seq, &FEAT_AUTO_GAIN, &gain.as_be_bytes())
 }
