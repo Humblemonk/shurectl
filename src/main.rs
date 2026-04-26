@@ -6,10 +6,12 @@
 //!   - Shure MV6          (USB gaming microphone)
 //!
 //! Usage:
-//!   shurectl               # Connect to device, launch TUI
-//!   shurectl --demo        # Run without a device (for testing)
-//!   shurectl --list        # List detected devices and exit
-//!   shurectl --device PATH # Open a specific device by HID path
+//!   shurectl                   # Connect to device, launch TUI
+//!   shurectl --demo            # Demo MVX2U (default model) without a device
+//!   shurectl --demo mv6        # Demo MV6 without a device
+//!   shurectl --demo mvx2u-gen2 # Demo MVX2U Gen 2 without a device
+//!   shurectl --list            # List detected devices and exit
+//!   shurectl --device PATH     # Open a specific device by HID path
 
 mod app;
 mod device;
@@ -44,9 +46,10 @@ use protocol::{DeviceModel, InputMode};
     about = "shurectl — TUI configurator for Shure MVX2U, MVX2U Gen 2, and MV6 USB microphones"
 )]
 struct Cli {
-    /// Run in demo mode without a real device
-    #[arg(long, short)]
-    demo: bool,
+    /// Run in demo mode without a real device.
+    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6.
+    #[arg(long, short, num_args = 0..=1, default_missing_value = "mvx2u", value_name = "MODEL")]
+    demo: Option<String>,
 
     /// List connected Shure devices and exit
     #[arg(long, short)]
@@ -84,8 +87,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (device, demo_mode) = if cli.demo {
-        (None, true)
+    let (device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
+        let model = match parse_demo_model(model_str) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        };
+        (None, true, Some(model))
     } else {
         let open_result = if let Some(ref path) = cli.device {
             ShureDevice::open_path(path)
@@ -93,18 +103,17 @@ fn main() -> Result<()> {
             ShureDevice::open()
         };
         match open_result {
-            Ok(d) => (Some(d), false),
+            Ok(d) => (Some(d), false, None),
             Err(e) => {
                 eprintln!("Warning: {e}");
                 eprintln!("Launching in demo mode. Use --demo to suppress this warning.");
-                (None, true)
+                (None, true, None)
             }
         }
     };
 
-    let device_model = device
-        .as_ref()
-        .map(|d| d.model)
+    let device_model = demo_model
+        .or_else(|| device.as_ref().map(|d| d.model))
         .unwrap_or(DeviceModel::Mvx2u);
 
     let mut app = App {
@@ -128,7 +137,10 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        app.set_ok("Demo mode — changes will not be sent to a device.");
+        app.set_ok(format!(
+            "Demo mode ({}) — changes will not be sent to a device.",
+            device_model.display_name()
+        ));
     }
 
     app.presets = presets::load_all_presets();
@@ -162,6 +174,19 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse a `--demo` model string into a `DeviceModel`.
+/// Accepts case-insensitive variants of the supported model names.
+fn parse_demo_model(s: &str) -> Result<DeviceModel> {
+    match s.to_ascii_lowercase().replace('_', "-").as_str() {
+        "mvx2u" => Ok(DeviceModel::Mvx2u),
+        "mvx2u-gen2" | "mvx2ugen2" => Ok(DeviceModel::Mvx2uGen2),
+        "mv6" => Ok(DeviceModel::Mv6),
+        other => {
+            anyhow::bail!("unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6")
+        }
+    }
 }
 
 fn run_event_loop(
