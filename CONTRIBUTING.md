@@ -52,13 +52,14 @@ All USB HID command byte values, feature addresses, and packet structure details
 The probe is **read-only** — it only sends GET packets, never SET or CONFIRM. It is safe to run against a live device; no settings will be changed.
 
 ```bash
-cargo run --bin probe                                   # scan MVX2U Gen 2 (default)
-cargo run --bin probe -- --pid 0x1013                  # MVX2U Gen 1
-cargo run --bin probe -- --pid 0x1019                  # MV7+
-cargo run --bin probe -- --pid 0x1026                  # MV6
-cargo run --bin probe -- --also-mix-class              # also sweep mix-class prefix
-cargo run --bin probe -- --also-lock-class             # also sweep lock-class
-cargo run --bin probe -- --output results.txt          # write results to file
+cargo run --bin probe                                      # scan MVX2U Gen 2 (default)
+cargo run --bin probe -- --pid 0x1013                      # MVX2U Gen 1
+cargo run --bin probe -- --pid 0x1026                      # MV6
+cargo run --bin probe -- --also-mix-class                  # also sweep mix-class prefix
+cargo run --bin probe -- --also-lock-class                 # also sweep lock-class
+cargo run --bin probe -- --page 0x03                       # sweep a specific page only
+cargo run --bin probe -- --output results.txt              # write results to file
+cargo run --bin probe -- --delay-ms 50                     # increase if device misses responses
 ```
 
 See the module-level doc comment in `src/bin/probe.rs` for full details on packet classes and known limitations.
