@@ -172,23 +172,6 @@ On the **Presets tab**:
 
 ---
 
-## Architecture
-
-```
-src/
-├── main.rs       — Entry point, event loop, CLI args
-├── app.rs        — Application state, focus/tab navigation, DeviceAction events
-├── device.rs     — hidapi wrapper; open/send/receive for Shure devices
-├── meter.rs      — cpal audio capture; real-time dBFS metering, RollingWindow, PeakWindow
-├── presets.rs    — Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
-├── protocol.rs   — USB HID packet encoding, CRC-16/ANSI, command constructors, apply_response()
-└── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
-```
-
-All command byte values, feature addresses, and packet structure details are documented inline in `src/protocol.rs`.
-
----
-
 ## Troubleshooting
 
 **"Cannot open device"** — device not found or a permissions issue.
