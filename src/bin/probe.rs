@@ -296,6 +296,14 @@ fn hex_dump(bytes: &[u8]) -> String {
     out
 }
 
+fn fmt_value_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn known_name(addr: [u8; 2]) -> Option<&'static str> {
     KNOWN_FEATURES
         .iter()
@@ -420,12 +428,7 @@ impl Probe {
                     let name_tag = known_name(addr)
                         .map(|n| format!(" [{n}]"))
                         .unwrap_or_else(|| " *** NEW ***".to_string());
-                    let val_hex: String = resp
-                        .value_bytes
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let val_hex = fmt_value_hex(&resp.value_bytes);
                     self.log(&format!(
                         "  RESP  [{:02X} {:02X}]{}  prefix=0x{effective_prefix:02X}  value: [{}]  ({} bytes)",
                         addr[0], addr[1], name_tag, val_hex, resp.value_bytes.len(),
@@ -458,57 +461,37 @@ impl Probe {
     }
 
     fn print_summary(&mut self) {
-        struct HitLine {
-            line: String,
-        }
-
-        let known_lines: Vec<HitLine> = self
+        let known_lines: Vec<String> = self
             .hits
             .iter()
             .filter(|h| h.is_known)
             .map(|h| {
-                let val_hex: String = h
-                    .value_bytes
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                HitLine {
-                    line: format!(
-                        "  [{:02X} {:02X}]  {:32}  prefix=0x{:02X}  class={}  value: [{}]",
-                        h.addr[0],
-                        h.addr[1],
-                        h.known_name.unwrap_or("?"),
-                        h.prefix,
-                        h.cmd_class,
-                        val_hex,
-                    ),
-                }
+                format!(
+                    "  [{:02X} {:02X}]  {:32}  prefix=0x{:02X}  class={}  value: [{}]",
+                    h.addr[0],
+                    h.addr[1],
+                    h.known_name.unwrap_or("?"),
+                    h.prefix,
+                    h.cmd_class,
+                    fmt_value_hex(&h.value_bytes),
+                )
             })
             .collect();
 
-        let new_lines: Vec<HitLine> = self
+        let new_lines: Vec<String> = self
             .hits
             .iter()
             .filter(|h| !h.is_known)
             .map(|h| {
-                let val_hex: String = h
-                    .value_bytes
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                HitLine {
-                    line: format!(
-                        "  [{:02X} {:02X}]  *** UNKNOWN ***  prefix=0x{:02X}  class={}  value: [{}]  {} bytes",
-                        h.addr[0],
-                        h.addr[1],
-                        h.prefix,
-                        h.cmd_class,
-                        val_hex,
-                        h.value_bytes.len(),
-                    ),
-                }
+                format!(
+                    "  [{:02X} {:02X}]  *** UNKNOWN ***  prefix=0x{:02X}  class={}  value: [{}]  {} bytes",
+                    h.addr[0],
+                    h.addr[1],
+                    h.prefix,
+                    h.cmd_class,
+                    fmt_value_hex(&h.value_bytes),
+                    h.value_bytes.len(),
+                )
             })
             .collect();
 
@@ -520,8 +503,8 @@ impl Probe {
             "\nKnown addresses that responded: {}",
             known_lines.len()
         ));
-        for h in &known_lines {
-            self.log(&h.line);
+        for line in &known_lines {
+            self.log(line);
         }
 
         self.log(&format!(
@@ -531,8 +514,8 @@ impl Probe {
         if new_lines.is_empty() {
             self.log("  (none found — all responsive addresses are already known)");
         } else {
-            for h in &new_lines {
-                self.log(&h.line);
+            for line in &new_lines {
+                self.log(line);
             }
             self.log("\n  ACTION: Add these addresses to protocol.rs as FEAT_* constants.");
         }
