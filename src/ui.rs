@@ -123,7 +123,21 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
-    let titles: Vec<Line> = Tab::ALL
+    // Permanently locked tabs (Reverb, LED on non-MV7+ devices) are hidden
+    // entirely — they have no meaning for those devices. Temporarily locked
+    // tabs (EQ, Dynamics on MVX2U Gen 1 in Auto mode) remain visible with a
+    // lock icon since they're meaningful but currently inaccessible.
+    let visible: Vec<Tab> = Tab::ALL
+        .iter()
+        .copied()
+        .filter(|t| {
+            let permanently_locked = matches!(t, Tab::Reverb | Tab::Led)
+                && app.device_model != crate::protocol::DeviceModel::Mv7Plus;
+            !permanently_locked
+        })
+        .collect();
+
+    let titles: Vec<Line> = visible
         .iter()
         .map(|t| {
             if app.is_tab_locked(*t) {
@@ -137,8 +151,13 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    let selected = visible
+        .iter()
+        .position(|t| *t == app.active_tab)
+        .unwrap_or(0);
+
     let tabs = Tabs::new(titles)
-        .select(app.active_tab.index())
+        .select(selected)
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
