@@ -51,12 +51,7 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 - **Mute Button Disable** — prevent accidental mutes
 - **Gain Lock** — hardware freeze of the gain control (Manual mode only)
 
-### MV7+
-- **Gain range** — 0–36 dB
-- **Tone** — Dark / Natural / Bright
-- **Real-time Denoiser** — enable/disable
-- **Popper Stopper** — enable/disable
-- **Mute Button Disable** — prevent accidental mutes
+### MV7+ - Builds on MV6 features with the following
 - **Reverb** — output and monitor enable/disable; Type: Plate / Hall / Studio; Intensity: 0–100%
 - **LED Panel** — Behavior (Live / Pulsing / Solid), Brightness (Low / Med / High / Max), theme and custom RGB color per mode
 
