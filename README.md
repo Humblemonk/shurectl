@@ -11,6 +11,7 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 - MVX2U Gen 1 — Digital Audio Interface
 - MVX2U Gen 2 — Digital Audio Interface
 - MV6 — USB Gaming Microphone
+- MV7+ — USB/XLR Dynamic Microphone
 
 ---
 
@@ -50,6 +51,15 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 - **Mute Button Disable** — prevent accidental mutes
 - **Gain Lock** — hardware freeze of the gain control (Manual mode only)
 
+### MV7+
+- **Gain range** — 0–36 dB
+- **Tone** — Dark / Natural / Bright
+- **Real-time Denoiser** — enable/disable
+- **Popper Stopper** — enable/disable
+- **Mute Button Disable** — prevent accidental mutes
+- **Reverb** — output and monitor enable/disable; Type: Plate / Hall / Studio; Intensity: 0–100%
+- **LED Panel** — Behavior (Live / Pulsing / Solid), Brightness (Low / Med / High / Max), theme and custom RGB color per mode
+
 ---
 
 ## Platform Setup
@@ -64,6 +74,7 @@ Create `/etc/udev/rules.d/62-shurectl.rules`:
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1033", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1019", TAG+="uaccess"
 ```
 
 Then reload udev and replug your device:

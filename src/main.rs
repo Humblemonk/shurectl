@@ -47,7 +47,7 @@ use protocol::{DeviceModel, InputMode};
 )]
 struct Cli {
     /// Run in demo mode without a real device.
-    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6.
+    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6, mv7plus.
     #[arg(long, short, num_args = 0..=1, default_missing_value = "mvx2u", value_name = "MODEL")]
     demo: Option<String>,
 
@@ -183,8 +183,11 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
         "mvx2u" => Ok(DeviceModel::Mvx2u),
         "mvx2u-gen2" | "mvx2ugen2" => Ok(DeviceModel::Mvx2uGen2),
         "mv6" => Ok(DeviceModel::Mv6),
+        "mv7plus" | "mv7+" => Ok(DeviceModel::Mv7Plus),
         other => {
-            anyhow::bail!("unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6")
+            anyhow::bail!(
+                "unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6, mv7plus"
+            )
         }
     }
 }
@@ -263,6 +266,20 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         return None;
     }
 
+    if app.confirming_factory_reset {
+        match code {
+            KeyCode::Enter => {
+                app.confirming_factory_reset = false;
+                return Some(DeviceAction::FactoryReset);
+            }
+            _ => {
+                app.confirming_factory_reset = false;
+                app.set_ok("Factory reset cancelled.");
+                return None;
+            }
+        }
+    }
+
     if app.help_visible {
         if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
             app.help_visible = false;
@@ -300,6 +317,13 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             {
                 app.editing_preset_name = true;
                 app.editing_preset_index = i;
+                return None;
+            }
+            if app.focus == app::Focus::FactoryReset {
+                app.confirming_factory_reset = true;
+                app.set_err(
+                    "! This will erase all device settings. Press Enter to confirm, any other key to cancel.",
+                );
                 return None;
             }
             app.toggle_focused()
@@ -469,6 +493,88 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             app.set_ok(format!("Monitor mix → {}%", m));
             send_if_connected(device, |d| d.set_mv6_monitor_mix(*m))
         }
+        // ── MV7+ exclusive actions ────────────────────────────────────────────
+        DeviceAction::SetMv7PlaybackMix(m) => {
+            app.set_ok(format!("Playback mix → {}%", m));
+            send_if_connected(device, |d| d.set_mv7_playback_mix(*m))
+        }
+        DeviceAction::SetMv7ReverbOutput(en) => {
+            app.set_ok(format!(
+                "Reverb output → {}",
+                if *en { "ON" } else { "OFF" }
+            ));
+            send_if_connected(device, |d| d.set_mv7_reverb_output(*en))
+        }
+        DeviceAction::SetMv7ReverbMonitor(en) => {
+            app.set_ok(format!(
+                "Reverb monitoring → {}",
+                if *en { "ON" } else { "OFF" }
+            ));
+            send_if_connected(device, |d| d.set_mv7_reverb_monitor(*en))
+        }
+        DeviceAction::SetMv7ReverbPreset(rtype) => {
+            app.set_ok(format!("Reverb type → {}", rtype));
+            send_if_connected(device, |d| d.set_mv7_reverb_type(rtype))
+        }
+        DeviceAction::SetMv7ReverbIntensity(intensity) => {
+            app.set_ok(format!("Reverb intensity → {}%", intensity));
+            send_if_connected(device, |d| d.set_mv7_reverb_intensity(*intensity))
+        }
+        DeviceAction::SetMv7LedBehavior(behavior) => {
+            app.set_ok(format!("LED behavior → {behavior}"));
+            send_if_connected(device, |d| d.set_mv7_led_behavior(*behavior))
+        }
+        DeviceAction::SetMv7LedBrightness(brightness) => {
+            app.set_ok(format!("LED brightness → {brightness}"));
+            send_if_connected(device, |d| d.set_mv7_led_brightness(*brightness))
+        }
+        DeviceAction::SetMv7LedLiveTheme(theme) => {
+            app.set_ok(format!("LED live theme → {theme}"));
+            send_if_connected(device, |d| d.set_mv7_led_live_theme(*theme))
+        }
+        DeviceAction::SetMv7LedSolidTheme(theme) => {
+            app.set_ok(format!("LED solid theme → {theme}"));
+            send_if_connected(device, |d| d.set_mv7_led_solid_theme(*theme))
+        }
+        DeviceAction::SetMv7LedPulsingTheme(theme) => {
+            app.set_ok(format!("LED pulsing theme → {theme}"));
+            send_if_connected(device, |d| d.set_mv7_led_pulsing_theme(*theme))
+        }
+        DeviceAction::SetMv7LedSolidRgb(rgb) => {
+            app.set_ok(format!(
+                "LED solid color → #{:02X}{:02X}{:02X}",
+                rgb[0], rgb[1], rgb[2]
+            ));
+            send_if_connected(device, |d| d.set_mv7_led_solid_color(*rgb))
+        }
+        DeviceAction::SetMv7LedPulsingRgb(rgb) => {
+            app.set_ok(format!(
+                "LED pulsing color → #{:02X}{:02X}{:02X}",
+                rgb[0], rgb[1], rgb[2]
+            ));
+            send_if_connected(device, |d| d.set_mv7_led_pulsing_color(*rgb))
+        }
+        DeviceAction::SetMv7LedLiveEdgeRgb(rgb) => {
+            app.set_ok(format!(
+                "LED live edge → #{:02X}{:02X}{:02X}",
+                rgb[0], rgb[1], rgb[2]
+            ));
+            send_if_connected(device, |d| d.set_mv7_led_live_edge(*rgb))
+        }
+        DeviceAction::SetMv7LedLiveMiddleRgb(rgb) => {
+            app.set_ok(format!(
+                "LED live middle → #{:02X}{:02X}{:02X}",
+                rgb[0], rgb[1], rgb[2]
+            ));
+            send_if_connected(device, |d| d.set_mv7_led_live_middle(*rgb))
+        }
+        DeviceAction::SetMv7LedLiveInteriorRgb(rgb) => {
+            app.set_ok(format!(
+                "LED live interior → #{:02X}{:02X}{:02X}",
+                rgb[0], rgb[1], rgb[2]
+            ));
+            send_if_connected(device, |d| d.set_mv7_led_live_interior(*rgb))
+        }
         // ── Preset actions ────────────────────────────────────────────────────
         DeviceAction::SavePreset(i) => {
             let name = app.presets[*i]
@@ -519,6 +625,10 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             } else {
                 Ok(())
             }
+        }
+        DeviceAction::FactoryReset => {
+            app.set_ok("Factory reset sent — device is restarting. Restart shurectl to reconnect.");
+            send_if_connected(device, |d| d.factory_reset())
         }
     };
 
@@ -584,6 +694,30 @@ fn apply_preset_to_device(
                 d.set_mv6_tone(state.tone)?;
                 d.set_mv6_gain_lock(state.mv6_gain_locked)?;
                 d.set_mv6_monitor_mix(state.monitor_mix)?;
+            }
+            DeviceModel::Mv7Plus => {
+                d.set_mv6_denoiser(state.denoiser_enabled)?;
+                d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+                d.set_mv6_tone(state.tone)?;
+                d.set_mv6_monitor_mix(state.monitor_mix)?;
+                d.set_limiter(state.limiter_enabled)?;
+                d.set_compressor(&state.compressor)?;
+                d.set_mv7_playback_mix(state.playback_mix)?;
+                d.set_mv7_reverb_output(state.reverb_on_output)?;
+                d.set_mv7_reverb_monitor(state.reverb_monitoring)?;
+                d.set_mv7_reverb_type(&state.reverb_type)?;
+                d.set_mv7_reverb_intensity(state.reverb_intensity)?;
+                d.set_mv7_led_behavior(state.led_behavior)?;
+                d.set_mv7_led_brightness(state.led_brightness)?;
+                d.set_mv7_led_live_theme(state.led_live_theme)?;
+                d.set_mv7_led_solid_theme(state.led_solid_theme)?;
+                d.set_mv7_led_pulsing_theme(state.led_pulsing_theme)?;
+                d.set_mv7_led_solid_color(state.led_solid_rgb)?;
+                d.set_mv7_led_pulsing_color(state.led_pulsing_rgb)?;
+                d.set_mv7_led_live_edge(state.led_live_edge_rgb)?;
+                d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
+                d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
             }
         }
         Ok(())

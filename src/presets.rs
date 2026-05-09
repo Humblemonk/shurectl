@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqBand, HpfFrequency,
-    InputMode, MicPosition,
+    InputMode, LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
+    MicPosition, ReverbType,
 };
 
 pub const PRESET_COUNT: usize = 4;
@@ -71,10 +72,68 @@ pub struct PresetSlot {
     /// Gain lock (Manual mode only). MV6 only.
     #[serde(default)]
     pub mv6_gain_locked: bool,
+
+    // ── MV7+-specific ────────────────────────────────────────────────────────
+    /// Independent playback mix channel: 0 = full mic, 100 = full playback.
+    #[serde(default)]
+    pub playback_mix: u8,
+    #[serde(default)]
+    pub reverb_on_output: bool,
+    #[serde(default)]
+    pub reverb_monitoring: bool,
+    #[serde(default)]
+    pub reverb_type: SerReverbType,
+    #[serde(default = "default_reverb_intensity")]
+    pub reverb_intensity: u8,
+    // ── MV7+ LED ─────────────────────────────────────────────────────────────
+    #[serde(default)]
+    pub led_behavior: SerLedBehavior,
+    #[serde(default)]
+    pub led_brightness: SerLedBrightness,
+    #[serde(default)]
+    pub led_live_theme: SerLedLiveTheme,
+    #[serde(default)]
+    pub led_solid_theme: SerLedSolidTheme,
+    #[serde(default)]
+    pub led_pulsing_theme: SerLedPulsingTheme,
+    #[serde(default = "default_led_solid_rgb")]
+    pub led_solid_rgb: [u8; 3],
+    #[serde(default = "default_led_pulsing_rgb")]
+    pub led_pulsing_rgb: [u8; 3],
+    #[serde(default = "default_led_live_edge_rgb")]
+    pub led_live_edge_rgb: [u8; 3],
+    #[serde(default = "default_led_live_middle_rgb")]
+    pub led_live_middle_rgb: [u8; 3],
+    #[serde(default = "default_led_live_interior_rgb")]
+    pub led_live_interior_rgb: [u8; 3],
 }
 
 fn default_popper_stopper() -> bool {
     true
+}
+
+fn default_reverb_intensity() -> u8 {
+    50
+}
+
+fn default_led_solid_rgb() -> [u8; 3] {
+    [0xB2, 0xFF, 0x33]
+}
+
+fn default_led_pulsing_rgb() -> [u8; 3] {
+    [0x10, 0x3F, 0xFB]
+}
+
+fn default_led_live_edge_rgb() -> [u8; 3] {
+    [0xFF, 0xFF, 0xFF]
+}
+
+fn default_led_live_middle_rgb() -> [u8; 3] {
+    [0x1F, 0x1F, 0x1F]
+}
+
+fn default_led_live_interior_rgb() -> [u8; 3] {
+    [0x00, 0x00, 0x00]
 }
 
 impl PresetSlot {
@@ -100,6 +159,21 @@ impl PresetSlot {
             mute_btn_disabled: state.mute_btn_disabled,
             tone: state.tone,
             mv6_gain_locked: state.mv6_gain_locked,
+            playback_mix: state.playback_mix,
+            reverb_on_output: state.reverb_on_output,
+            reverb_monitoring: state.reverb_monitoring,
+            reverb_type: SerReverbType::from(state.reverb_type),
+            reverb_intensity: state.reverb_intensity,
+            led_behavior: SerLedBehavior::from(state.led_behavior),
+            led_brightness: SerLedBrightness::from(state.led_brightness),
+            led_live_theme: SerLedLiveTheme::from(state.led_live_theme),
+            led_solid_theme: SerLedSolidTheme::from(state.led_solid_theme),
+            led_pulsing_theme: SerLedPulsingTheme::from(state.led_pulsing_theme),
+            led_solid_rgb: state.led_solid_rgb,
+            led_pulsing_rgb: state.led_pulsing_rgb,
+            led_live_edge_rgb: state.led_live_edge_rgb,
+            led_live_middle_rgb: state.led_live_middle_rgb,
+            led_live_interior_rgb: state.led_live_interior_rgb,
         }
     }
 
@@ -124,6 +198,21 @@ impl PresetSlot {
         state.mute_btn_disabled = self.mute_btn_disabled;
         state.tone = self.tone;
         state.mv6_gain_locked = self.mv6_gain_locked;
+        state.playback_mix = self.playback_mix;
+        state.reverb_on_output = self.reverb_on_output;
+        state.reverb_monitoring = self.reverb_monitoring;
+        state.reverb_type = ReverbType::from(self.reverb_type);
+        state.reverb_intensity = self.reverb_intensity;
+        state.led_behavior = LedBehavior::from(self.led_behavior);
+        state.led_brightness = LedBrightness::from(self.led_brightness);
+        state.led_live_theme = LedLiveTheme::from(self.led_live_theme);
+        state.led_solid_theme = LedSolidTheme::from(self.led_solid_theme);
+        state.led_pulsing_theme = LedPulsingTheme::from(self.led_pulsing_theme);
+        state.led_solid_rgb = self.led_solid_rgb;
+        state.led_pulsing_rgb = self.led_pulsing_rgb;
+        state.led_live_edge_rgb = self.led_live_edge_rgb;
+        state.led_live_middle_rgb = self.led_live_middle_rgb;
+        state.led_live_interior_rgb = self.led_live_interior_rgb;
     }
 
     /// Format the denoiser state as a display string.
@@ -171,6 +260,20 @@ impl PresetSlot {
                 let tone_str = self.tone_str();
                 format!(
                     "{}dB · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str}",
+                    self.gain_db
+                )
+            }
+            DeviceModel::Mv7Plus => {
+                let denoiser_str = self.denoiser_str();
+                let popper_str = self.popper_str();
+                let tone_str = self.tone_str();
+                let reverb_str = if self.reverb_on_output {
+                    format!("Reverb: {} {}%", self.reverb_type, self.reverb_intensity)
+                } else {
+                    "Reverb: off".to_string()
+                };
+                format!(
+                    "{}dB · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str} · {reverb_str}",
                     self.gain_db
                 )
             }
@@ -517,11 +620,201 @@ impl From<SerEqBand> for EqBand {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerReverbType {
+    #[default]
+    Plate,
+    Hall,
+    Studio,
+}
+
+impl std::fmt::Display for SerReverbType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SerReverbType::Plate => write!(f, "Plate"),
+            SerReverbType::Hall => write!(f, "Hall"),
+            SerReverbType::Studio => write!(f, "Studio"),
+        }
+    }
+}
+
+impl From<ReverbType> for SerReverbType {
+    fn from(v: ReverbType) -> Self {
+        match v {
+            ReverbType::Plate => Self::Plate,
+            ReverbType::Hall => Self::Hall,
+            ReverbType::Studio => Self::Studio,
+        }
+    }
+}
+
+impl From<SerReverbType> for ReverbType {
+    fn from(v: SerReverbType) -> Self {
+        match v {
+            SerReverbType::Plate => Self::Plate,
+            SerReverbType::Hall => Self::Hall,
+            SerReverbType::Studio => Self::Studio,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerLedBehavior {
+    #[default]
+    Live,
+    Pulsing,
+    Solid,
+}
+
+impl From<LedBehavior> for SerLedBehavior {
+    fn from(v: LedBehavior) -> Self {
+        match v {
+            LedBehavior::Live => Self::Live,
+            LedBehavior::Pulsing => Self::Pulsing,
+            LedBehavior::Solid => Self::Solid,
+        }
+    }
+}
+
+impl From<SerLedBehavior> for LedBehavior {
+    fn from(v: SerLedBehavior) -> Self {
+        match v {
+            SerLedBehavior::Live => Self::Live,
+            SerLedBehavior::Pulsing => Self::Pulsing,
+            SerLedBehavior::Solid => Self::Solid,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerLedBrightness {
+    Low,
+    Med,
+    #[default]
+    High,
+    Max,
+}
+
+impl From<LedBrightness> for SerLedBrightness {
+    fn from(v: LedBrightness) -> Self {
+        match v {
+            LedBrightness::Low => Self::Low,
+            LedBrightness::Med => Self::Med,
+            LedBrightness::High => Self::High,
+            LedBrightness::Max => Self::Max,
+        }
+    }
+}
+
+impl From<SerLedBrightness> for LedBrightness {
+    fn from(v: SerLedBrightness) -> Self {
+        match v {
+            SerLedBrightness::Low => Self::Low,
+            SerLedBrightness::Med => Self::Med,
+            SerLedBrightness::High => Self::High,
+            SerLedBrightness::Max => Self::Max,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerLedLiveTheme {
+    #[default]
+    Default,
+    Seaside,
+    Space,
+    Fruity,
+    Custom,
+}
+
+impl From<LedLiveTheme> for SerLedLiveTheme {
+    fn from(v: LedLiveTheme) -> Self {
+        match v {
+            LedLiveTheme::Default => Self::Default,
+            LedLiveTheme::Seaside => Self::Seaside,
+            LedLiveTheme::Space => Self::Space,
+            LedLiveTheme::Fruity => Self::Fruity,
+            LedLiveTheme::Custom => Self::Custom,
+        }
+    }
+}
+
+impl From<SerLedLiveTheme> for LedLiveTheme {
+    fn from(v: SerLedLiveTheme) -> Self {
+        match v {
+            SerLedLiveTheme::Default => Self::Default,
+            SerLedLiveTheme::Seaside => Self::Seaside,
+            SerLedLiveTheme::Space => Self::Space,
+            SerLedLiveTheme::Fruity => Self::Fruity,
+            SerLedLiveTheme::Custom => Self::Custom,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerLedSolidTheme {
+    #[default]
+    Shure,
+    Custom,
+}
+
+impl From<LedSolidTheme> for SerLedSolidTheme {
+    fn from(v: LedSolidTheme) -> Self {
+        match v {
+            LedSolidTheme::Shure => Self::Shure,
+            LedSolidTheme::Custom => Self::Custom,
+        }
+    }
+}
+
+impl From<SerLedSolidTheme> for LedSolidTheme {
+    fn from(v: SerLedSolidTheme) -> Self {
+        match v {
+            SerLedSolidTheme::Shure => Self::Shure,
+            SerLedSolidTheme::Custom => Self::Custom,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerLedPulsingTheme {
+    #[default]
+    Shure,
+    Custom,
+}
+
+impl From<LedPulsingTheme> for SerLedPulsingTheme {
+    fn from(v: LedPulsingTheme) -> Self {
+        match v {
+            LedPulsingTheme::Shure => Self::Shure,
+            LedPulsingTheme::Custom => Self::Custom,
+        }
+    }
+}
+
+impl From<SerLedPulsingTheme> for LedPulsingTheme {
+    fn from(v: SerLedPulsingTheme) -> Self {
+        match v {
+            SerLedPulsingTheme::Shure => Self::Shure,
+            SerLedPulsingTheme::Custom => Self::Custom,
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{
+        LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
+    };
 
     fn example_state() -> DeviceState {
         DeviceState {
@@ -565,6 +858,21 @@ mod tests {
             mute_btn_disabled: true,
             tone: -5,
             mv6_gain_locked: false,
+            playback_mix: 0,
+            reverb_on_output: false,
+            reverb_monitoring: false,
+            reverb_type: ReverbType::Plate,
+            reverb_intensity: 50,
+            led_behavior: LedBehavior::Live,
+            led_brightness: LedBrightness::High,
+            led_live_theme: LedLiveTheme::Default,
+            led_solid_theme: LedSolidTheme::Shure,
+            led_pulsing_theme: LedPulsingTheme::Shure,
+            led_solid_rgb: [0xB2, 0xFF, 0x33],
+            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
+            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
+            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
+            led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("TEST001"),
         }
     }
@@ -705,6 +1013,21 @@ mod tests {
             mute_btn_disabled: true,
             tone: 5,
             mv6_gain_locked: false,
+            playback_mix: 0,
+            reverb_on_output: false,
+            reverb_monitoring: false,
+            reverb_type: ReverbType::Plate,
+            reverb_intensity: 50,
+            led_behavior: LedBehavior::Live,
+            led_brightness: LedBrightness::High,
+            led_live_theme: LedLiveTheme::Default,
+            led_solid_theme: LedSolidTheme::Shure,
+            led_pulsing_theme: LedPulsingTheme::Shure,
+            led_solid_rgb: [0xB2, 0xFF, 0x33],
+            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
+            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
+            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
+            led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("MV6TEST"),
         }
     }

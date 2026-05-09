@@ -11,7 +11,7 @@ use ratatui::{
 use crate::app::{App, Focus, Tab};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, HpfFrequency, InputMode,
-    MicPosition,
+    LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, ReverbType,
 };
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -71,6 +71,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Main => draw_main_tab(f, app, chunks[2]),
         Tab::Eq => draw_eq_tab(f, app, chunks[2]),
         Tab::Dynamics => draw_dynamics_tab(f, app, chunks[2]),
+        Tab::Reverb => draw_reverb_tab(f, app, chunks[2]),
+        Tab::Led => draw_led_tab(f, app, chunks[2]),
         Tab::Presets => draw_presets_tab(f, app, chunks[2]),
         Tab::Info => draw_info_tab(f, app, chunks[2]),
     }
@@ -211,6 +213,8 @@ fn draw_main_tab(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_main_left(f: &mut Frame, app: &App, area: Rect) {
     match (app.device_model, app.device_state.mode) {
+        (DeviceModel::Mv7Plus, InputMode::Manual) => draw_main_left_mv7plus(f, app, area),
+        (DeviceModel::Mv7Plus, InputMode::Auto) => draw_main_left_mv7plus_auto(f, app, area),
         (DeviceModel::Mv6, InputMode::Manual) => draw_main_left_mv6_manual(f, app, area),
         (DeviceModel::Mv6, InputMode::Auto) => draw_main_left_mv6_auto(f, app, area),
         (DeviceModel::Mvx2uGen2, InputMode::Manual) => draw_main_left_gen2_manual(f, app, area),
@@ -218,6 +222,118 @@ fn draw_main_left(f: &mut Frame, app: &App, area: Rect) {
         (DeviceModel::Mvx2u, InputMode::Auto) => draw_main_left_auto(f, app, area),
         (DeviceModel::Mvx2u, InputMode::Manual) => draw_main_left_manual(f, app, area),
     }
+}
+
+fn draw_main_left_mv7plus(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(3), // gain
+            Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // playback mix
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+
+    let gain_focused = app.focus == Focus::Gain;
+    let gain = app.device_state.gain_db;
+    let gauge =
+        Gauge::default()
+            .block(
+                Block::default()
+                    .title(Line::from(vec![
+                        Span::styled("  GAIN  ", focused_style(gain_focused)),
+                        Span::styled(
+                            format!(" {} dB ", gain),
+                            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if gain_focused {
+                                "  ◄ ► or ←→ to adjust"
+                            } else {
+                                ""
+                            },
+                            Style::default().fg(C_DIM),
+                        ),
+                    ]))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(if gain_focused {
+                        Style::default().fg(C_FOCUS)
+                    } else {
+                        Style::default().fg(C_BORDER)
+                    }),
+            )
+            .gauge_style(Style::default().fg(C_ACCENT).bg(C_SURFACE).add_modifier(
+                if gain_focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                },
+            ))
+            .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
+            .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
+    f.render_widget(gauge, rows[2]);
+
+    draw_meter(f, app, rows[3]);
+    draw_monitor_mix_gauge(f, app, rows[4]);
+    draw_mv7plus_playback_mix_gauge(f, app, rows[5]);
+}
+
+fn draw_main_left_mv7plus_auto(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // playback mix
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+    draw_meter(f, app, rows[2]);
+    draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_mv7plus_playback_mix_gauge(f, app, rows[4]);
+}
+
+fn draw_mv7plus_playback_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
+    let focused = app.focus == Focus::PlaybackMix;
+    let mix = app.device_state.playback_mix;
+    let gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    "  Playback Mix  ",
+                    if focused {
+                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(C_TEXT)
+                    },
+                ))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if focused {
+                    Style::default().fg(C_FOCUS)
+                } else {
+                    Style::default().fg(C_BORDER)
+                }),
+        )
+        .gauge_style(Style::default().fg(Color::Rgb(200, 100, 50)).bg(C_SURFACE))
+        .ratio(mix as f64 / 100.0)
+        .label(format!("Mic ◄─{:3}%─► Playback", mix));
+    f.render_widget(gauge, area);
 }
 
 fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
@@ -1056,6 +1172,113 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             ]);
             l
         }
+        DeviceModel::Mv7Plus => {
+            let pct = ds.tone as i32 * 10;
+            let tone_str = if pct < 0 {
+                format!("{}% Dark", pct.abs())
+            } else if pct > 0 {
+                format!("{}% Bright", pct)
+            } else {
+                "Natural".to_string()
+            };
+            let reverb_type_str = match ds.reverb_type {
+                ReverbType::Plate => "Plate",
+                ReverbType::Hall => "Hall",
+                ReverbType::Studio => "Studio",
+            };
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Mode        : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.mode.to_string(), Style::default().fg(C_ACCENT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Gain        : ", Style::default().fg(C_DIM)),
+                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Tone        : ", Style::default().fg(C_DIM)),
+                    Span::styled(tone_str, Style::default().fg(C_TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Muted       : ", Style::default().fg(C_DIM)),
+                    if ds.muted {
+                        Span::styled("YES", Style::default().fg(C_ERROR))
+                    } else {
+                        Span::styled("NO", Style::default().fg(C_SUCCESS))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Mute Btn    : ", Style::default().fg(C_DIM)),
+                    if ds.mute_btn_disabled {
+                        Span::styled("Disabled", Style::default().fg(C_WARN))
+                    } else {
+                        Span::styled("Enabled", Style::default().fg(C_TEXT))
+                    },
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Denoiser    : ", Style::default().fg(C_DIM)),
+                    if ds.denoiser_enabled {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Pop. Stopper: ", Style::default().fg(C_DIM)),
+                    if ds.popper_stopper_enabled {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("HPF         : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.hpf.to_string(), Style::default().fg(C_TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Limiter     : ", Style::default().fg(C_DIM)),
+                    if ds.limiter_enabled {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Compressor  : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.compressor.to_string(), Style::default().fg(C_TEXT)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Reverb Out  : ", Style::default().fg(C_DIM)),
+                    if ds.reverb_on_output {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Reverb Mon  : ", Style::default().fg(C_DIM)),
+                    if ds.reverb_monitoring {
+                        Span::styled("ON", Style::default().fg(C_SUCCESS))
+                    } else {
+                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Reverb Type : ", Style::default().fg(C_DIM)),
+                    Span::styled(reverb_type_str, Style::default().fg(C_TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Reverb Int. : ", Style::default().fg(C_DIM)),
+                    Span::styled(
+                        format!("{}%", ds.reverb_intensity),
+                        Style::default().fg(C_TEXT),
+                    ),
+                ]),
+            ]
+        }
         DeviceModel::Mvx2uGen2 => {
             let mut l = vec![
                 Line::from(""),
@@ -1138,6 +1361,14 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled("ON", Style::default().fg(C_SUCCESS))
                     } else {
                         Span::styled("OFF", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Compressor  : ", Style::default().fg(C_DIM)),
+                    if ds.mode == InputMode::Auto {
+                        Span::styled("auto", Style::default().fg(C_DISABLED))
+                    } else {
+                        Span::styled(ds.compressor.to_string(), Style::default().fg(C_TEXT))
                     },
                 ]),
             ]);
@@ -2042,7 +2273,7 @@ fn render_notice(f: &mut Frame, area: Rect, lines: Vec<Line>) {
 // EQ Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
-    if app.device_model == DeviceModel::Mv6 {
+    if app.device_model == DeviceModel::Mv6 || app.device_model == DeviceModel::Mv7Plus {
         draw_mv6_eq_tab(f, app, area);
         return;
     }
@@ -2227,9 +2458,760 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MV7+ Dynamics Tab — Standard controls + Reverb section
+// ─────────────────────────────────────────────────────────────────────────────
+fn draw_mv7plus_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+    let ds = &app.device_state;
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, 6); 6])
+        .margin(1)
+        .split(area);
+
+    // ── Limiter ───────────────────────────────────────────────────────────────
+    let lim_foc = app.focus == Focus::Limiter;
+    let lim_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(C_DIM)),
+            bool_span(ds.limiter_enabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Prevents clipping by",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "capping the output",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled("level at 0 dBFS.", Style::default().fg(C_DIM))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if lim_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled(
+                "  Limiter  ",
+                if lim_foc {
+                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if lim_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(lim_p, cols[0]);
+
+    // ── Compressor ────────────────────────────────────────────────────────────
+    let comp_foc = app.focus == Focus::Compressor;
+    let comp_lines: Vec<Line> = [
+        CompressorPreset::Off,
+        CompressorPreset::Light,
+        CompressorPreset::Medium,
+        CompressorPreset::Heavy,
+    ]
+    .iter()
+    .map(|preset| {
+        let selected = *preset == ds.compressor;
+        Line::from(vec![
+            Span::styled(
+                if selected { "▶ " } else { "  " },
+                Style::default().fg(C_ACCENT),
+            ),
+            Span::styled(
+                preset.to_string(),
+                if selected {
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_DIM)
+                },
+            ),
+        ])
+    })
+    .collect();
+    let mut comp_content = vec![Line::from("")];
+    comp_content.extend(comp_lines);
+    comp_content.push(Line::from(""));
+    comp_content.push(Line::from(Span::styled(
+        "[Enter] to cycle",
+        Style::default().fg(if comp_foc { C_FOCUS } else { C_DISABLED }),
+    )));
+    let comp_p = Paragraph::new(comp_content).block(
+        Block::default()
+            .title(Span::styled(
+                "  Compressor  ",
+                if comp_foc {
+                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if comp_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(comp_p, cols[1]);
+
+    // ── Denoiser ──────────────────────────────────────────────────────────────
+    let den_foc = app.focus == Focus::Denoiser;
+    let den_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(C_DIM)),
+            bool_span(ds.denoiser_enabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Reduces background",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "noise in real time.",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if den_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled("  Denoiser  ", focused_style(den_foc)))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if den_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(den_p, cols[2]);
+
+    // ── Popper Stopper ────────────────────────────────────────────────────────
+    let pop_foc = app.focus == Focus::PopperStopper;
+    let pop_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(C_DIM)),
+            bool_span(ds.popper_stopper_enabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Reduces plosive", Style::default().fg(C_DIM))),
+        Line::from(Span::styled(
+            "sounds (p, b, t).",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if pop_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled("  Popper Stopper  ", focused_style(pop_foc)))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if pop_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(pop_p, cols[3]);
+
+    // ── Mute Button Disable ───────────────────────────────────────────────────
+    let mbd_foc = app.focus == Focus::MuteBtnDisable;
+    let mbd_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Disabled: ", Style::default().fg(C_DIM)),
+            bool_span(ds.mute_btn_disabled),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Prevents the physical",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled("mute button from", Style::default().fg(C_DIM))),
+        Line::from(Span::styled("toggling mute.", Style::default().fg(C_DIM))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] to toggle",
+            Style::default().fg(if mbd_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled("  Mute Button  ", focused_style(mbd_foc)))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if mbd_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(mbd_p, cols[4]);
+
+    // ── High-Pass Filter ──────────────────────────────────────────────────────
+    let hpf_foc = app.focus == Focus::Hpf;
+    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
+        .iter()
+        .map(|freq| {
+            let selected = *freq == ds.hpf;
+            Line::from(vec![
+                Span::styled(
+                    if selected { "▶ " } else { "  " },
+                    Style::default().fg(C_ACCENT),
+                ),
+                Span::styled(
+                    freq.to_string(),
+                    if selected {
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(C_DIM)
+                    },
+                ),
+            ])
+        })
+        .collect();
+    let mut hpf_content = vec![Line::from("")];
+    hpf_content.extend(hpf_lines);
+    hpf_content.push(Line::from(""));
+    hpf_content.push(Line::from(Span::styled(
+        "[Enter] to cycle",
+        Style::default().fg(if hpf_foc { C_FOCUS } else { C_DISABLED }),
+    )));
+    let hpf_p = Paragraph::new(hpf_content).block(
+        Block::default()
+            .title(Span::styled(
+                "  High-Pass Filter  ",
+                if hpf_foc {
+                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if hpf_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(hpf_p, cols[5]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reverb Tab (MV7+ only)
+// ─────────────────────────────────────────────────────────────────────────────
+fn draw_reverb_tab(f: &mut Frame, app: &App, area: Rect) {
+    let ds = &app.device_state;
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .margin(1)
+        .split(area);
+
+    let rev_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, 3); 3])
+        .split(rows[0]);
+
+    // Reverb Output
+    let rout_foc = app.focus == Focus::ReverbOutput;
+    let rout_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("On output: ", Style::default().fg(C_DIM)),
+            bool_span(ds.reverb_on_output),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Applies reverb to",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "speaker/headphones.",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] toggle",
+            Style::default().fg(if rout_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled("  Reverb Output  ", focused_style(rout_foc)))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if rout_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(rout_p, rev_cols[0]);
+
+    // Reverb Monitor
+    let rmon_foc = app.focus == Focus::ReverbMonitor;
+    let rmon_p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Monitoring: ", Style::default().fg(C_DIM)),
+            bool_span(ds.reverb_monitoring),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Applies reverb to",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "direct monitor mix.",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] toggle",
+            Style::default().fg(if rmon_foc { C_FOCUS } else { C_DISABLED }),
+        )),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled("  Reverb Monitor  ", focused_style(rmon_foc)))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if rmon_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(rmon_p, rev_cols[1]);
+
+    // Reverb Type
+    let rtype_foc = app.focus == Focus::ReverbPreset;
+    let rtype_lines: Vec<Line> = [ReverbType::Plate, ReverbType::Hall, ReverbType::Studio]
+        .iter()
+        .map(|rt| {
+            let selected = *rt == ds.reverb_type;
+            Line::from(vec![
+                Span::styled(
+                    if selected { "▶ " } else { "  " },
+                    Style::default().fg(C_ACCENT),
+                ),
+                Span::styled(
+                    rt.to_string(),
+                    if selected {
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(C_DIM)
+                    },
+                ),
+            ])
+        })
+        .collect();
+    let mut rtype_content = vec![Line::from("")];
+    rtype_content.extend(rtype_lines);
+    rtype_content.push(Line::from(""));
+    rtype_content.push(Line::from(Span::styled(
+        "[Enter] cycle",
+        Style::default().fg(if rtype_foc { C_FOCUS } else { C_DISABLED }),
+    )));
+    let rtype_p = Paragraph::new(rtype_content).block(
+        Block::default()
+            .title(Span::styled(
+                "  Reverb Type  ",
+                if rtype_foc {
+                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if rtype_foc {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(rtype_p, rev_cols[2]);
+
+    // Reverb Intensity — full-width bar across the bottom
+    let rint_foc = app.focus == Focus::ReverbIntensity;
+    let intensity = ds.reverb_intensity;
+    let rint_gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(Line::from(vec![
+                    Span::styled("  Reverb Intensity  ", focused_style(rint_foc)),
+                    Span::styled(
+                        format!(" {}% ", intensity),
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if rint_foc { "  ◄ ► to adjust" } else { "" },
+                        Style::default().fg(C_DIM),
+                    ),
+                ]))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if rint_foc {
+                    Style::default().fg(C_FOCUS)
+                } else {
+                    Style::default().fg(C_BORDER)
+                }),
+        )
+        .gauge_style(
+            Style::default()
+                .fg(Color::Rgb(150, 100, 200))
+                .bg(C_SURFACE)
+                .add_modifier(if rint_foc {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
+        .ratio(intensity as f64 / 100.0)
+        .label(format!("Dry ◄─{:3}%─► Wet", intensity));
+    f.render_widget(rint_gauge, rows[1]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LED Tab (MV7+ only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn draw_led_color_gauge(
+    f: &mut Frame,
+    focused: bool,
+    value: u8,
+    label: &str,
+    color: Color,
+    area: Rect,
+) {
+    let gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(Line::from(vec![
+                    Span::styled(format!("  {label}  "), focused_style(focused)),
+                    Span::styled(
+                        format!(" {} ", value),
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if focused { "  ◄ ► to adjust" } else { "" },
+                        Style::default().fg(C_DIM),
+                    ),
+                ]))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if focused {
+                    Style::default().fg(C_FOCUS)
+                } else {
+                    Style::default().fg(C_BORDER)
+                }),
+        )
+        .gauge_style(
+            Style::default()
+                .fg(color)
+                .bg(C_SURFACE)
+                .add_modifier(if focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
+        .ratio(value as f64 / 255.0)
+        .label(format!("0 ◄─{:3}─► 255", value));
+    f.render_widget(gauge, area);
+}
+
+fn draw_led_cycle_row(f: &mut Frame, focused: bool, label: &str, value: &str, area: Rect) {
+    let p = Paragraph::new(Line::from(vec![
+        Span::styled(format!("{label}:  "), Style::default().fg(C_DIM)),
+        Span::styled(
+            format!("[ {value} ]"),
+            Style::default()
+                .fg(if focused { C_FOCUS } else { C_ACCENT })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if focused { "  [Enter] to cycle" } else { "" },
+            Style::default().fg(C_DIM),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(format!("  {label}  "), focused_style(focused)))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if focused {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .padding(Padding::horizontal(1)),
+    );
+    f.render_widget(p, area);
+}
+
+fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
+    let ds = &app.device_state;
+
+    let custom_color_zones: usize = match ds.led_behavior {
+        LedBehavior::Solid if ds.led_solid_theme == LedSolidTheme::Custom => 1,
+        LedBehavior::Pulsing if ds.led_pulsing_theme == LedPulsingTheme::Custom => 1,
+        LedBehavior::Live if ds.led_live_theme == LedLiveTheme::Custom => 3,
+        _ => 0,
+    };
+
+    // 3 control rows + one 3-line row per color zone
+    let color_rows_height = custom_color_zones as u16 * 3;
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),                 // Behavior
+            Constraint::Length(3),                 // Brightness
+            Constraint::Length(3),                 // Theme
+            Constraint::Length(color_rows_height), // color zones (0 if not Custom)
+            Constraint::Min(0),                    // padding
+        ])
+        .margin(1)
+        .split(area);
+
+    // Behavior row
+    draw_led_cycle_row(
+        f,
+        app.focus == Focus::LedBehavior,
+        "Behavior",
+        &ds.led_behavior.to_string(),
+        sections[0],
+    );
+
+    // Brightness row
+    draw_led_cycle_row(
+        f,
+        app.focus == Focus::LedBrightness,
+        "Brightness",
+        &ds.led_brightness.to_string(),
+        sections[1],
+    );
+
+    // Theme row (label and options are context-sensitive)
+    let theme_str = match ds.led_behavior {
+        LedBehavior::Live => ds.led_live_theme.to_string(),
+        LedBehavior::Solid => ds.led_solid_theme.to_string(),
+        LedBehavior::Pulsing => ds.led_pulsing_theme.to_string(),
+    };
+    draw_led_cycle_row(
+        f,
+        app.focus == Focus::LedTheme,
+        "Theme",
+        &theme_str,
+        sections[2],
+    );
+
+    // Color zone rows — only rendered when Custom theme is active
+    if custom_color_zones == 0 {
+        return;
+    }
+
+    let zone_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(3); custom_color_zones])
+        .split(sections[3]);
+
+    match ds.led_behavior {
+        LedBehavior::Solid => {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Ratio(1, 3); 3])
+                .split(zone_areas[0]);
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedSolidR,
+                ds.led_solid_rgb[0],
+                "Solid R",
+                Color::Rgb(220, 60, 60),
+                cols[0],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedSolidG,
+                ds.led_solid_rgb[1],
+                "Solid G",
+                Color::Rgb(60, 200, 60),
+                cols[1],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedSolidB,
+                ds.led_solid_rgb[2],
+                "Solid B",
+                Color::Rgb(60, 100, 220),
+                cols[2],
+            );
+        }
+        LedBehavior::Pulsing => {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Ratio(1, 3); 3])
+                .split(zone_areas[0]);
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedPulsingR,
+                ds.led_pulsing_rgb[0],
+                "Pulsing R",
+                Color::Rgb(220, 60, 60),
+                cols[0],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedPulsingG,
+                ds.led_pulsing_rgb[1],
+                "Pulsing G",
+                Color::Rgb(60, 200, 60),
+                cols[1],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedPulsingB,
+                ds.led_pulsing_rgb[2],
+                "Pulsing B",
+                Color::Rgb(60, 100, 220),
+                cols[2],
+            );
+        }
+        LedBehavior::Live => {
+            // zone_areas[0] = edge, [1] = middle, [2] = interior
+            let edge_cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Ratio(1, 3); 3])
+                .split(zone_areas[0]);
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveEdgeR,
+                ds.led_live_edge_rgb[0],
+                "Edge R",
+                Color::Rgb(220, 60, 60),
+                edge_cols[0],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveEdgeG,
+                ds.led_live_edge_rgb[1],
+                "Edge G",
+                Color::Rgb(60, 200, 60),
+                edge_cols[1],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveEdgeB,
+                ds.led_live_edge_rgb[2],
+                "Edge B",
+                Color::Rgb(60, 100, 220),
+                edge_cols[2],
+            );
+
+            let mid_cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Ratio(1, 3); 3])
+                .split(zone_areas[1]);
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveMiddleR,
+                ds.led_live_middle_rgb[0],
+                "Middle R",
+                Color::Rgb(220, 60, 60),
+                mid_cols[0],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveMiddleG,
+                ds.led_live_middle_rgb[1],
+                "Middle G",
+                Color::Rgb(60, 200, 60),
+                mid_cols[1],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveMiddleB,
+                ds.led_live_middle_rgb[2],
+                "Middle B",
+                Color::Rgb(60, 100, 220),
+                mid_cols[2],
+            );
+
+            let int_cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Ratio(1, 3); 3])
+                .split(zone_areas[2]);
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveInteriorR,
+                ds.led_live_interior_rgb[0],
+                "Interior R",
+                Color::Rgb(220, 60, 60),
+                int_cols[0],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveInteriorG,
+                ds.led_live_interior_rgb[1],
+                "Interior G",
+                Color::Rgb(60, 200, 60),
+                int_cols[1],
+            );
+            draw_led_color_gauge(
+                f,
+                app.focus == Focus::LedLiveInteriorB,
+                ds.led_live_interior_rgb[2],
+                "Interior B",
+                Color::Rgb(60, 100, 220),
+                int_cols[2],
+            );
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Dynamics Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+    if app.device_model == DeviceModel::Mv7Plus {
+        draw_mv7plus_dynamics_tab(f, app, area);
+        return;
+    }
     if app.device_model == DeviceModel::Mv6 {
         draw_mv6_dynamics_tab(f, app, area);
         return;
@@ -2601,6 +3583,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
         DeviceModel::Mvx2uGen2 => ("14ED:1033", "0–60 dB"),
         DeviceModel::Mv6 => ("14ED:1026", "0–36 dB"),
+        DeviceModel::Mv7Plus => ("14ED:1019", "0–36 dB"),
     };
 
     let mut lines = vec![
@@ -2679,6 +3662,26 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             ("  Auto Level   : ", "On / Off"),
             ("  Mute Button  : ", "Enable / Disable"),
         ],
+        DeviceModel::Mv7Plus => &[
+            ("  Denoiser     : ", "On / Off"),
+            ("  Popper Stop. : ", "On / Off"),
+            (
+                "  Tone         : ",
+                "Dark (−100%) → Natural → Bright (+100%)",
+            ),
+            ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
+            ("  Compressor   : ", "Off / Light / Medium / Heavy"),
+            ("  Limiter      : ", "On / Off"),
+            ("  Mute Button  : ", "Enable / Disable"),
+            ("  Monitor Mix  : ", "0–100% (mic ↔ playback)"),
+            ("  Playback Mix : ", "0–100% (independent second channel)"),
+            (
+                "  Reverb       : ",
+                "Plate / Hall / Studio; intensity 0–100%",
+            ),
+            ("  LED Panel    : ", "Behavior / Brightness / Theme / Custom RGB"),
+            ("  Auto Level   : ", "On / Off"),
+        ],
     };
 
     for (label, value) in cap_rows {
@@ -2686,6 +3689,42 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(*label, Style::default().fg(C_DIM)),
             Span::styled(*value, Style::default().fg(C_TEXT)),
         ]));
+    }
+
+    if model == DeviceModel::Mv7Plus {
+        let reset_focused = app.focus == Focus::FactoryReset;
+        let (reset_label, reset_style) = if app.confirming_factory_reset {
+            (
+                "  [ Factory Reset ]  ← Press Enter to confirm",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if reset_focused {
+            (
+                "  [ Factory Reset ]",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("  [ Factory Reset ]", Style::default().fg(Color::Red))
+        };
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Device Actions",
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(reset_label, reset_style)),
+            Line::from(Span::styled(
+                "    Resets all settings to factory defaults. Device will disconnect.",
+                Style::default().fg(C_DIM),
+            )),
+        ]);
     }
 
     lines.extend([

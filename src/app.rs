@@ -7,7 +7,8 @@ use crate::meter::{METER_SILENT, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, HpfFrequency, InputMode,
-    MicPosition,
+    LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition,
+    ReverbType,
 };
 
 /// Which top-level tab/panel is active.
@@ -16,18 +17,30 @@ pub enum Tab {
     Main,
     Eq,
     Dynamics,
+    Reverb,
+    Led,
     Presets,
     Info,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Main, Tab::Eq, Tab::Dynamics, Tab::Presets, Tab::Info];
+    pub const ALL: [Tab; 7] = [
+        Tab::Main,
+        Tab::Eq,
+        Tab::Dynamics,
+        Tab::Reverb,
+        Tab::Led,
+        Tab::Presets,
+        Tab::Info,
+    ];
 
     pub fn title(&self) -> &'static str {
         match self {
             Tab::Main => " Main ",
             Tab::Eq => " EQ ",
             Tab::Dynamics => " Dynamics ",
+            Tab::Reverb => " Reverb ",
+            Tab::Led => " LED ",
             Tab::Presets => " Presets ",
             Tab::Info => " Info ",
         }
@@ -38,8 +51,10 @@ impl Tab {
             Tab::Main => 0,
             Tab::Eq => 1,
             Tab::Dynamics => 2,
-            Tab::Presets => 3,
-            Tab::Info => 4,
+            Tab::Reverb => 3,
+            Tab::Led => 4,
+            Tab::Presets => 5,
+            Tab::Info => 6,
         }
     }
 
@@ -86,11 +101,38 @@ pub enum Focus {
     MuteBtnDisable,
     // Main tab — MV6 gain lock (Manual mode only)
     GainLock,
+    // Main tab — MV7+ playback mix (independent from monitor mix)
+    PlaybackMix,
+    // Dynamics tab — MV7+ reverb controls
+    ReverbOutput,
+    ReverbMonitor,
+    ReverbPreset,
+    ReverbIntensity,
+    // LED tab — MV7+ LED controls
+    LedBehavior,
+    LedBrightness,
+    LedTheme,
+    // Color channels — only navigable when Custom theme is active
+    LedSolidR,
+    LedSolidG,
+    LedSolidB,
+    LedPulsingR,
+    LedPulsingG,
+    LedPulsingB,
+    LedLiveEdgeR,
+    LedLiveEdgeG,
+    LedLiveEdgeB,
+    LedLiveMiddleR,
+    LedLiveMiddleG,
+    LedLiveMiddleB,
+    LedLiveInteriorR,
+    LedLiveInteriorG,
+    LedLiveInteriorB,
     // Presets tab — usize is slot index 0–3
     PresetName(usize),
     PresetActions(usize),
-    // Info — no interactive focus
-    None,
+    // Info tab
+    FactoryReset,
 }
 
 /// The full TUI application state.
@@ -112,6 +154,9 @@ pub struct App {
     pub editing_preset_name: bool,
     /// Which slot index is being edited (valid when `editing_preset_name` is true).
     pub editing_preset_index: usize,
+    /// Set to `true` after the user first presses Enter on the factory reset button.
+    /// A second Enter fires the action; any other key cancels.
+    pub confirming_factory_reset: bool,
     /// Instantaneous peak level shared with the cpal capture thread.
     /// Stores `peak_dbfs * 10` as i32, or `METER_SILENT` when unavailable.
     pub meter_level: Arc<AtomicI32>,
@@ -136,6 +181,7 @@ impl Default for App {
             presets: [None, None, None, None],
             editing_preset_name: false,
             editing_preset_index: 0,
+            confirming_factory_reset: false,
             meter_level: Arc::new(AtomicI32::new(METER_SILENT)),
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
         }
@@ -168,6 +214,11 @@ impl App {
         matches!(
             (tab, self.device_model, self.device_state.mode),
             (Tab::Eq | Tab::Dynamics, DeviceModel::Mvx2u, InputMode::Auto)
+                | (
+                    Tab::Reverb | Tab::Led,
+                    DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2,
+                    _,
+                )
         )
     }
 
@@ -203,6 +254,10 @@ impl App {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
             },
+            (Tab::Main, DeviceModel::Mv7Plus) => match self.device_state.mode {
+                InputMode::Manual => Focus::Gain,
+                InputMode::Auto => Focus::Mode,
+            },
             (Tab::Main, DeviceModel::Mvx2u) => match self.device_state.mode {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
@@ -211,20 +266,23 @@ impl App {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
             },
-            (Tab::Eq, DeviceModel::Mv6) => Focus::Tone,
+            (Tab::Eq, DeviceModel::Mv6 | DeviceModel::Mv7Plus) => Focus::Tone,
             (Tab::Eq, DeviceModel::Mvx2u) => Focus::EqEnable,
             (Tab::Eq, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
                 InputMode::Auto => Focus::Tone,
                 InputMode::Manual => Focus::EqBandSelect,
             },
             (Tab::Dynamics, DeviceModel::Mv6) => Focus::Denoiser,
+            (Tab::Dynamics, DeviceModel::Mv7Plus) => Focus::Limiter,
             (Tab::Dynamics, DeviceModel::Mvx2u) => Focus::Limiter,
             (Tab::Dynamics, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
                 InputMode::Auto => Focus::Denoiser,
                 InputMode::Manual => Focus::Limiter,
             },
+            (Tab::Reverb, _) => Focus::ReverbOutput,
+            (Tab::Led, _) => Focus::LedBehavior,
             (Tab::Presets, _) => Focus::PresetName(0),
-            (Tab::Info, _) => Focus::None,
+            (Tab::Info, _) => Focus::FactoryReset,
         };
     }
 
@@ -290,8 +348,8 @@ impl App {
             (Tab::Main, Focus::Lock, DeviceModel::Mvx2u, _) => Focus::Mode,
             (Tab::Main, _, DeviceModel::Mvx2u, _) => Focus::Mode,
 
-            // ── MV6 EQ (Tone only) ────────────────────────────────────────────
-            (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
+            // ── MV6 / MV7+ EQ (Tone only) ────────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mv6 | DeviceModel::Mv7Plus, _) => Focus::Tone, // Tone is the only EQ control
 
             // ── MVX2U Gen 2 Main cycle ────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mute,
@@ -360,6 +418,52 @@ impl App {
             (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6, _) => Focus::Denoiser,
             (Tab::Dynamics, _, DeviceModel::Mv6, _) => Focus::Denoiser,
 
+            // ── MV7+ Main cycle
+            (Tab::Main, Focus::Mode, DeviceModel::Mv7Plus, _) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::MonitorMix,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv7Plus, InputMode::Auto) => Focus::MonitorMix,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, _) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv7Plus, _) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mv7Plus, _) => Focus::Mode,
+
+            // ── MV7+ Dynamics (Limiter+Comp+Denoiser+Popper+MuteBtn+Hpf)
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mv7Plus, _) => Focus::Compressor,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mv7Plus, _) => Focus::Denoiser,
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv7Plus, _) => Focus::PopperStopper,
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv7Plus, _) => Focus::MuteBtnDisable,
+            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv7Plus, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv7Plus, _) => Focus::Limiter,
+            (Tab::Dynamics, _, DeviceModel::Mv7Plus, _) => Focus::Limiter,
+
+            // ── Reverb tab (MV7+ only)
+            (Tab::Reverb, Focus::ReverbOutput, _, _) => Focus::ReverbMonitor,
+            (Tab::Reverb, Focus::ReverbMonitor, _, _) => Focus::ReverbPreset,
+            (Tab::Reverb, Focus::ReverbPreset, _, _) => Focus::ReverbIntensity,
+            (Tab::Reverb, Focus::ReverbIntensity, _, _) => Focus::ReverbOutput,
+            (Tab::Reverb, _, _, _) => Focus::ReverbOutput,
+
+            // ── LED tab (MV7+ only)
+            (Tab::Led, Focus::LedBehavior, _, _) => Focus::LedBrightness,
+            (Tab::Led, Focus::LedBrightness, _, _) => Focus::LedTheme,
+            (Tab::Led, Focus::LedTheme, _, _) => self.led_first_color_focus(),
+            (Tab::Led, Focus::LedSolidR, _, _) => Focus::LedSolidG,
+            (Tab::Led, Focus::LedSolidG, _, _) => Focus::LedSolidB,
+            (Tab::Led, Focus::LedSolidB, _, _) => Focus::LedBehavior,
+            (Tab::Led, Focus::LedPulsingR, _, _) => Focus::LedPulsingG,
+            (Tab::Led, Focus::LedPulsingG, _, _) => Focus::LedPulsingB,
+            (Tab::Led, Focus::LedPulsingB, _, _) => Focus::LedBehavior,
+            (Tab::Led, Focus::LedLiveEdgeR, _, _) => Focus::LedLiveEdgeG,
+            (Tab::Led, Focus::LedLiveEdgeG, _, _) => Focus::LedLiveEdgeB,
+            (Tab::Led, Focus::LedLiveEdgeB, _, _) => Focus::LedLiveMiddleR,
+            (Tab::Led, Focus::LedLiveMiddleR, _, _) => Focus::LedLiveMiddleG,
+            (Tab::Led, Focus::LedLiveMiddleG, _, _) => Focus::LedLiveMiddleB,
+            (Tab::Led, Focus::LedLiveMiddleB, _, _) => Focus::LedLiveInteriorR,
+            (Tab::Led, Focus::LedLiveInteriorR, _, _) => Focus::LedLiveInteriorG,
+            (Tab::Led, Focus::LedLiveInteriorG, _, _) => Focus::LedLiveInteriorB,
+            (Tab::Led, Focus::LedLiveInteriorB, _, _) => Focus::LedBehavior,
+            (Tab::Led, _, _, _) => Focus::LedBehavior,
+
             // ── MVX2U Dynamics ────────────────────────────────────────────────
             (Tab::Dynamics, Focus::Limiter, DeviceModel::Mvx2u, _) => Focus::Compressor,
             (Tab::Dynamics, Focus::Compressor, DeviceModel::Mvx2u, _) => Focus::Hpf,
@@ -413,8 +517,8 @@ impl App {
             (Tab::Main, Focus::Lock, DeviceModel::Mvx2u, _) => Focus::Phantom,
             (Tab::Main, _, DeviceModel::Mvx2u, _) => Focus::Mode,
 
-            // ── MV6 EQ ────────────────────────────────────────────────────────
-            (Tab::Eq, _, DeviceModel::Mv6, _) => Focus::Tone,
+            // ── MV6 / MV7+ EQ ────────────────────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mv6 | DeviceModel::Mv7Plus, _) => Focus::Tone,
 
             // ── MVX2U Gen 2 Main reverse ──────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Phantom,
@@ -483,6 +587,52 @@ impl App {
             (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6, _) => Focus::MuteBtnDisable,
             (Tab::Dynamics, _, DeviceModel::Mv6, _) => Focus::Denoiser,
 
+            // ── MV7+ Main reverse
+            (Tab::Main, Focus::Mode, DeviceModel::Mv7Plus, _) => Focus::PlaybackMix,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv7Plus, _) => Focus::Mode,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv7Plus, _) => Focus::MonitorMix,
+            (Tab::Main, _, DeviceModel::Mv7Plus, _) => Focus::Mode,
+
+            // ── MV7+ Dynamics reverse ─────────────────────────────────────────
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mv7Plus, _) => Focus::Hpf,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mv7Plus, _) => Focus::Limiter,
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv7Plus, _) => Focus::Compressor,
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv7Plus, _) => Focus::Denoiser,
+            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv7Plus, _) => Focus::PopperStopper,
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv7Plus, _) => Focus::MuteBtnDisable,
+            (Tab::Dynamics, _, DeviceModel::Mv7Plus, _) => Focus::Limiter,
+
+            // ── Reverb tab reverse (MV7+ only)
+            (Tab::Reverb, Focus::ReverbOutput, _, _) => Focus::ReverbIntensity,
+            (Tab::Reverb, Focus::ReverbMonitor, _, _) => Focus::ReverbOutput,
+            (Tab::Reverb, Focus::ReverbPreset, _, _) => Focus::ReverbMonitor,
+            (Tab::Reverb, Focus::ReverbIntensity, _, _) => Focus::ReverbPreset,
+            (Tab::Reverb, _, _, _) => Focus::ReverbOutput,
+
+            // ── LED tab reverse (MV7+ only)
+            (Tab::Led, Focus::LedBehavior, _, _) => self.led_last_color_focus(),
+            (Tab::Led, Focus::LedBrightness, _, _) => Focus::LedBehavior,
+            (Tab::Led, Focus::LedTheme, _, _) => Focus::LedBrightness,
+            (Tab::Led, Focus::LedSolidR, _, _) => Focus::LedTheme,
+            (Tab::Led, Focus::LedSolidG, _, _) => Focus::LedSolidR,
+            (Tab::Led, Focus::LedSolidB, _, _) => Focus::LedSolidG,
+            (Tab::Led, Focus::LedPulsingR, _, _) => Focus::LedTheme,
+            (Tab::Led, Focus::LedPulsingG, _, _) => Focus::LedPulsingR,
+            (Tab::Led, Focus::LedPulsingB, _, _) => Focus::LedPulsingG,
+            (Tab::Led, Focus::LedLiveEdgeR, _, _) => Focus::LedTheme,
+            (Tab::Led, Focus::LedLiveEdgeG, _, _) => Focus::LedLiveEdgeR,
+            (Tab::Led, Focus::LedLiveEdgeB, _, _) => Focus::LedLiveEdgeG,
+            (Tab::Led, Focus::LedLiveMiddleR, _, _) => Focus::LedLiveEdgeB,
+            (Tab::Led, Focus::LedLiveMiddleG, _, _) => Focus::LedLiveMiddleR,
+            (Tab::Led, Focus::LedLiveMiddleB, _, _) => Focus::LedLiveMiddleG,
+            (Tab::Led, Focus::LedLiveInteriorR, _, _) => Focus::LedLiveMiddleB,
+            (Tab::Led, Focus::LedLiveInteriorG, _, _) => Focus::LedLiveInteriorR,
+            (Tab::Led, Focus::LedLiveInteriorB, _, _) => Focus::LedLiveInteriorG,
+            (Tab::Led, _, _, _) => Focus::LedBehavior,
+
             // ── MVX2U Dynamics reverse ────────────────────────────────────────
             (Tab::Dynamics, Focus::Limiter, DeviceModel::Mvx2u, _) => Focus::Hpf,
             (Tab::Dynamics, Focus::Compressor, DeviceModel::Mvx2u, _) => Focus::Limiter,
@@ -496,6 +646,36 @@ impl App {
 
             _ => self.focus,
         };
+    }
+
+    // ── LED focus helpers ─────────────────────────────────────────────────────
+
+    /// First focusable color control given current behavior + theme, or LedBehavior if none.
+    fn led_first_color_focus(&self) -> Focus {
+        let ds = &self.device_state;
+        match ds.led_behavior {
+            LedBehavior::Solid if ds.led_solid_theme == LedSolidTheme::Custom => Focus::LedSolidR,
+            LedBehavior::Pulsing if ds.led_pulsing_theme == LedPulsingTheme::Custom => {
+                Focus::LedPulsingR
+            }
+            LedBehavior::Live if ds.led_live_theme == LedLiveTheme::Custom => Focus::LedLiveEdgeR,
+            _ => Focus::LedBehavior,
+        }
+    }
+
+    /// Last focusable color control given current behavior + theme, or LedTheme if none.
+    fn led_last_color_focus(&self) -> Focus {
+        let ds = &self.device_state;
+        match ds.led_behavior {
+            LedBehavior::Solid if ds.led_solid_theme == LedSolidTheme::Custom => Focus::LedSolidB,
+            LedBehavior::Pulsing if ds.led_pulsing_theme == LedPulsingTheme::Custom => {
+                Focus::LedPulsingB
+            }
+            LedBehavior::Live if ds.led_live_theme == LedLiveTheme::Custom => {
+                Focus::LedLiveInteriorB
+            }
+            _ => Focus::LedTheme,
+        }
     }
 
     // ── Value adjustment helpers ──────────────────────────────────────────────
@@ -520,16 +700,146 @@ impl App {
                 }
                 let mix = self.device_state.monitor_mix;
                 match self.device_model {
-                    DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 => {
+                    DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7Plus => {
                         Some(DeviceAction::SetMv6MonitorMix(mix))
                     }
                     DeviceModel::Mvx2u => Some(DeviceAction::SetMonitorMix(mix)),
                 }
             }
+            Focus::PlaybackMix => {
+                let m = &mut self.device_state.playback_mix;
+                if delta > 0 {
+                    *m = (*m + 1).min(100);
+                } else {
+                    *m = m.saturating_sub(1);
+                }
+                Some(DeviceAction::SetMv7PlaybackMix(
+                    self.device_state.playback_mix,
+                ))
+            }
+            Focus::ReverbIntensity => {
+                let i = &mut self.device_state.reverb_intensity;
+                if delta > 0 {
+                    *i = (*i + 1).min(100);
+                } else {
+                    *i = i.saturating_sub(1);
+                }
+                Some(DeviceAction::SetMv7ReverbIntensity(
+                    self.device_state.reverb_intensity,
+                ))
+            }
             Focus::Tone => {
                 let t = &mut self.device_state.tone;
                 *t = ((*t as i32) + delta).clamp(-10, 10) as i8;
                 Some(DeviceAction::SetMv6Tone(self.device_state.tone))
+            }
+            Focus::LedSolidR => {
+                self.device_state.led_solid_rgb[0] =
+                    ((self.device_state.led_solid_rgb[0] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedSolidRgb(
+                    self.device_state.led_solid_rgb,
+                ))
+            }
+            Focus::LedSolidG => {
+                self.device_state.led_solid_rgb[1] =
+                    ((self.device_state.led_solid_rgb[1] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedSolidRgb(
+                    self.device_state.led_solid_rgb,
+                ))
+            }
+            Focus::LedSolidB => {
+                self.device_state.led_solid_rgb[2] =
+                    ((self.device_state.led_solid_rgb[2] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedSolidRgb(
+                    self.device_state.led_solid_rgb,
+                ))
+            }
+            Focus::LedPulsingR => {
+                self.device_state.led_pulsing_rgb[0] =
+                    ((self.device_state.led_pulsing_rgb[0] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedPulsingRgb(
+                    self.device_state.led_pulsing_rgb,
+                ))
+            }
+            Focus::LedPulsingG => {
+                self.device_state.led_pulsing_rgb[1] =
+                    ((self.device_state.led_pulsing_rgb[1] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedPulsingRgb(
+                    self.device_state.led_pulsing_rgb,
+                ))
+            }
+            Focus::LedPulsingB => {
+                self.device_state.led_pulsing_rgb[2] =
+                    ((self.device_state.led_pulsing_rgb[2] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedPulsingRgb(
+                    self.device_state.led_pulsing_rgb,
+                ))
+            }
+            Focus::LedLiveEdgeR => {
+                self.device_state.led_live_edge_rgb[0] =
+                    ((self.device_state.led_live_edge_rgb[0] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedLiveEdgeRgb(
+                    self.device_state.led_live_edge_rgb,
+                ))
+            }
+            Focus::LedLiveEdgeG => {
+                self.device_state.led_live_edge_rgb[1] =
+                    ((self.device_state.led_live_edge_rgb[1] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedLiveEdgeRgb(
+                    self.device_state.led_live_edge_rgb,
+                ))
+            }
+            Focus::LedLiveEdgeB => {
+                self.device_state.led_live_edge_rgb[2] =
+                    ((self.device_state.led_live_edge_rgb[2] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedLiveEdgeRgb(
+                    self.device_state.led_live_edge_rgb,
+                ))
+            }
+            Focus::LedLiveMiddleR => {
+                self.device_state.led_live_middle_rgb[0] =
+                    ((self.device_state.led_live_middle_rgb[0] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedLiveMiddleRgb(
+                    self.device_state.led_live_middle_rgb,
+                ))
+            }
+            Focus::LedLiveMiddleG => {
+                self.device_state.led_live_middle_rgb[1] =
+                    ((self.device_state.led_live_middle_rgb[1] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedLiveMiddleRgb(
+                    self.device_state.led_live_middle_rgb,
+                ))
+            }
+            Focus::LedLiveMiddleB => {
+                self.device_state.led_live_middle_rgb[2] =
+                    ((self.device_state.led_live_middle_rgb[2] as i32) + delta).clamp(0, 255) as u8;
+                Some(DeviceAction::SetMv7LedLiveMiddleRgb(
+                    self.device_state.led_live_middle_rgb,
+                ))
+            }
+            Focus::LedLiveInteriorR => {
+                self.device_state.led_live_interior_rgb[0] =
+                    ((self.device_state.led_live_interior_rgb[0] as i32) + delta).clamp(0, 255)
+                        as u8;
+                Some(DeviceAction::SetMv7LedLiveInteriorRgb(
+                    self.device_state.led_live_interior_rgb,
+                ))
+            }
+            Focus::LedLiveInteriorG => {
+                self.device_state.led_live_interior_rgb[1] =
+                    ((self.device_state.led_live_interior_rgb[1] as i32) + delta).clamp(0, 255)
+                        as u8;
+                Some(DeviceAction::SetMv7LedLiveInteriorRgb(
+                    self.device_state.led_live_interior_rgb,
+                ))
+            }
+            Focus::LedLiveInteriorB => {
+                self.device_state.led_live_interior_rgb[2] =
+                    ((self.device_state.led_live_interior_rgb[2] as i32) + delta).clamp(0, 255)
+                        as u8;
+                Some(DeviceAction::SetMv7LedLiveInteriorRgb(
+                    self.device_state.led_live_interior_rgb,
+                ))
             }
             Focus::EqBandSelect => {
                 if delta > 0 {
@@ -563,6 +873,8 @@ impl App {
                 };
                 self.focus = match (self.device_model, self.device_state.mode) {
                     (DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
+                    // MV7+ has no focusable gain — always move to Mute
+                    (DeviceModel::Mv7Plus, _) => Focus::Mute,
                     (_, InputMode::Manual) => Focus::Gain,
                     (_, InputMode::Auto) => Focus::Mute,
                 };
@@ -637,12 +949,65 @@ impl App {
                     self.device_state.mute_btn_disabled,
                 ))
             }
+            Focus::ReverbOutput => {
+                self.device_state.reverb_on_output = !self.device_state.reverb_on_output;
+                Some(DeviceAction::SetMv7ReverbOutput(
+                    self.device_state.reverb_on_output,
+                ))
+            }
+            Focus::ReverbMonitor => {
+                self.device_state.reverb_monitoring = !self.device_state.reverb_monitoring;
+                Some(DeviceAction::SetMv7ReverbMonitor(
+                    self.device_state.reverb_monitoring,
+                ))
+            }
+            Focus::ReverbPreset => {
+                self.device_state.reverb_type = self.device_state.reverb_type.cycle_next();
+                Some(DeviceAction::SetMv7ReverbPreset(
+                    self.device_state.reverb_type,
+                ))
+            }
             Focus::GainLock => {
                 self.device_state.mv6_gain_locked = !self.device_state.mv6_gain_locked;
                 Some(DeviceAction::SetMv6GainLock(
                     self.device_state.mv6_gain_locked,
                 ))
             }
+            Focus::LedBehavior => {
+                self.device_state.led_behavior = self.device_state.led_behavior.cycle_next();
+                Some(DeviceAction::SetMv7LedBehavior(
+                    self.device_state.led_behavior,
+                ))
+            }
+            Focus::LedBrightness => {
+                self.device_state.led_brightness = self.device_state.led_brightness.cycle_next();
+                Some(DeviceAction::SetMv7LedBrightness(
+                    self.device_state.led_brightness,
+                ))
+            }
+            Focus::LedTheme => match self.device_state.led_behavior {
+                LedBehavior::Live => {
+                    self.device_state.led_live_theme =
+                        self.device_state.led_live_theme.cycle_next();
+                    Some(DeviceAction::SetMv7LedLiveTheme(
+                        self.device_state.led_live_theme,
+                    ))
+                }
+                LedBehavior::Solid => {
+                    self.device_state.led_solid_theme =
+                        self.device_state.led_solid_theme.cycle_next();
+                    Some(DeviceAction::SetMv7LedSolidTheme(
+                        self.device_state.led_solid_theme,
+                    ))
+                }
+                LedBehavior::Pulsing => {
+                    self.device_state.led_pulsing_theme =
+                        self.device_state.led_pulsing_theme.cycle_next();
+                    Some(DeviceAction::SetMv7LedPulsingTheme(
+                        self.device_state.led_pulsing_theme,
+                    ))
+                }
+            },
             Focus::PresetActions(i) => {
                 if self.presets[i].is_some() {
                     Some(DeviceAction::LoadPreset(i))
@@ -686,6 +1051,23 @@ pub enum DeviceAction {
     /// Monitor mix: 0 = full mic, 100 = full playback. MV6 and MVX2U Gen 2.
     /// Uses the same 0–100 encoding as MVX2U Gen 1 but requires HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
+    // ── MV7+ exclusive actions ────────────────────────────────────────────────
+    /// Playback mix: 0 = full mic, 100 = full playback. MV7+ independent channel.
+    SetMv7PlaybackMix(u8),
+    SetMv7ReverbOutput(bool),
+    SetMv7ReverbMonitor(bool),
+    SetMv7ReverbPreset(ReverbType),
+    SetMv7ReverbIntensity(u8),
+    SetMv7LedBehavior(LedBehavior),
+    SetMv7LedBrightness(LedBrightness),
+    SetMv7LedLiveTheme(LedLiveTheme),
+    SetMv7LedSolidTheme(LedSolidTheme),
+    SetMv7LedPulsingTheme(LedPulsingTheme),
+    SetMv7LedSolidRgb([u8; 3]),
+    SetMv7LedPulsingRgb([u8; 3]),
+    SetMv7LedLiveEdgeRgb([u8; 3]),
+    SetMv7LedLiveMiddleRgb([u8; 3]),
+    SetMv7LedLiveInteriorRgb([u8; 3]),
     // ── Preset actions ────────────────────────────────────────────────────────
     SavePreset(usize),
     LoadPreset(usize),
@@ -695,6 +1077,8 @@ pub enum DeviceAction {
     /// Zero all 5 EQ band gains. Gen 1: leaves EQ master and per-band enables untouched.
     FlattenEq,
     Refresh,
+    /// Send a factory reset command to the MV7+. Device disconnects immediately after.
+    FactoryReset,
 }
 
 #[cfg(test)]
@@ -736,10 +1120,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_all_covers_all_five_variants() {
+    fn tab_all_covers_all_seven_variants() {
         // Catches the case where a new Tab variant is added to the enum but
         // forgotten in Tab::ALL, which would cause tab_index() to panic at runtime.
-        assert_eq!(Tab::ALL.len(), 5, "Tab::ALL must list all 5 Tab variants");
+        assert_eq!(Tab::ALL.len(), 7, "Tab::ALL must list all 7 Tab variants");
     }
 
     // ── reset_focus_for_tab (exercised via next_tab / prev_tab) ──────────────
@@ -770,7 +1154,7 @@ mod tests {
             (Tab::Eq, Focus::EqEnable),
             (Tab::Dynamics, Focus::Limiter),
             (Tab::Presets, Focus::PresetName(0)),
-            (Tab::Info, Focus::None),
+            (Tab::Info, Focus::FactoryReset),
         ];
         for (tab, expected_focus) in expected {
             let mut app = App::default();
@@ -789,14 +1173,21 @@ mod tests {
 
     #[test]
     fn is_tab_locked_returns_false_for_all_tabs_in_manual_mode() {
-        let mut app = App::default();
+        let mut app = App::default(); // DeviceModel::Mvx2u
         app.device_state.mode = InputMode::Manual;
-        for tab in Tab::ALL {
+        for tab in [Tab::Main, Tab::Eq, Tab::Dynamics, Tab::Presets, Tab::Info] {
             assert!(
                 !app.is_tab_locked(tab),
                 "{tab:?} must not be locked in Manual mode"
             );
         }
+        // Reverb and LED are locked on non-MV7+ devices regardless of mode.
+        assert!(app.is_tab_locked(Tab::Reverb));
+        assert!(app.is_tab_locked(Tab::Led));
+        // Both are unlocked on MV7+.
+        app.device_model = DeviceModel::Mv7Plus;
+        assert!(!app.is_tab_locked(Tab::Reverb));
+        assert!(!app.is_tab_locked(Tab::Led));
     }
 
     #[test]
@@ -1221,7 +1612,7 @@ mod tests {
             Focus::Phantom,
             Focus::Lock,
             Focus::GainLock,
-            Focus::None,
+            Focus::FactoryReset,
         ] {
             app.focus = focus;
             assert!(
@@ -1491,7 +1882,7 @@ mod tests {
             Focus::Gain,
             Focus::MonitorMix,
             Focus::EqBandSelect,
-            Focus::None,
+            Focus::FactoryReset,
             // PresetName: editing is handled in handle_key, not toggle_focused
             Focus::PresetName(0),
             // PresetActions with empty slot: no preset to load
@@ -1595,7 +1986,8 @@ mod tests {
         // Populate slot 2 with a minimal preset.
         use crate::presets::{
             PresetSlot, SerAutoGain, SerAutoTone, SerCompressorPreset, SerEqBand, SerHpfFrequency,
-            SerInputMode, SerMicPosition,
+            SerInputMode, SerLedBehavior, SerLedBrightness, SerLedLiveTheme, SerLedPulsingTheme,
+            SerLedSolidTheme, SerMicPosition, SerReverbType,
         };
         app.presets[2] = Some(PresetSlot {
             name: String::from("Test"),
@@ -1620,6 +2012,21 @@ mod tests {
             mute_btn_disabled: false,
             tone: 0,
             mv6_gain_locked: false,
+            playback_mix: 0,
+            reverb_on_output: false,
+            reverb_monitoring: false,
+            reverb_type: SerReverbType::Plate,
+            reverb_intensity: 50,
+            led_behavior: SerLedBehavior::Live,
+            led_brightness: SerLedBrightness::High,
+            led_live_theme: SerLedLiveTheme::Default,
+            led_solid_theme: SerLedSolidTheme::Shure,
+            led_pulsing_theme: SerLedPulsingTheme::Shure,
+            led_solid_rgb: [0xB2, 0xFF, 0x33],
+            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
+            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
+            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
+            led_live_interior_rgb: [0x00, 0x00, 0x00],
         });
 
         let action = app.toggle_focused();

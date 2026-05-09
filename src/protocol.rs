@@ -1,9 +1,10 @@
 //! Shure USB HID Protocol Implementation
 //!
-//! Covers three devices:
+//! Covers four devices:
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2, new DSP)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone
 //!
 //! All devices use the same packet framing, CRC algorithm, and command
 //! class structure. Feature addresses and encodings differ between models.
@@ -31,6 +32,7 @@
 //!   Product ID: 0x1013  (MVX2U Gen 1)
 //!   Product ID: 0x1033  (MVX2U Gen 2)
 //!   Product ID: 0x1026  (MV6)
+//!   Product ID: 0x1019  (MV7+)
 //!
 //! Every SET command must be followed by a CONFIRM packet (CMD_CONFIRM).
 //! GET commands receive a response on the next `read()`.
@@ -128,6 +130,52 @@
 //!   Tone:            [0x02, 0x04]  — 16-bit signed big-endian, units: percent
 //!                                    Range: -100 (Dark) to +100 (Bright), steps of 10.
 //!                                    0 = Natural (confirmed at factory default).
+//!
+//! ── MV7+ Feature addresses (2 bytes) ─────────────────────────────────────────
+//! Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
+//!
+//! ALL MV7+ SET commands use HDR_CONSTANT=0x00 and CMD_SET_FEAT [02,02,02].
+//! GET commands use standard framing (HDR_CONSTANT=0x03).
+//!
+//! Shared with MV6 (same addresses, same encoding, HDR_CONST differs for SET):
+//!   Gain:             [0x01, 0x02]  — 16-bit big-endian, units: gain_db * 100, range 0–36 dB.
+//!                                     GET and SET both confirmed. Same encoding as MV6.
+//!   Mute:             [0x01, 0x04]  — 1 byte: 0=unmuted, 1=muted
+//!   HPF:              [0x01, 0x06]  — 1 byte: 0=off, 1=75Hz, 2=150Hz
+//!   Limiter:          [0x01, 0x51]  — 1 byte: 0=off, 1=on
+//!   Compressor:       [0x01, 0x5C]  — 1 byte: 0=off, 1=light, 2=medium, 3=heavy
+//!   Denoiser:         [0x01, 0x58]  — 1 byte: 0=off, 1=on
+//!   Auto level:       [0x01, 0x85]  — 1 byte: 0=manual, 1=auto
+//!   Mic monitor mix:  [0x01, 0x86]  — 1 byte, prefix=0x00, 0=full mic, 100=full playback
+//!                                     SET: HDR_CONSTANT=0x00. Same framing as cmd_set_mv6_mix().
+//!   Popper stopper:   [0x03, 0x81]  — 1 byte: 0=off, 1=on
+//!   Tone:             [0x02, 0x04]  — 16-bit signed big-endian, units: percent (-100..+100)
+//!   Mute btn disable: [0x0C, 0x00, 0x60] — same framing as MV6 cmd_set_mv6_mute_btn_disable().
+//!                                     Both MV6 and MV7+ already use HDR_CONSTANT=0x00 here.
+//!
+//! MV7+ exclusive:
+//!   Playback mix:     [0x01, 0x86]  — 1 byte, prefix=0x03, 0=full mic, 100=full playback
+//!                                     SAME feature address as mic monitor mix but prefix=0x03.
+//!                                     Both GET and SET use prefix=0x03. GET framing is standard
+//!                                     (HDR_CONSTANT=0x03); SET uses HDR_CONSTANT=0x00.
+//!   Reverb output:    [0x03, 0x82]  — 1 byte: 0=off, 1=on (reverb on headphone/speaker output)
+//!   Reverb type:      [0x03, 0x83]  — 1 byte: 0=Plate, 1=Hall, 2=Studio
+//!   Reverb intensity: [0x03, 0x84]  — 1 byte: 0–100
+//!   Reverb monitor:   [0x03, 0x85]  — 1 byte: 0=off, 1=on (reverb on direct monitoring)
+//!   LED behavior:     [0x0C, 0x00, 0xA4] — 1 byte: 0x00=Live, 0x01=Pulsing, 0x02=Solid.
+//!                                           parse_response sees feat_addr=[0x00, 0xA4].
+//!   LED brightness:   [0x0C, 0x00, 0x42] — 1 byte: 0x03=Low, 0x04=Med, 0x05=High, 0x06=Max.
+//!   LED live theme:   [0x0C, 0x00, 0x96] — 1 byte: 0x00=Default, 0x01=Seaside, 0x02=Space,
+//!                                           0x03=Fruity, 0x04=Custom.
+//!   LED live edge:    [0x0C, 0x00, 0x98] — 4 bytes: [0x00, R, G, B] — Live Custom edge zone.
+//!   LED live middle:  [0x0C, 0x00, 0x99] — 4 bytes: [0x00, R, G, B] — Live Custom middle zone.
+//!   LED live interior:[0x0C, 0x00, 0xA0] — 4 bytes: [0x00, R, G, B] — Live Custom interior zone.
+//!   LED solid color:  [0x0C, 0x00, 0xA2] — 4 bytes: [0x00, R, G, B] — Custom Solid color.
+//!                                           Uses CMD_GET_LOCK / CMD_SET_LOCK (last byte 0x01).
+//!   LED pulsing color:[0x0C, 0x00, 0xA3] — 4 bytes: [0x00, R, G, B] — Custom Pulsing color.
+//!   LED solid theme:  [0x0C, 0x00, 0xA5] — 1 byte: 0x00=Shure, 0x01=Custom.
+//!   LED pulsing theme:[0x0C, 0x00, 0xA6] — 1 byte: 0x00=Shure, 0x01=Custom.
+//!                                           Note: [0x00, 0xA6] aliases FEAT_LOCK — do not GET.
 
 pub const VID: u16 = 0x14ED;
 /// MVX2U Gen 1: XLR-to-USB audio interface.
@@ -136,6 +184,8 @@ pub const PID: u16 = 0x1013;
 pub const MVX2U_GEN2_PID: u16 = 0x1033;
 /// MV6: USB gaming microphone.
 pub const MV6_PID: u16 = 0x1026;
+/// MV7+: USB/XLR dynamic microphone.
+pub const MV7_PLUS_PID: u16 = 0x1019;
 
 /// Which Shure device model is connected. Drives capability decisions
 /// throughout the app (which controls to show, gain max, etc.).
@@ -144,6 +194,8 @@ pub enum DeviceModel {
     Mvx2u,
     Mvx2uGen2,
     Mv6,
+    /// USB/XLR dynamic microphone. All SET commands use HDR_CONSTANT=0x00.
+    Mv7Plus,
 }
 
 impl DeviceModel {
@@ -151,7 +203,7 @@ impl DeviceModel {
     pub fn max_gain_db(&self) -> u8 {
         match self {
             DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => 60,
-            DeviceModel::Mv6 => 36,
+            DeviceModel::Mv6 | DeviceModel::Mv7Plus => 36,
         }
     }
 
@@ -161,6 +213,7 @@ impl DeviceModel {
             DeviceModel::Mvx2u => "Shure MVX2U",
             DeviceModel::Mvx2uGen2 => "Shure MVX2U Gen 2",
             DeviceModel::Mv6 => "Shure MV6",
+            DeviceModel::Mv7Plus => "Shure MV7+",
         }
     }
 }
@@ -251,6 +304,60 @@ const MV6_FEAT_TONE: [u8; 2] = [0x02, 0x04];
 /// SET confirmed working: standard CMD_SET_FEAT / prefix 0x00.
 const MV6_FEAT_GAIN_LOCK: [u8; 2] = [0x01, 0xF3];
 
+// ── MV7+ exclusive feature addresses ─────────────────────────────────────────
+//
+// Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
+// All MV7+ SETs use HDR_CONSTANT=0x00 via build_packet_hdr0().
+// Playback mix uses the same address as FEAT_MIX but with prefix=0x03 (see
+// cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix).
+
+/// Reverb effect on headphone/speaker output. 0=off, 1=on.
+const MV7_FEAT_REVERB_OUTPUT: [u8; 2] = [0x03, 0x82];
+/// Reverb type: 0=Plate, 1=Hall, 2=Studio.
+const MV7_FEAT_REVERB_TYPE: [u8; 2] = [0x03, 0x83];
+/// Reverb intensity: 0–100.
+const MV7_FEAT_REVERB_INTENSITY: [u8; 2] = [0x03, 0x84];
+/// Reverb on direct monitoring output. 0=off, 1=on.
+const MV7_FEAT_REVERB_MONITOR: [u8; 2] = [0x03, 0x85];
+
+// ── MV7+ LED feature addresses (page 0x0C, CMD_GET_LOCK / CMD_SET_LOCK) ──────
+//
+// LED uses a 3-byte address: [page=0x0C, 0x00, sub_addr]. parse_response reads
+// feat_addr from buf[14..16], so the returned feat_addr is [0x00, sub_addr].
+// SET uses HDR_CONSTANT=0x00 and CMD_SET_LOCK, same pattern as mute_btn_disable.
+// Color values are 4-byte: [0x00, R, G, B]. Theme/behavior/brightness are 1-byte.
+
+const MV7_LED_PAGE: u8 = 0x0C;
+const MV7_LED_SUB_BRIGHTNESS: u8 = 0x42;
+const MV7_LED_SUB_LIVE_THEME: u8 = 0x96;
+const MV7_LED_SUB_LIVE_EDGE: u8 = 0x98;
+const MV7_LED_SUB_LIVE_MIDDLE: u8 = 0x99;
+const MV7_LED_SUB_LIVE_INTERIOR: u8 = 0xA0;
+const MV7_LED_SUB_SOLID_COLOR: u8 = 0xA2;
+const MV7_LED_SUB_PULSING_COLOR: u8 = 0xA3;
+const MV7_LED_SUB_BEHAVIOR: u8 = 0xA4;
+const MV7_LED_SUB_SOLID_THEME: u8 = 0xA5;
+const MV7_LED_SUB_PULSING_THEME: u8 = 0xA6;
+
+const MV7_FEAT_LED_BRIGHTNESS_RESP: [u8; 2] = [0x00, 0x42];
+const MV7_FEAT_LED_LIVE_THEME_RESP: [u8; 2] = [0x00, 0x96];
+const MV7_FEAT_LED_LIVE_EDGE_RESP: [u8; 2] = [0x00, 0x98];
+const MV7_FEAT_LED_LIVE_MIDDLE_RESP: [u8; 2] = [0x00, 0x99];
+const MV7_FEAT_LED_LIVE_INTERIOR_RESP: [u8; 2] = [0x00, 0xA0];
+const MV7_FEAT_LED_SOLID_COLOR_RESP: [u8; 2] = [0x00, 0xA2];
+const MV7_FEAT_LED_PULSING_COLOR_RESP: [u8; 2] = [0x00, 0xA3];
+const MV7_FEAT_LED_BEHAVIOR_RESP: [u8; 2] = [0x00, 0xA4];
+const MV7_FEAT_LED_SOLID_THEME_RESP: [u8; 2] = [0x00, 0xA5];
+const MV7_FEAT_LED_PULSING_THEME_RESP: [u8; 2] = [0x00, 0xA6];
+
+// ── MV7+ factory reset ────────────────────────────────────────────────────────
+//
+// Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
+// Single CMD_SET_LOCK packet with HDR_CONSTANT=0x00; no CONFIRM is sent because
+// the device disconnects and re-enumerates immediately (~5 s) after receipt.
+const MV7_FACTORY_RESET_PAGE: u8 = 0x00;
+const MV7_FACTORY_RESET_SUB: u8 = 0x22;
+
 // ── Phantom power value encoding ──────────────────────────────────────────────
 const PHANTOM_ON: u8 = 0x30; // 48 decimal = 48V
 const PHANTOM_OFF: u8 = 0x00;
@@ -304,6 +411,39 @@ pub struct DeviceState {
     /// while locked. Address [0x01, 0xF3] confirmed by probe diff.
     pub mv6_gain_locked: bool,
 
+    // ── MV7+ exclusive fields ────────────────────────────────────────────────
+    /// Playback mix: 0=100% mic, 100=100% playback. MV7+ second mix channel.
+    /// Uses same FEAT_MIX address as mic mix but with prefix=0x03 on the wire.
+    pub playback_mix: u8,
+    /// Reverb applied to speaker/headphone output.
+    pub reverb_on_output: bool,
+    /// Reverb applied to direct monitoring.
+    pub reverb_monitoring: bool,
+    /// Reverb room type.
+    pub reverb_type: ReverbType,
+    /// Reverb intensity 0–100.
+    pub reverb_intensity: u8,
+    /// LED animation behavior.
+    pub led_behavior: LedBehavior,
+    /// LED strip brightness.
+    pub led_brightness: LedBrightness,
+    /// Color theme for Live behavior.
+    pub led_live_theme: LedLiveTheme,
+    /// Color theme for Solid behavior.
+    pub led_solid_theme: LedSolidTheme,
+    /// Color theme for Pulsing behavior.
+    pub led_pulsing_theme: LedPulsingTheme,
+    /// Custom Solid LED color [R, G, B].
+    pub led_solid_rgb: [u8; 3],
+    /// Custom Pulsing LED color [R, G, B].
+    pub led_pulsing_rgb: [u8; 3],
+    /// Live Custom edge zone color [R, G, B].
+    pub led_live_edge_rgb: [u8; 3],
+    /// Live Custom middle zone color [R, G, B].
+    pub led_live_middle_rgb: [u8; 3],
+    /// Live Custom interior zone color [R, G, B].
+    pub led_live_interior_rgb: [u8; 3],
+
     /// Device serial number string, populated after connection.
     pub serial_number: String,
 }
@@ -331,6 +471,24 @@ impl Default for DeviceState {
             mute_btn_disabled: false,
             tone: 0, // Natural
             mv6_gain_locked: false,
+            // MV7+ defaults
+            playback_mix: 0,
+            reverb_on_output: false,
+            reverb_monitoring: false,
+            reverb_type: ReverbType::Plate,
+            reverb_intensity: 50,
+            // MV7+ LED defaults: Live behavior, High brightness, Default live theme.
+            // Solid/Pulsing custom colors from factory capture (green-yellow / blue).
+            led_behavior: LedBehavior::Live,
+            led_brightness: LedBrightness::High,
+            led_live_theme: LedLiveTheme::Default,
+            led_solid_theme: LedSolidTheme::Shure,
+            led_pulsing_theme: LedPulsingTheme::Shure,
+            led_solid_rgb: [0xB2, 0xFF, 0x33],
+            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
+            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
+            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
+            led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("Unknown"),
         }
     }
@@ -584,6 +742,272 @@ impl std::fmt::Display for HpfFrequency {
     }
 }
 
+/// MV7+ reverb room type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReverbType {
+    Plate,
+    Hall,
+    Studio,
+}
+
+impl ReverbType {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            ReverbType::Plate => ReverbType::Hall,
+            ReverbType::Hall => ReverbType::Studio,
+            ReverbType::Studio => ReverbType::Plate,
+        }
+    }
+
+    pub(crate) fn as_byte(&self) -> u8 {
+        match self {
+            ReverbType::Plate => 0x00,
+            ReverbType::Hall => 0x01,
+            ReverbType::Studio => 0x02,
+        }
+    }
+
+    pub(crate) fn from_byte(b: u8) -> Self {
+        match b {
+            0x01 => ReverbType::Hall,
+            0x02 => ReverbType::Studio,
+            _ => ReverbType::Plate,
+        }
+    }
+}
+
+impl std::fmt::Display for ReverbType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReverbType::Plate => write!(f, "Plate"),
+            ReverbType::Hall => write!(f, "Hall"),
+            ReverbType::Studio => write!(f, "Studio"),
+        }
+    }
+}
+
+// ── MV7+ LED enums ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedBehavior {
+    Live,
+    Pulsing,
+    Solid,
+}
+
+impl LedBehavior {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            LedBehavior::Live => LedBehavior::Pulsing,
+            LedBehavior::Pulsing => LedBehavior::Solid,
+            LedBehavior::Solid => LedBehavior::Live,
+        }
+    }
+
+    pub(crate) fn as_byte(&self) -> u8 {
+        match self {
+            LedBehavior::Live => 0x00,
+            LedBehavior::Pulsing => 0x01,
+            LedBehavior::Solid => 0x02,
+        }
+    }
+
+    pub(crate) fn from_byte(b: u8) -> Self {
+        match b {
+            0x01 => LedBehavior::Pulsing,
+            0x02 => LedBehavior::Solid,
+            _ => LedBehavior::Live,
+        }
+    }
+}
+
+impl std::fmt::Display for LedBehavior {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedBehavior::Live => write!(f, "Live"),
+            LedBehavior::Pulsing => write!(f, "Pulsing"),
+            LedBehavior::Solid => write!(f, "Solid"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedBrightness {
+    Low,
+    Med,
+    High,
+    Max,
+}
+
+impl LedBrightness {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            LedBrightness::Low => LedBrightness::Med,
+            LedBrightness::Med => LedBrightness::High,
+            LedBrightness::High => LedBrightness::Max,
+            LedBrightness::Max => LedBrightness::Low,
+        }
+    }
+
+    pub(crate) fn as_byte(&self) -> u8 {
+        match self {
+            LedBrightness::Low => 0x03,
+            LedBrightness::Med => 0x04,
+            LedBrightness::High => 0x05,
+            LedBrightness::Max => 0x06,
+        }
+    }
+
+    pub(crate) fn from_byte(b: u8) -> Self {
+        match b {
+            0x03 => LedBrightness::Low,
+            0x04 => LedBrightness::Med,
+            0x06 => LedBrightness::Max,
+            _ => LedBrightness::High,
+        }
+    }
+}
+
+impl std::fmt::Display for LedBrightness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedBrightness::Low => write!(f, "Low"),
+            LedBrightness::Med => write!(f, "Med"),
+            LedBrightness::High => write!(f, "High"),
+            LedBrightness::Max => write!(f, "Max"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedLiveTheme {
+    Default,
+    Seaside,
+    Space,
+    Fruity,
+    Custom,
+}
+
+impl LedLiveTheme {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            LedLiveTheme::Default => LedLiveTheme::Seaside,
+            LedLiveTheme::Seaside => LedLiveTheme::Space,
+            LedLiveTheme::Space => LedLiveTheme::Fruity,
+            LedLiveTheme::Fruity => LedLiveTheme::Custom,
+            LedLiveTheme::Custom => LedLiveTheme::Default,
+        }
+    }
+
+    pub(crate) fn as_byte(&self) -> u8 {
+        match self {
+            LedLiveTheme::Default => 0x00,
+            LedLiveTheme::Seaside => 0x01,
+            LedLiveTheme::Space => 0x02,
+            LedLiveTheme::Fruity => 0x03,
+            LedLiveTheme::Custom => 0x04,
+        }
+    }
+
+    pub(crate) fn from_byte(b: u8) -> Self {
+        match b {
+            0x01 => LedLiveTheme::Seaside,
+            0x02 => LedLiveTheme::Space,
+            0x03 => LedLiveTheme::Fruity,
+            0x04 => LedLiveTheme::Custom,
+            _ => LedLiveTheme::Default,
+        }
+    }
+}
+
+impl std::fmt::Display for LedLiveTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedLiveTheme::Default => write!(f, "Default"),
+            LedLiveTheme::Seaside => write!(f, "Seaside"),
+            LedLiveTheme::Space => write!(f, "Space"),
+            LedLiveTheme::Fruity => write!(f, "Fruity"),
+            LedLiveTheme::Custom => write!(f, "Custom"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedSolidTheme {
+    Shure,
+    Custom,
+}
+
+impl LedSolidTheme {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            LedSolidTheme::Shure => LedSolidTheme::Custom,
+            LedSolidTheme::Custom => LedSolidTheme::Shure,
+        }
+    }
+
+    pub(crate) fn as_byte(&self) -> u8 {
+        match self {
+            LedSolidTheme::Shure => 0x00,
+            LedSolidTheme::Custom => 0x01,
+        }
+    }
+
+    pub(crate) fn from_byte(b: u8) -> Self {
+        match b {
+            0x01 => LedSolidTheme::Custom,
+            _ => LedSolidTheme::Shure,
+        }
+    }
+}
+
+impl std::fmt::Display for LedSolidTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedSolidTheme::Shure => write!(f, "Shure"),
+            LedSolidTheme::Custom => write!(f, "Custom"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedPulsingTheme {
+    Shure,
+    Custom,
+}
+
+impl LedPulsingTheme {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            LedPulsingTheme::Shure => LedPulsingTheme::Custom,
+            LedPulsingTheme::Custom => LedPulsingTheme::Shure,
+        }
+    }
+
+    pub(crate) fn as_byte(&self) -> u8 {
+        match self {
+            LedPulsingTheme::Shure => 0x00,
+            LedPulsingTheme::Custom => 0x01,
+        }
+    }
+
+    pub(crate) fn from_byte(b: u8) -> Self {
+        match b {
+            0x01 => LedPulsingTheme::Custom,
+            _ => LedPulsingTheme::Shure,
+        }
+    }
+}
+
+impl std::fmt::Display for LedPulsingTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedPulsingTheme::Shure => write!(f, "Shure"),
+            LedPulsingTheme::Custom => write!(f, "Custom"),
+        }
+    }
+}
+
 /// One of the 5 parametric EQ bands.
 ///
 /// Center frequencies are fixed by hardware: 100, 250, 1000, 4000, 10000 Hz.
@@ -666,39 +1090,44 @@ fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     pkt
 }
 
-/// Validate a received HID report and extract the feature address and value bytes.
+/// Shared validation and field extraction for all HID response buffers.
 ///
-/// Returns `None` if the buffer is malformed, the header magic is wrong, or
-/// the CRC does not match. On success returns `(feat_addr, value_bytes)`.
-#[must_use]
-pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
-    // Minimum: report_id(1) + total_len(1) + header(2) + seq(1) + 0x03(1) +
+/// Returns `(prefix, feat_addr, value_bytes)` on success, `None` if the buffer
+/// is malformed, the header magic is wrong, the CRC does not match, or the
+/// response command type carries no feature data (e.g. CONFIRM).
+///
+/// Layout:
+///   buf[0]      = report ID
+///   buf[1]      = total_len  (contents occupy buf[2..total_len+2])
+///   buf[2..4]   = header magic [0x11, 0x22]
+///   buf[10..13] = response command bytes
+///   buf[13]     = prefix byte (is_mix / lock-class flag)
+///   buf[14..16] = 2-byte feature address
+///   buf[16..total_len] = value bytes
+///   buf[total_len..total_len+2] = CRC-16/ANSI (covers buf[2..total_len])
+fn parse_response_inner(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
+    // Minimum: report_id(1) + total_len(1) + header(2) + seq(1) + hdr_const(1) +
     //          hdr_end(1) + data_len(1) + data_start(1) + data_len(1) +
     //          cmd(3) + prefix(1) + feat(2) + crc(2) = 18 bytes minimum
     if buf.len() < 18 {
         return None;
     }
 
-    // buf[0] = report ID (0x01)
-    // buf[1] = total_len (length of buf[2..contents_end+2])
     let contents_end = buf[1] as usize;
     if contents_end + 2 > buf.len() {
         return None;
     }
 
-    // Header magic at buf[2..4]
     if buf[2] != HEADER_MAGIC[0] || buf[3] != HEADER_MAGIC[1] {
         return None;
     }
 
-    // CRC check: covers buf[2..contents_end]
     let expected_crc = ((buf[contents_end] as u16) << 8) | buf[contents_end + 1] as u16;
     let actual_crc = crc16_ansi(&buf[2..contents_end]);
     if actual_crc != expected_crc {
         return None;
     }
 
-    // Response type at buf[10..13]
     let resp_type: [u8; 3] = buf[10..13].try_into().ok()?;
     if resp_type != RES_GET_FEAT
         && resp_type != RES_SET_FEAT
@@ -709,18 +1138,69 @@ pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
         return None;
     }
 
-    // buf[13] = prefix byte (is_mix/lock-class flag; ignored for our purposes)
-    // buf[14..16] = feature address
     if buf.len() < 16 {
         return None;
     }
+    let prefix = buf[13];
     let feat_addr: [u8; 2] = buf[14..16].try_into().ok()?;
     let value_bytes = buf[16..contents_end].to_vec();
 
+    Some((prefix, feat_addr, value_bytes))
+}
+
+/// Validate a received HID report and extract the feature address and value bytes.
+///
+/// Returns `None` if the buffer is malformed, the header magic is wrong, or
+/// the CRC does not match. On success returns `(feat_addr, value_bytes)`.
+#[must_use]
+pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
+    let (_prefix, feat_addr, value_bytes) = parse_response_inner(buf)?;
     Some((feat_addr, value_bytes))
 }
 
+/// Like `parse_response` but also returns the prefix byte (buf[13]).
+///
+/// Required for MV7+ playback mix, which shares `FEAT_MIX` with mic mix but
+/// uses prefix=0x03 to distinguish the two channels in the response.
+/// Returns `None` on the same conditions as `parse_response`.
+#[must_use]
+pub fn parse_response_with_prefix(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
+    parse_response_inner(buf)
+}
+
 // ── Command constructors ──────────────────────────────────────────────────────
+
+/// Like `build_packet` but uses HDR_CONSTANT=0x00 instead of 0x03.
+///
+/// Required for ALL MV7+ SET commands. The MV7+ rejects SET packets with
+/// the standard HDR_CONSTANT=0x03. GET commands still use `build_packet`.
+fn build_packet_hdr0(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
+    let data_len = (3 + payload.len() + 2) as u8;
+
+    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
+    inner.push(HEADER_MAGIC[0]);
+    inner.push(HEADER_MAGIC[1]);
+    inner.push(seq);
+    inner.push(0x00); // HDR_CONSTANT=0x00 for MV7+ SET commands
+    inner.push(HDR_END);
+    inner.push(data_len);
+    inner.push(DATA_START);
+    inner.push(data_len);
+    inner.extend_from_slice(cmd);
+    inner.extend_from_slice(payload);
+
+    let total_len = (inner.len() + 2) as u8;
+    let crc = crc16_ansi(&inner);
+
+    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
+    pkt.push(REPORT_ID);
+    pkt.push(total_len);
+    pkt.extend_from_slice(&inner);
+    pkt.push((crc >> 8) as u8);
+    pkt.push((crc & 0xFF) as u8);
+    pkt.resize(PACKET_SIZE, 0x00);
+    pkt
+}
 
 /// Build a GET packet for a single feature. Returns the packet bytes.
 fn cmd_get(seq: u8, feat_addr: &[u8; 2]) -> Vec<u8> {
@@ -813,6 +1293,7 @@ pub fn cmd_get_mv6_mix(seq: u8) -> Vec<u8> {
 /// parse_response will return feat_addr=[0x00, 0x60] (MV6_FEAT_MUTE_BTN_DISABLE_RESP)
 /// with value[0]: 0x00=button disabled, 0x01=button active (inverted encoding).
 /// Confirmed reliable by Wireshark — device correctly reflects current state.
+/// Also used for MV7+ — the framing is identical.
 pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
     let payload = [
         MV6_FEAT_MUTE_BTN_DISABLE[0],
@@ -820,6 +1301,131 @@ pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
         0x60,
     ];
     build_packet(seq, &CMD_GET_LOCK, &payload)
+}
+
+// ── MV7+ GET constructors ─────────────────────────────────────────────────────
+
+/// GET for MV7+ playback mix. Uses prefix=0x03 to distinguish from mic monitor mix.
+/// Both share FEAT_MIX [0x01, 0x86] but different prefix bytes select the channel.
+/// Uses parse_response_with_prefix to extract the prefix from the response.
+pub fn cmd_get_mv7_playback_mix(seq: u8) -> Vec<u8> {
+    let payload = [0x03, FEAT_MIX[0], FEAT_MIX[1]];
+    build_packet(seq, &CMD_GET_FEAT, &payload)
+}
+
+pub fn cmd_get_mv7_reverb_output(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV7_FEAT_REVERB_OUTPUT)
+}
+pub fn cmd_get_mv7_reverb_type(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV7_FEAT_REVERB_TYPE)
+}
+pub fn cmd_get_mv7_reverb_intensity(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV7_FEAT_REVERB_INTENSITY)
+}
+pub fn cmd_get_mv7_reverb_monitor(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV7_FEAT_REVERB_MONITOR)
+}
+
+// ── MV7+ LED GET constructors ─────────────────────────────────────────────────
+//
+// LED uses CMD_GET_LOCK with payload [page=0x0C, 0x00, sub_addr].
+// parse_response returns feat_addr=[0x00, sub_addr] and value bytes.
+
+fn cmd_get_mv7_led(seq: u8, sub: u8) -> Vec<u8> {
+    build_packet(seq, &CMD_GET_LOCK, &[MV7_LED_PAGE, 0x00, sub])
+}
+
+pub fn cmd_get_mv7_led_behavior(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_BEHAVIOR)
+}
+pub fn cmd_get_mv7_led_brightness(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_BRIGHTNESS)
+}
+pub fn cmd_get_mv7_led_live_theme(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_LIVE_THEME)
+}
+pub fn cmd_get_mv7_led_live_edge(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_LIVE_EDGE)
+}
+pub fn cmd_get_mv7_led_live_middle(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_LIVE_MIDDLE)
+}
+pub fn cmd_get_mv7_led_live_interior(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_LIVE_INTERIOR)
+}
+pub fn cmd_get_mv7_led_solid_color(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_SOLID_COLOR)
+}
+pub fn cmd_get_mv7_led_pulsing_color(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_PULSING_COLOR)
+}
+pub fn cmd_get_mv7_led_solid_theme(seq: u8) -> Vec<u8> {
+    cmd_get_mv7_led(seq, MV7_LED_SUB_SOLID_THEME)
+}
+// Pulsing theme (0xA6) aliases the MVX2U config-lock address — do NOT GET.
+
+// ── MV7+ LED SET constructors ─────────────────────────────────────────────────
+//
+// LED SET uses CMD_SET_LOCK and HDR_CONSTANT=0x00 (build_packet_hdr0).
+// 1-byte features: payload = [page, 0x00, sub, value].
+// 4-byte color features: payload = [page, 0x00, sub, 0x00, R, G, B].
+
+fn cmd_set_mv7_led_1b(seq: u8, sub: u8, value: u8) -> Vec<u8> {
+    build_packet_hdr0(seq, &CMD_SET_LOCK, &[MV7_LED_PAGE, 0x00, sub, value])
+}
+fn cmd_set_mv7_led_rgb(seq: u8, sub: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    build_packet_hdr0(
+        seq,
+        &CMD_SET_LOCK,
+        &[MV7_LED_PAGE, 0x00, sub, 0x00, r, g, b],
+    )
+}
+
+pub fn cmd_set_mv7_led_behavior(seq: u8, behavior: LedBehavior) -> Vec<u8> {
+    cmd_set_mv7_led_1b(seq, MV7_LED_SUB_BEHAVIOR, behavior.as_byte())
+}
+pub fn cmd_set_mv7_led_brightness(seq: u8, brightness: LedBrightness) -> Vec<u8> {
+    cmd_set_mv7_led_1b(seq, MV7_LED_SUB_BRIGHTNESS, brightness.as_byte())
+}
+pub fn cmd_set_mv7_led_live_theme(seq: u8, theme: LedLiveTheme) -> Vec<u8> {
+    cmd_set_mv7_led_1b(seq, MV7_LED_SUB_LIVE_THEME, theme.as_byte())
+}
+pub fn cmd_set_mv7_led_solid_theme(seq: u8, theme: LedSolidTheme) -> Vec<u8> {
+    cmd_set_mv7_led_1b(seq, MV7_LED_SUB_SOLID_THEME, theme.as_byte())
+}
+pub fn cmd_set_mv7_led_pulsing_theme(seq: u8, theme: LedPulsingTheme) -> Vec<u8> {
+    cmd_set_mv7_led_1b(seq, MV7_LED_SUB_PULSING_THEME, theme.as_byte())
+}
+pub fn cmd_set_mv7_led_solid_color(seq: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    cmd_set_mv7_led_rgb(seq, MV7_LED_SUB_SOLID_COLOR, r, g, b)
+}
+pub fn cmd_set_mv7_led_pulsing_color(seq: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    cmd_set_mv7_led_rgb(seq, MV7_LED_SUB_PULSING_COLOR, r, g, b)
+}
+pub fn cmd_set_mv7_led_live_edge(seq: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    cmd_set_mv7_led_rgb(seq, MV7_LED_SUB_LIVE_EDGE, r, g, b)
+}
+pub fn cmd_set_mv7_led_live_middle(seq: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    cmd_set_mv7_led_rgb(seq, MV7_LED_SUB_LIVE_MIDDLE, r, g, b)
+}
+pub fn cmd_set_mv7_led_live_interior(seq: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    cmd_set_mv7_led_rgb(seq, MV7_LED_SUB_LIVE_INTERIOR, r, g, b)
+}
+
+// ── MV7+ factory reset constructor ───────────────────────────────────────────
+
+/// Build a factory reset packet for the MV7+.
+///
+/// Uses CMD_SET_LOCK with HDR_CONSTANT=0x00, payload [page=0x00, 0x00, sub=0x22, value=0x01].
+/// The device disconnects and re-enumerates immediately after receipt.
+/// Do NOT send a CONFIRM after this — the device will be gone before it arrives.
+/// Confirmed by Wireshark capture of MOTIV app factory reset on firmware 1.6.
+pub fn cmd_factory_reset(seq: u8) -> Vec<u8> {
+    build_packet_hdr0(
+        seq,
+        &CMD_SET_LOCK,
+        &[MV7_FACTORY_RESET_PAGE, 0x00, MV7_FACTORY_RESET_SUB, 0x01],
+    )
 }
 
 // ── Lock command constructors ─────────────────────────────────────────────────
@@ -1062,6 +1668,92 @@ pub fn cmd_set_mv6_gain_lock(seq: u8, locked: bool) -> Vec<u8> {
     cmd_set(seq, &MV6_FEAT_GAIN_LOCK, &[u8::from(locked)])
 }
 
+// ── MV7+ SET constructors ─────────────────────────────────────────────────────
+//
+// ALL MV7+ SET commands use HDR_CONSTANT=0x00 via build_packet_hdr0().
+// Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
+
+/// Build a standard MV7+ SET packet: HDR_CONST=0x00, CMD_SET_FEAT, prefix=0x00.
+fn cmd_set_mv7(seq: u8, feat_addr: &[u8; 2], value: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0x00u8, feat_addr[0], feat_addr[1]];
+    payload.extend_from_slice(value);
+    build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
+}
+
+pub fn cmd_set_mv7_mute(seq: u8, muted: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &FEAT_MUTE, &[u8::from(muted)])
+}
+
+pub fn cmd_set_mv7_hpf(seq: u8, freq: &HpfFrequency) -> Vec<u8> {
+    cmd_set_mv7(seq, &FEAT_HPF, &[freq.as_byte()])
+}
+
+pub fn cmd_set_mv7_mode(seq: u8, auto: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &FEAT_AUTO, &[u8::from(auto)])
+}
+
+pub fn cmd_set_mv7_limiter(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &FEAT_LIMITER, &[u8::from(enabled)])
+}
+
+pub fn cmd_set_mv7_compressor(seq: u8, preset: &CompressorPreset) -> Vec<u8> {
+    cmd_set_mv7(seq, &FEAT_COMP, &[preset.as_byte()])
+}
+
+pub fn cmd_set_mv7_denoiser(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &MV6_FEAT_DENOISER, &[u8::from(enabled)])
+}
+
+pub fn cmd_set_mv7_popper_stopper(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &MV6_FEAT_POPPER_STOPPER, &[u8::from(enabled)])
+}
+
+pub fn cmd_set_mv7_tone(seq: u8, tone: i8) -> Vec<u8> {
+    let clamped = tone.clamp(-10, 10);
+    let raw = (clamped as i16 * 10).to_be_bytes();
+    cmd_set_mv7(seq, &MV6_FEAT_TONE, &raw)
+}
+
+/// Set MV7+ mic monitor mix (prefix=0x00, HDR_CONST=0x00).
+/// 0 = full mic, 100 = full playback.
+pub fn cmd_set_mv7_mic_mix(seq: u8, mix: u8) -> Vec<u8> {
+    let value = mix.min(100);
+    // prefix=0x00 for mic mix (vs 0x03 for playback mix)
+    let payload = [0x00, FEAT_MIX[0], FEAT_MIX[1], value];
+    build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
+}
+
+/// Set MV7+ playback mix (prefix=0x03, HDR_CONST=0x00).
+/// Shares FEAT_MIX address with mic mix; prefix=0x03 selects the playback channel.
+/// 0 = full mic, 100 = full playback.
+pub fn cmd_set_mv7_playback_mix(seq: u8, mix: u8) -> Vec<u8> {
+    let value = mix.min(100);
+    let payload = [0x03, FEAT_MIX[0], FEAT_MIX[1], value];
+    build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
+}
+
+pub fn cmd_set_mv7_reverb_output(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &MV7_FEAT_REVERB_OUTPUT, &[u8::from(enabled)])
+}
+
+pub fn cmd_set_mv7_reverb_type(seq: u8, rtype: &ReverbType) -> Vec<u8> {
+    cmd_set_mv7(seq, &MV7_FEAT_REVERB_TYPE, &[rtype.as_byte()])
+}
+
+pub fn cmd_set_mv7_reverb_intensity(seq: u8, intensity: u8) -> Vec<u8> {
+    cmd_set_mv7(seq, &MV7_FEAT_REVERB_INTENSITY, &[intensity.min(100)])
+}
+
+pub fn cmd_set_mv7_reverb_monitor(seq: u8, enabled: bool) -> Vec<u8> {
+    cmd_set_mv7(seq, &MV7_FEAT_REVERB_MONITOR, &[u8::from(enabled)])
+}
+
+/// Set gain on MV7+. Encoded as `gain_db * 100` in 16-bit big-endian, HDR_CONSTANT=0x00.
+pub fn cmd_set_mv7_gain(seq: u8, gain_db: u8) -> Vec<u8> {
+    let raw = gain_db as u16 * 100;
+    cmd_set_mv7(seq, &FEAT_GAIN, &raw.to_be_bytes())
+}
+
 // ── Response decoder ──────────────────────────────────────────────────────────
 /// Apply a parsed feature response `(feat_addr, value_bytes)` to `state`.
 ///
@@ -1205,6 +1897,109 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                 return false;
             }
             state.mv6_gain_locked = value[0] != 0;
+            true
+        }
+        // ── MV7+ exclusive features ───────────────────────────────────────────
+        f if f == MV7_FEAT_REVERB_OUTPUT => {
+            if value.is_empty() {
+                return false;
+            }
+            state.reverb_on_output = value[0] != 0;
+            true
+        }
+        f if f == MV7_FEAT_REVERB_TYPE => {
+            if value.is_empty() {
+                return false;
+            }
+            state.reverb_type = ReverbType::from_byte(value[0]);
+            true
+        }
+        f if f == MV7_FEAT_REVERB_INTENSITY => {
+            if value.is_empty() {
+                return false;
+            }
+            state.reverb_intensity = value[0].min(100);
+            true
+        }
+        f if f == MV7_FEAT_REVERB_MONITOR => {
+            if value.is_empty() {
+                return false;
+            }
+            state.reverb_monitoring = value[0] != 0;
+            true
+        }
+        // ── MV7+ LED features ─────────────────────────────────────────────────
+        // 1-byte features: value=[byte]. 4-byte color features: value=[0x00,R,G,B].
+        // parse_response puts 0x0C at buf[13] (prefix slot) and returns
+        // feat_addr=[0x00, sub_addr] with value starting at buf[16].
+        f if f == MV7_FEAT_LED_BEHAVIOR_RESP => {
+            if value.is_empty() {
+                return false;
+            }
+            state.led_behavior = LedBehavior::from_byte(value[0]);
+            true
+        }
+        f if f == MV7_FEAT_LED_BRIGHTNESS_RESP => {
+            if value.is_empty() {
+                return false;
+            }
+            state.led_brightness = LedBrightness::from_byte(value[0]);
+            true
+        }
+        f if f == MV7_FEAT_LED_LIVE_THEME_RESP => {
+            if value.is_empty() {
+                return false;
+            }
+            state.led_live_theme = LedLiveTheme::from_byte(value[0]);
+            true
+        }
+        f if f == MV7_FEAT_LED_SOLID_THEME_RESP => {
+            if value.is_empty() {
+                return false;
+            }
+            state.led_solid_theme = LedSolidTheme::from_byte(value[0]);
+            true
+        }
+        f if f == MV7_FEAT_LED_PULSING_THEME_RESP => {
+            if value.is_empty() {
+                return false;
+            }
+            state.led_pulsing_theme = LedPulsingTheme::from_byte(value[0]);
+            true
+        }
+        f if f == MV7_FEAT_LED_SOLID_COLOR_RESP => {
+            if value.len() < 4 {
+                return false;
+            }
+            state.led_solid_rgb = [value[1], value[2], value[3]];
+            true
+        }
+        f if f == MV7_FEAT_LED_PULSING_COLOR_RESP => {
+            if value.len() < 4 {
+                return false;
+            }
+            state.led_pulsing_rgb = [value[1], value[2], value[3]];
+            true
+        }
+        f if f == MV7_FEAT_LED_LIVE_EDGE_RESP => {
+            if value.len() < 4 {
+                return false;
+            }
+            state.led_live_edge_rgb = [value[1], value[2], value[3]];
+            true
+        }
+        f if f == MV7_FEAT_LED_LIVE_MIDDLE_RESP => {
+            if value.len() < 4 {
+                return false;
+            }
+            state.led_live_middle_rgb = [value[1], value[2], value[3]];
+            true
+        }
+        f if f == MV7_FEAT_LED_LIVE_INTERIOR_RESP => {
+            if value.len() < 4 {
+                return false;
+            }
+            state.led_live_interior_rgb = [value[1], value[2], value[3]];
             true
         }
         _ => {
@@ -2491,5 +3286,611 @@ mod tests {
     fn eq_band_gain_apply_response_empty_returns_false() {
         let mut state = DeviceState::default();
         assert!(!apply_response([0x02, 0x14], &[], &mut state));
+    }
+
+    // ── MV7+ protocol tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn mv7_set_commands_use_hdr_constant_zero() {
+        // ALL MV7+ SET commands must use HDR_CONSTANT=0x00 (byte[5] in the 64-byte packet).
+        let cases: &[Vec<u8>] = &[
+            cmd_factory_reset(0),
+            cmd_set_mv7_mute(0, true),
+            cmd_set_mv7_hpf(0, &HpfFrequency::Hz75),
+            cmd_set_mv7_mode(0, true),
+            cmd_set_mv7_limiter(0, true),
+            cmd_set_mv7_compressor(0, &CompressorPreset::Light),
+            cmd_set_mv7_denoiser(0, true),
+            cmd_set_mv7_popper_stopper(0, true),
+            cmd_set_mv7_tone(0, 5),
+            cmd_set_mv7_mic_mix(0, 50),
+            cmd_set_mv7_playback_mix(0, 50),
+            cmd_set_mv7_reverb_output(0, true),
+            cmd_set_mv7_reverb_type(0, &ReverbType::Hall),
+            cmd_set_mv7_reverb_intensity(0, 75),
+            cmd_set_mv7_reverb_monitor(0, true),
+            cmd_set_mv7_led_behavior(0, LedBehavior::Solid),
+            cmd_set_mv7_led_brightness(0, LedBrightness::High),
+            cmd_set_mv7_led_live_theme(0, LedLiveTheme::Custom),
+            cmd_set_mv7_led_solid_theme(0, LedSolidTheme::Custom),
+            cmd_set_mv7_led_pulsing_theme(0, LedPulsingTheme::Custom),
+            cmd_set_mv7_led_solid_color(0, 255, 0, 0),
+            cmd_set_mv7_led_pulsing_color(0, 0, 255, 0),
+            cmd_set_mv7_led_live_edge(0, 255, 0, 0),
+            cmd_set_mv7_led_live_middle(0, 0, 255, 0),
+            cmd_set_mv7_led_live_interior(0, 0, 0, 255),
+        ];
+        for (i, pkt) in cases.iter().enumerate() {
+            assert_eq!(pkt.len(), PACKET_SIZE, "case {i}: packet must be 64 bytes");
+            assert_eq!(
+                pkt[5], 0x00,
+                "case {i}: HDR_CONSTANT must be 0x00 for MV7+ SET"
+            );
+        }
+    }
+
+    #[test]
+    fn mv7_get_commands_use_standard_framing() {
+        // MV7+ GET commands use the standard HDR_CONSTANT=0x03.
+        let cases: &[Vec<u8>] = &[
+            cmd_get_mv7_playback_mix(0),
+            cmd_get_mv7_reverb_output(0),
+            cmd_get_mv7_reverb_type(0),
+            cmd_get_mv7_reverb_intensity(0),
+            cmd_get_mv7_reverb_monitor(0),
+        ];
+        for (i, pkt) in cases.iter().enumerate() {
+            assert_eq!(pkt.len(), PACKET_SIZE, "case {i}: packet must be 64 bytes");
+            assert_eq!(pkt[5], 0x03, "case {i}: HDR_CONSTANT must be 0x03 for GET");
+        }
+    }
+
+    #[test]
+    fn mv7_playback_mix_uses_prefix_0x03() {
+        // Playback mix uses prefix=0x03 to distinguish from mic mix (prefix=0x00).
+        let pkt = cmd_set_mv7_playback_mix(0, 70);
+        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+        assert_eq!(pkt[13], 0x03, "prefix must be 0x03 for playback mix");
+        assert_eq!(&pkt[14..16], &FEAT_MIX, "feature address must be FEAT_MIX");
+        assert_eq!(pkt[16], 70, "value must be encoded directly");
+    }
+
+    #[test]
+    fn mv7_mic_mix_uses_prefix_0x00() {
+        let pkt = cmd_set_mv7_mic_mix(0, 40);
+        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+        assert_eq!(pkt[13], 0x00, "prefix must be 0x00 for mic mix");
+        assert_eq!(&pkt[14..16], &FEAT_MIX);
+        assert_eq!(pkt[16], 40);
+    }
+
+    #[test]
+    fn mv7_playback_mix_get_uses_prefix_0x03() {
+        let pkt = cmd_get_mv7_playback_mix(0);
+        assert_eq!(pkt[5], 0x03, "GET HDR_CONSTANT must be 0x03");
+        assert_eq!(pkt[13], 0x03, "prefix must be 0x03 for playback mix GET");
+        assert_eq!(&pkt[14..16], &FEAT_MIX);
+    }
+
+    #[test]
+    fn mv7_compressor_encodes_all_presets() {
+        let cases = [
+            (CompressorPreset::Off, 0x00u8),
+            (CompressorPreset::Light, 0x01),
+            (CompressorPreset::Medium, 0x02),
+            (CompressorPreset::Heavy, 0x03),
+        ];
+        for (preset, expected) in &cases {
+            let pkt = cmd_set_mv7_compressor(0, preset);
+            assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+            assert_eq!(&pkt[14..16], &FEAT_COMP);
+            assert_eq!(pkt[16], *expected, "wrong byte for {preset:?}");
+        }
+    }
+
+    #[test]
+    fn mv7_reverb_type_encodes_all_variants() {
+        let cases = [
+            (ReverbType::Plate, 0x00u8),
+            (ReverbType::Hall, 0x01),
+            (ReverbType::Studio, 0x02),
+        ];
+        for (rtype, expected) in &cases {
+            let pkt = cmd_set_mv7_reverb_type(0, rtype);
+            assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+            assert_eq!(&pkt[14..16], &MV7_FEAT_REVERB_TYPE);
+            assert_eq!(pkt[16], *expected, "wrong byte for {rtype:?}");
+        }
+    }
+
+    #[test]
+    fn mv7_reverb_intensity_clamps_at_100() {
+        let pkt = cmd_set_mv7_reverb_intensity(0, 200);
+        assert_eq!(pkt[16], 100, "must clamp to 100");
+    }
+
+    #[test]
+    fn mv7_reverb_type_cycles_full_round_trip() {
+        let seq = [
+            ReverbType::Plate,
+            ReverbType::Hall,
+            ReverbType::Studio,
+            ReverbType::Plate,
+        ];
+        for w in seq.windows(2) {
+            assert_eq!(w[0].cycle_next(), w[1]);
+        }
+    }
+
+    #[test]
+    fn apply_response_mv7_reverb_output() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(MV7_FEAT_REVERB_OUTPUT, &[0x01], &mut state));
+        assert!(state.reverb_on_output);
+        assert!(apply_response(MV7_FEAT_REVERB_OUTPUT, &[0x00], &mut state));
+        assert!(!state.reverb_on_output);
+    }
+
+    #[test]
+    fn apply_response_mv7_reverb_type() {
+        let cases = [
+            (0x00u8, ReverbType::Plate),
+            (0x01, ReverbType::Hall),
+            (0x02, ReverbType::Studio),
+            (0x99, ReverbType::Plate), // unknown falls back to Plate
+        ];
+        for (byte, expected) in cases {
+            let mut state = DeviceState::default();
+            assert!(apply_response(MV7_FEAT_REVERB_TYPE, &[byte], &mut state));
+            assert_eq!(state.reverb_type, expected);
+        }
+    }
+
+    #[test]
+    fn apply_response_mv7_reverb_intensity() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(MV7_FEAT_REVERB_INTENSITY, &[75], &mut state));
+        assert_eq!(state.reverb_intensity, 75);
+        // Clamp at 100
+        assert!(apply_response(
+            MV7_FEAT_REVERB_INTENSITY,
+            &[200],
+            &mut state
+        ));
+        assert_eq!(state.reverb_intensity, 100, "must clamp to 100");
+    }
+
+    #[test]
+    fn apply_response_mv7_reverb_monitor() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(MV7_FEAT_REVERB_MONITOR, &[0x01], &mut state));
+        assert!(state.reverb_monitoring);
+        assert!(apply_response(MV7_FEAT_REVERB_MONITOR, &[0x00], &mut state));
+        assert!(!state.reverb_monitoring);
+    }
+
+    #[test]
+    fn mv7_set_mix_values_clamp_at_100() {
+        assert_eq!(cmd_set_mv7_mic_mix(0, 200)[16], 100);
+        assert_eq!(cmd_set_mv7_playback_mix(0, 200)[16], 100);
+    }
+
+    #[test]
+    fn mv7_packets_all_have_valid_crc() {
+        let packets: &[Vec<u8>] = &[
+            cmd_factory_reset(0),
+            cmd_set_mv7_mute(0, true),
+            cmd_set_mv7_playback_mix(0, 50),
+            cmd_set_mv7_reverb_output(0, true),
+            cmd_set_mv7_reverb_type(0, &ReverbType::Studio),
+            cmd_set_mv7_reverb_intensity(0, 80),
+            cmd_set_mv7_reverb_monitor(0, false),
+            cmd_set_mv7_led_behavior(0, LedBehavior::Pulsing),
+            cmd_set_mv7_led_brightness(0, LedBrightness::Max),
+            cmd_set_mv7_led_live_theme(0, LedLiveTheme::Fruity),
+            cmd_set_mv7_led_solid_theme(0, LedSolidTheme::Custom),
+            cmd_set_mv7_led_pulsing_theme(0, LedPulsingTheme::Custom),
+            cmd_set_mv7_led_solid_color(0, 0xFF, 0xA6, 0x26),
+            cmd_set_mv7_led_pulsing_color(0, 0x10, 0x3F, 0xFB),
+            cmd_set_mv7_led_live_edge(0, 0xFF, 0xA6, 0x26),
+            cmd_set_mv7_led_live_middle(0, 0x10, 0x3F, 0xFB),
+            cmd_set_mv7_led_live_interior(0, 0xFF, 0x2A, 0x1A),
+        ];
+        for (i, pkt) in packets.iter().enumerate() {
+            let total_len = pkt[1] as usize;
+            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
+            let computed_crc = crc16_ansi(&pkt[2..total_len]);
+            assert_eq!(stored_crc, computed_crc, "case {i}: CRC must be valid");
+        }
+    }
+
+    #[test]
+    fn factory_reset_packet_structure() {
+        // Verified against Wireshark capture: CMD_SET_LOCK, HDR_CONSTANT=0x00,
+        // payload [0x00, 0x00, 0x22, 0x01].
+        let pkt = cmd_factory_reset(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(pkt[1], 0x11, "total_len");
+        assert_eq!(pkt[2], 0x11, "magic[0]");
+        assert_eq!(pkt[3], 0x22, "magic[1]");
+        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+        // cmd bytes: CMD_SET_LOCK = [0x02, 0x02, 0x01]
+        assert_eq!(&pkt[10..13], &[0x02, 0x02, 0x01], "CMD_SET_LOCK");
+        // payload: [page=0x00, 0x00, sub=0x22, value=0x01]
+        assert_eq!(&pkt[13..17], &[0x00, 0x00, 0x22, 0x01], "payload");
+    }
+
+    #[test]
+    fn parse_response_with_prefix_extracts_prefix_byte() {
+        // Build a synthetic response with a non-zero prefix to verify extraction.
+        let buf = make_response(0, &RES_GET_FEAT, &FEAT_MIX, &[75]);
+        let result = parse_response_with_prefix(&buf);
+        assert!(result.is_some());
+        let (prefix, feat, value) = result.unwrap();
+        assert_eq!(prefix, 0x00, "default prefix must be 0x00");
+        assert_eq!(feat, FEAT_MIX);
+        assert_eq!(value, vec![75]);
+    }
+
+    // ── MV7+ LED protocol tests ───────────────────────────────────────────────
+
+    #[test]
+    fn led_behavior_roundtrip() {
+        // Verified from led-behavior.txt captures.
+        let cases = [
+            (LedBehavior::Live, 0x00u8),
+            (LedBehavior::Pulsing, 0x01),
+            (LedBehavior::Solid, 0x02),
+        ];
+        for (behavior, byte) in cases {
+            let pkt = cmd_set_mv7_led_behavior(0, behavior);
+            assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+            assert_eq!(pkt[13], MV7_LED_PAGE, "page must be 0x0C");
+            assert_eq!(pkt[14], 0x00);
+            assert_eq!(pkt[15], MV7_LED_SUB_BEHAVIOR);
+            assert_eq!(pkt[16], byte, "wrong byte for {behavior:?}");
+            assert_eq!(LedBehavior::from_byte(byte), behavior);
+        }
+    }
+
+    #[test]
+    fn led_brightness_roundtrip() {
+        // Verified from led-behavior.txt captures.
+        let cases = [
+            (LedBrightness::Low, 0x03u8),
+            (LedBrightness::Med, 0x04),
+            (LedBrightness::High, 0x05),
+            (LedBrightness::Max, 0x06),
+        ];
+        for (brightness, byte) in cases {
+            let pkt = cmd_set_mv7_led_brightness(0, brightness);
+            assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+            assert_eq!(pkt[15], MV7_LED_SUB_BRIGHTNESS);
+            assert_eq!(pkt[16], byte, "wrong byte for {brightness:?}");
+            assert_eq!(LedBrightness::from_byte(byte), brightness);
+        }
+    }
+
+    #[test]
+    fn led_live_theme_roundtrip() {
+        // Verified from color-behavior.txt captures.
+        let cases = [
+            (LedLiveTheme::Default, 0x00u8),
+            (LedLiveTheme::Seaside, 0x01),
+            (LedLiveTheme::Space, 0x02),
+            (LedLiveTheme::Fruity, 0x03),
+            (LedLiveTheme::Custom, 0x04),
+        ];
+        for (theme, byte) in cases {
+            let pkt = cmd_set_mv7_led_live_theme(0, theme);
+            assert_eq!(pkt[15], MV7_LED_SUB_LIVE_THEME);
+            assert_eq!(pkt[16], byte, "wrong byte for {theme:?}");
+            assert_eq!(LedLiveTheme::from_byte(byte), theme);
+        }
+    }
+
+    #[test]
+    fn led_solid_theme_roundtrip() {
+        // Verified from custom-solid-red.txt: 0x00=Shure, 0x01=Custom.
+        for (theme, byte) in [
+            (LedSolidTheme::Shure, 0x00u8),
+            (LedSolidTheme::Custom, 0x01),
+        ] {
+            let pkt = cmd_set_mv7_led_solid_theme(0, theme);
+            assert_eq!(pkt[15], MV7_LED_SUB_SOLID_THEME);
+            assert_eq!(pkt[16], byte);
+            assert_eq!(LedSolidTheme::from_byte(byte), theme);
+        }
+    }
+
+    #[test]
+    fn led_pulsing_theme_roundtrip() {
+        // Verified from custom-pulsing-red.txt: 0x00=Shure, 0x01=Custom.
+        for (theme, byte) in [
+            (LedPulsingTheme::Shure, 0x00u8),
+            (LedPulsingTheme::Custom, 0x01),
+        ] {
+            let pkt = cmd_set_mv7_led_pulsing_theme(0, theme);
+            assert_eq!(pkt[15], MV7_LED_SUB_PULSING_THEME);
+            assert_eq!(pkt[16], byte);
+            assert_eq!(LedPulsingTheme::from_byte(byte), theme);
+        }
+    }
+
+    #[test]
+    fn led_color_packets_have_correct_structure() {
+        // All color SETs: [page=0x0C, 0x00, sub, 0x00, R, G, B]
+        // Verified by live-red-blue-orange.txt, custom-solid-red.txt, custom-pulsing-red.txt.
+        let cases: &[(Vec<u8>, u8)] = &[
+            (
+                cmd_set_mv7_led_solid_color(0, 0xFF, 0x2A, 0x1A),
+                MV7_LED_SUB_SOLID_COLOR,
+            ),
+            (
+                cmd_set_mv7_led_pulsing_color(0, 0x10, 0x3F, 0xFB),
+                MV7_LED_SUB_PULSING_COLOR,
+            ),
+            (
+                cmd_set_mv7_led_live_edge(0, 0xFF, 0xA6, 0x26),
+                MV7_LED_SUB_LIVE_EDGE,
+            ),
+            (
+                cmd_set_mv7_led_live_middle(0, 0x10, 0x3F, 0xFB),
+                MV7_LED_SUB_LIVE_MIDDLE,
+            ),
+            (
+                cmd_set_mv7_led_live_interior(0, 0xFF, 0x2A, 0x1A),
+                MV7_LED_SUB_LIVE_INTERIOR,
+            ),
+        ];
+        for (pkt, sub) in cases {
+            assert_eq!(pkt.len(), PACKET_SIZE);
+            assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+            assert_eq!(pkt[10..13], [0x02, 0x02, 0x01], "CMD_SET_LOCK");
+            assert_eq!(pkt[13], MV7_LED_PAGE, "page must be 0x0C");
+            assert_eq!(pkt[14], 0x00);
+            assert_eq!(pkt[15], *sub, "wrong sub-address");
+            assert_eq!(pkt[16], 0x00, "color prefix byte must be 0x00");
+        }
+    }
+
+    #[test]
+    fn apply_response_mv7_led_behavior() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(
+            MV7_FEAT_LED_BEHAVIOR_RESP,
+            &[0x01],
+            &mut state
+        ));
+        assert_eq!(state.led_behavior, LedBehavior::Pulsing);
+        assert!(apply_response(
+            MV7_FEAT_LED_BEHAVIOR_RESP,
+            &[0x02],
+            &mut state
+        ));
+        assert_eq!(state.led_behavior, LedBehavior::Solid);
+        assert!(apply_response(
+            MV7_FEAT_LED_BEHAVIOR_RESP,
+            &[0x00],
+            &mut state
+        ));
+        assert_eq!(state.led_behavior, LedBehavior::Live);
+    }
+
+    #[test]
+    fn apply_response_mv7_led_brightness() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(
+            MV7_FEAT_LED_BRIGHTNESS_RESP,
+            &[0x03],
+            &mut state
+        ));
+        assert_eq!(state.led_brightness, LedBrightness::Low);
+        assert!(apply_response(
+            MV7_FEAT_LED_BRIGHTNESS_RESP,
+            &[0x06],
+            &mut state
+        ));
+        assert_eq!(state.led_brightness, LedBrightness::Max);
+    }
+
+    #[test]
+    fn apply_response_mv7_led_solid_color() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(
+            MV7_FEAT_LED_SOLID_COLOR_RESP,
+            &[0x00, 0xFF, 0x2A, 0x1A],
+            &mut state
+        ));
+        assert_eq!(state.led_solid_rgb, [0xFF, 0x2A, 0x1A]);
+    }
+
+    #[test]
+    fn apply_response_mv7_led_pulsing_color() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(
+            MV7_FEAT_LED_PULSING_COLOR_RESP,
+            &[0x00, 0x10, 0x3F, 0xFB],
+            &mut state
+        ));
+        assert_eq!(state.led_pulsing_rgb, [0x10, 0x3F, 0xFB]);
+    }
+
+    #[test]
+    fn apply_response_mv7_led_live_zones() {
+        let mut state = DeviceState::default();
+        assert!(apply_response(
+            MV7_FEAT_LED_LIVE_EDGE_RESP,
+            &[0x00, 0xFF, 0xA6, 0x26],
+            &mut state
+        ));
+        assert_eq!(state.led_live_edge_rgb, [0xFF, 0xA6, 0x26]);
+        assert!(apply_response(
+            MV7_FEAT_LED_LIVE_MIDDLE_RESP,
+            &[0x00, 0x10, 0x3F, 0xFB],
+            &mut state
+        ));
+        assert_eq!(state.led_live_middle_rgb, [0x10, 0x3F, 0xFB]);
+        assert!(apply_response(
+            MV7_FEAT_LED_LIVE_INTERIOR_RESP,
+            &[0x00, 0xFF, 0x2A, 0x1A],
+            &mut state
+        ));
+        assert_eq!(state.led_live_interior_rgb, [0xFF, 0x2A, 0x1A]);
+    }
+
+    // ── Missing MV7+ tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn device_model_max_gain_db_mv7_plus() {
+        assert_eq!(DeviceModel::Mv7Plus.max_gain_db(), 36);
+    }
+
+    // ── MV7+ apply_response: LED themes ──────────────────────────────────────
+
+    #[test]
+    fn apply_response_mv7_led_live_theme() {
+        let cases = [
+            (0x00u8, LedLiveTheme::Default),
+            (0x01, LedLiveTheme::Seaside),
+            (0x02, LedLiveTheme::Space),
+            (0x03, LedLiveTheme::Fruity),
+            (0x04, LedLiveTheme::Custom),
+            (0x99, LedLiveTheme::Default), // unknown falls back to Default
+        ];
+        for (byte, expected) in cases {
+            let mut state = DeviceState::default();
+            assert!(apply_response(
+                MV7_FEAT_LED_LIVE_THEME_RESP,
+                &[byte],
+                &mut state
+            ));
+            assert_eq!(state.led_live_theme, expected, "byte {byte:#04x}");
+        }
+    }
+
+    #[test]
+    fn apply_response_mv7_led_solid_theme() {
+        for (byte, expected) in [(0x00u8, LedSolidTheme::Shure), (0x01, LedSolidTheme::Custom)] {
+            let mut state = DeviceState::default();
+            assert!(apply_response(
+                MV7_FEAT_LED_SOLID_THEME_RESP,
+                &[byte],
+                &mut state
+            ));
+            assert_eq!(state.led_solid_theme, expected, "byte {byte:#04x}");
+        }
+    }
+
+    // Note: apply_response_mv7_led_pulsing_theme is intentionally absent.
+    // MV7_FEAT_LED_PULSING_THEME_RESP = [0x00, 0xA6] aliases FEAT_LOCK — the
+    // apply_response lock branch fires first, so pulsing theme is write-only
+    // and cannot be round-tripped through apply_response. This matches the
+    // comment in get_state_mv7_plus() which omits the pulsing theme GET.
+
+    // ── MV7+ apply_response: empty-value guards ───────────────────────────────
+
+    #[test]
+    fn apply_response_mv7_reverb_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV7_FEAT_REVERB_OUTPUT, &[], &mut state));
+        assert!(!apply_response(MV7_FEAT_REVERB_TYPE, &[], &mut state));
+        assert!(!apply_response(MV7_FEAT_REVERB_INTENSITY, &[], &mut state));
+        assert!(!apply_response(MV7_FEAT_REVERB_MONITOR, &[], &mut state));
+    }
+
+    #[test]
+    fn apply_response_mv7_led_1byte_features_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(MV7_FEAT_LED_BEHAVIOR_RESP, &[], &mut state));
+        assert!(!apply_response(
+            MV7_FEAT_LED_BRIGHTNESS_RESP,
+            &[],
+            &mut state
+        ));
+        assert!(!apply_response(
+            MV7_FEAT_LED_LIVE_THEME_RESP,
+            &[],
+            &mut state
+        ));
+        assert!(!apply_response(
+            MV7_FEAT_LED_SOLID_THEME_RESP,
+            &[],
+            &mut state
+        ));
+        // MV7_FEAT_LED_PULSING_THEME_RESP aliases FEAT_LOCK — not tested here.
+    }
+
+    #[test]
+    fn apply_response_mv7_led_color_features_short_returns_false() {
+        // Color responses require 4 bytes [0x00, R, G, B]; fewer must return false.
+        let mut state = DeviceState::default();
+        assert!(!apply_response(
+            MV7_FEAT_LED_SOLID_COLOR_RESP,
+            &[0x00, 0xFF],
+            &mut state
+        ));
+        assert!(!apply_response(
+            MV7_FEAT_LED_PULSING_COLOR_RESP,
+            &[0x00, 0xFF],
+            &mut state
+        ));
+        assert!(!apply_response(
+            MV7_FEAT_LED_LIVE_EDGE_RESP,
+            &[0x00, 0xFF],
+            &mut state
+        ));
+        assert!(!apply_response(
+            MV7_FEAT_LED_LIVE_MIDDLE_RESP,
+            &[0x00, 0xFF],
+            &mut state
+        ));
+        assert!(!apply_response(
+            MV7_FEAT_LED_LIVE_INTERIOR_RESP,
+            &[0x00, 0xFF],
+            &mut state
+        ));
+    }
+
+    // ── MV7+ tone encoding ────────────────────────────────────────────────────
+
+    #[test]
+    fn mv7_tone_packet_uses_hdr0_and_encodes_correctly() {
+        for (tone, expected_raw) in [(-10i8, -100i16), (0, 0), (10, 100)] {
+            let pkt = cmd_set_mv7_tone(0, tone);
+            assert_eq!(pkt.len(), PACKET_SIZE);
+            assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+            assert_eq!(&pkt[14..16], &MV6_FEAT_TONE, "feature address mismatch");
+            let encoded = i16::from_be_bytes([pkt[16], pkt[17]]);
+            assert_eq!(encoded, expected_raw, "tone encoding mismatch for {tone}");
+        }
+    }
+
+    #[test]
+    fn mv7_tone_clamps_to_range() {
+        let pkt_low = cmd_set_mv7_tone(0, -99);
+        assert_eq!(
+            i16::from_be_bytes([pkt_low[16], pkt_low[17]]),
+            -100,
+            "clamped to -10 * 10"
+        );
+        let pkt_high = cmd_set_mv7_tone(0, 99);
+        assert_eq!(
+            i16::from_be_bytes([pkt_high[16], pkt_high[17]]),
+            100,
+            "clamped to +10 * 10"
+        );
+    }
+
+    // ── MV7+ gain encoding ────────────────────────────────────────────────────
+
+    #[test]
+    fn mv7_gain_packet_uses_hdr0_and_encodes_correctly() {
+        let pkt = cmd_set_mv7_gain(0, 36);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
+        assert_eq!(&pkt[14..16], &FEAT_GAIN, "feature address mismatch");
+        let encoded = u16::from_be_bytes([pkt[16], pkt[17]]);
+        assert_eq!(encoded, 36 * 100, "gain must be encoded as gain_db * 100");
     }
 }

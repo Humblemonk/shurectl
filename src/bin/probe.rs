@@ -143,7 +143,48 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
         "EQ_10KHZ_FREQ_RO (Gen2 only — read-only, always 10000)",
     ),
     ([0x02, 0x54], "EQ_10KHZ_GAIN (Gen1/Gen2)"),
-    ([0x03, 0x81], "POPPER_STOPPER (MV6/Gen2)"),
+    ([0x03, 0x81], "POPPER_STOPPER (MV6/Gen2/MV7+)"),
+    ([0x03, 0x82], "MV7+_REVERB_OUTPUT (MV7+ only — 0=off, 1=on)"),
+    (
+        [0x03, 0x83],
+        "MV7+_REVERB_TYPE (MV7+ only — 0=Plate, 1=Hall, 2=Studio)",
+    ),
+    ([0x03, 0x84], "MV7+_REVERB_INTENSITY (MV7+ only — 0–100)"),
+    (
+        [0x03, 0x85],
+        "MV7+_REVERB_MONITOR (MV7+ only — 0=off, 1=on)",
+    ),
+];
+
+/// Known addresses for the MV7+ lock command class (cmd=[01,02,01]).
+/// These use payload [page, 0x00, sub_addr] — a 3-level address scheme not
+/// covered by the standard 2-level sweep. Discovered via Wireshark captures.
+/// Keys: [page, sub_addr] (the 3rd byte is the discriminator within the page).
+const KNOWN_MV7_LOCK_ADDRS: &[([u8; 2], &str)] = &[
+    (
+        [0x0C, 0x60],
+        "MV6/MV7+_MUTE_BTN_DISABLE (0x00=disabled, 0x01=active)",
+    ),
+    (
+        [0x0C, 0xA2],
+        "MV7+_LED_COLOR_ACTIVE (4 bytes: [0x00, R, G, B] — color when unmuted)",
+    ),
+    (
+        [0x0C, 0xA3],
+        "MV7+_LED_COLOR_MUTED (4 bytes: [0x00, R, G, B] — color when muted)",
+    ),
+    (
+        [0x0C, 0xA4],
+        "MV7+_LED_MODE (1 byte: 0x01=solid, 0x02=breathing)",
+    ),
+    (
+        [0x0C, 0xA5],
+        "MV7+_LED_FLAG_A5 (1 byte: always 0x01 — write-only flag)",
+    ),
+    (
+        [0x0C, 0xA6],
+        "MV7+_LED_FLAG_A6 (1 byte: always 0x01 — write-only flag; aliases FEAT_LOCK on MVX2U)",
+    ),
 ];
 
 #[derive(Parser)]
@@ -178,6 +219,13 @@ struct Cli {
     #[arg(long)]
     also_mix_class: bool,
 
+    /// Also sweep each page using the MV7+ lock-class 3-level addressing:
+    /// payload=[page, 0x00, sub_addr] with CMD_GET_LOCK. This discovers features
+    /// like LED colors (page 0x0C, sub_addrs A2–A6) and mute_btn_disable (0x60)
+    /// that the standard 2-level sweep cannot find. Use with --page 0x0C for MV7+.
+    #[arg(long)]
+    also_mv7_lock_class: bool,
+
     /// Delay between packets in milliseconds. Increase if the device misses responses.
     #[arg(long, default_value = "20")]
     delay_ms: u64,
@@ -203,6 +251,17 @@ fn crc16_ansi(data: &[u8]) -> u16 {
 // ── Packet builder ────────────────────────────────────────────────────────────
 fn build_get_packet(seq: u8, cmd: &[u8; 3], feat_addr: [u8; 2], is_mix_or_lock: u8) -> Vec<u8> {
     let payload = [is_mix_or_lock, feat_addr[0], feat_addr[1]];
+    build_get_packet_raw(seq, cmd, &payload)
+}
+
+/// Build a MV7+ lock-class GET packet using 3-level addressing: [page, 0x00, sub_addr].
+/// Used for LED color features on page 0x0C and mute_btn_disable (sub_addr 0x60).
+fn build_get_packet_mv7_lock(seq: u8, page: u8, sub_addr: u8) -> Vec<u8> {
+    let payload = [page, 0x00u8, sub_addr];
+    build_get_packet_raw(seq, &CMD_GET_LOCK, &payload)
+}
+
+fn build_get_packet_raw(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     let data_len = (3 + payload.len() + 2) as u8;
 
     let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
@@ -215,7 +274,7 @@ fn build_get_packet(seq: u8, cmd: &[u8; 3], feat_addr: [u8; 2], is_mix_or_lock: 
     inner.push(DATA_START);
     inner.push(data_len);
     inner.extend_from_slice(cmd);
-    inner.extend_from_slice(&payload);
+    inner.extend_from_slice(payload);
 
     let total_len = (inner.len() + 2) as u8;
     let crc = crc16_ansi(&inner);
@@ -311,6 +370,13 @@ fn known_name(addr: [u8; 2]) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+fn known_mv7_lock_name(page: u8, sub_addr: u8) -> Option<&'static str> {
+    KNOWN_MV7_LOCK_ADDRS
+        .iter()
+        .find(|(a, _)| *a == [page, sub_addr])
+        .map(|(_, name)| *name)
+}
+
 // ── Probe logic ───────────────────────────────────────────────────────────────
 struct Probe {
     device: HidDevice,
@@ -395,6 +461,67 @@ impl Probe {
             "\n── Page 0x{page:02X} sweep (CMD_GET_LOCK class, prefix=0x06) ────────────"
         ));
         self.sweep_page_with_prefix(page, &CMD_GET_LOCK, 0x06, "lock")
+    }
+
+    /// Sweep all 256 sub-addresses on a page using MV7+ 3-level addressing:
+    /// payload=[page, 0x00, sub_addr] with CMD_GET_LOCK.
+    ///
+    /// This discovers features like LED colors ([0x0C, 0x00, 0xA2..0xA6]) and
+    /// mute_btn_disable ([0x0C, 0x00, 0x60]) that the standard 2-level sweep
+    /// cannot find because they use a different payload structure.
+    ///
+    /// To probe MV7+ LED: cargo run --bin probe -- --pid 0x1019 --page 0x0C --also-mv7-lock-class
+    fn sweep_page_mv7_lock(&mut self, page: u8) -> Result<()> {
+        self.log(&format!(
+            "\n── Page 0x{page:02X} sweep (MV7+ lock class: [page, 0x00, sub_addr]) ────"
+        ));
+        let mut responded = 0u32;
+        let mut new_found = 0u32;
+
+        for sub_addr in 0x00u8..=0xFF {
+            let seq = self.next_seq();
+            let pkt = build_get_packet_mv7_lock(seq, page, sub_addr);
+            self.device.write(&pkt).context("HID write failed")?;
+            std::thread::sleep(self.delay);
+            let mut buf = vec![0u8; PACKET_SIZE];
+            let resp = match self.device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
+                Ok(0) => None,
+                Ok(n) => parse_response(&buf[..n]),
+                Err(e) => return Err(anyhow!("HID read failed: {e}")),
+            };
+            if let Some(resp) = resp {
+                responded += 1;
+                let is_known = known_mv7_lock_name(page, sub_addr).is_some();
+                if !is_known {
+                    new_found += 1;
+                }
+                let name_tag = known_mv7_lock_name(page, sub_addr)
+                    .map(|n| format!(" [{n}]"))
+                    .unwrap_or_else(|| " *** NEW ***".to_string());
+                let val_hex = fmt_value_hex(&resp.value_bytes);
+                self.log(&format!(
+                    "  RESP  [{page:02X} 00 {sub_addr:02X}]{name_tag}  value: [{val_hex}]  ({} bytes)",
+                    resp.value_bytes.len(),
+                ));
+                if !is_known {
+                    self.log("  Raw response packet:");
+                    self.log(&hex_dump(&resp.raw));
+                }
+                self.hits.push(ProbeHit {
+                    addr: [page, sub_addr],
+                    value_bytes: resp.value_bytes,
+                    prefix: 0x00,
+                    cmd_class: "mv7-lock",
+                    is_known,
+                    known_name: known_mv7_lock_name(page, sub_addr),
+                });
+            }
+        }
+
+        self.log(&format!(
+            "  Page 0x{page:02X} (mv7-lock): {responded} addresses responded, {new_found} previously unknown."
+        ));
+        Ok(())
     }
 
     fn sweep_page_with_prefix(
@@ -583,8 +710,12 @@ fn main() -> Result<()> {
     probe.log(&format!("Serial : {serial}"));
     probe.log(&format!("Output : {}", cli.output));
     probe.log(&format!("Delay  : {} ms between packets", cli.delay_ms));
-    probe.log(&format!("Mix class sweep  : {}", cli.also_mix_class));
-    probe.log(&format!("Lock class sweep : {}", cli.also_lock_class));
+    probe.log(&format!("Mix class sweep     : {}", cli.also_mix_class));
+    probe.log(&format!("Lock class sweep    : {}", cli.also_lock_class));
+    probe.log(&format!(
+        "MV7+ lock class     : {}",
+        cli.also_mv7_lock_class
+    ));
     probe.log("Note   : READ-ONLY — only GET packets are sent. No settings changed.");
 
     let pages_to_sweep: Vec<u8> = match specific_page {
@@ -601,6 +732,9 @@ fn main() -> Result<()> {
         }
         if cli.also_lock_class {
             probe.sweep_page_lock_class(*page)?;
+        }
+        if cli.also_mv7_lock_class {
+            probe.sweep_page_mv7_lock(*page)?;
         }
     }
 
