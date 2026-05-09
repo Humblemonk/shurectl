@@ -1,7 +1,7 @@
 # shurectl — Project Instructions
 
 The goal of this project is to build and maintain **shurectl**, an open-source terminal UI
-configurator for Shure USB audio interfaces (currently the **MVX2U** and **MV6**) on Linux
+configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, and MV7+) on Linux
 and macOS. It replaces the Windows/Mac-only ShurePlus MOTIV Desktop app by communicating
 with devices directly over USB HID.
 
@@ -51,7 +51,7 @@ This is a single-crate Rust binary. All source lives under `src/`:
 src/
   main.rs       # Entry point, CLI args (--demo, --list), event loop, key handling
   app.rs        # Application state: Tab, Focus, DeviceState, DeviceAction events
-  device.rs     # hidapi wrapper: open MVX2U, send/receive HID reports
+  device.rs     # hidapi wrapper: open ShureDevice, send/receive HID reports, model dispatch
   meter.rs      # cpal audio capture: real-time dBFS metering, RollingWindow, PeakWindow
   presets.rs    # Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
   protocol.rs   # Packet encoding, CRC-16/ANSI, all command constructors, apply_response()
@@ -70,9 +70,22 @@ src/
 
 These are project-specific patterns learned from working in this codebase.
 
+### Supported Devices
+
+| Model | VID | PID |
+|---|---|---|
+| MVX2U Gen 1 | `0x14ED` | `0x1013` |
+| MVX2U Gen 2 | `0x14ED` | `0x1033` |
+| MV6 | `0x14ED` | `0x1026` |
+| MV7+ | `0x14ED` | `0x1019` |
+
+All four share the same packet framing and CRC algorithm. Feature addresses and value
+encodings differ per model. The `DeviceModel` enum in `protocol.rs` drives all
+model-specific dispatch — gain ranges, UI tab availability, and protocol variants.
+
 ### USB HID Protocol
 
-The MVX2U uses plain USB HID Output/Input Reports for all configuration. Every packet is
+All devices use plain USB HID Output/Input Reports for configuration. Every packet is
 exactly 64 bytes, sent via `hid_write()` and received via `hid_read()`:
 
 ```
@@ -80,7 +93,6 @@ exactly 64 bytes, sent via `hid_write()` and received via `hid_read()`:
   ↑─── Report ID ───↑                                                                      ↑──────────── CRC-16/ANSI covers from 0x11 onward ───────────────↑
 ```
 
-- **USB IDs**: VID `0x14ED`, PID `0x1013`
 - **Header magic**: `0x11 0x22` — never changes
 - **Report ID**: `0x01` — required as byte 0 by hidapi's `hid_write()`; our buffers are 65 bytes total (1 report ID + 64 payload)
 - **CRC**: CRC-16/ANSI — poly `0x8005`, init `0x0000`, reflected input and output (NOT CCITT-FALSE)
@@ -91,12 +103,32 @@ exactly 64 bytes, sent via `hid_write()` and received via `hid_read()`:
 All command byte values and feature address constants live in `protocol.rs`.
 Do not hardcode raw byte values outside of `protocol.rs`.
 
+### MV7+ Protocol Quirks
+
+The MV7+ has two behaviours that differ from all other models:
+
+**Double unsolicited IN response after CONFIRM.** After every SET + CONFIRM pair, the MV7+
+sends two unsolicited Input Reports before going quiet:
+1. A CONFIRM ACK (`cmd=[09 00 00]`)
+2. A SET echo (`RES_SET_FEAT` or `RES_SET_LOCK`) reflecting the applied value
+
+`device.rs::send_set()` drains both reads (50 ms timeout each) for MV7+ after sending the
+CONFIRM. If this drain is skipped, subsequent GET reads in `get_state()` will consume these
+stale responses instead of the actual GET replies, silently corrupting state readback.
+
+**Playback mix shares a feature address with mic mix.** The MV7+ exposes two independent mix
+controls (mic monitor and playback) at the same feature address (`FEAT_MIX`), distinguished
+by a prefix byte in the response. `send_get_with_prefix()` and `parse_response_with_prefix()`
+exist specifically for this case — they return `(prefix, feat_addr, value)` instead of
+`(feat_addr, value)`. Use this path only for `cmd_get_mv7_playback_mix`; all other GET
+commands use the standard `send_get()`.
+
 ### Adding a New Command
 
 New device commands always follow this sequence — do not skip steps:
 
 1. `protocol.rs` — add `FEAT_*` address constant, `cmd_get_*` and `cmd_set_*` constructor functions, and a matching branch in `apply_response()` to decode the GET response into `DeviceState`
-2. `device.rs` — add typed `get_*` / `set_*` methods on `Mvx2u` that call the constructors; add `cmd_get_*` to the `getters` slice in `get_state()` if it's part of full state readback
+2. `device.rs` — add typed `get_*` / `set_*` methods on `ShureDevice` that call the constructors; add `cmd_get_*` to the appropriate `get_state_*()` getter slice if it's part of full state readback
 3. `app.rs` — add a `DeviceAction` variant if user-triggerable; update `adjust_focused()` or `toggle_focused()` as appropriate
 4. `main.rs` — handle the new variant in `apply_action()`
 5. `ui.rs` — add UI element if needed
@@ -121,9 +153,13 @@ higher layers.
 ### State Readback
 
 State is fetched by issuing individual `cmd_get_*` packets for each feature, not by a single
-monolithic GET_STATE command. `device.rs::get_state()` calls each getter in sequence and
-feeds every response into `apply_response()`, which dispatches on the 2-byte feature address
-returned by the device and writes the decoded value into the appropriate field of `DeviceState`.
+monolithic GET_STATE command. `device.rs::get_state()` dispatches to a model-specific
+`get_state_*()` method (`get_state_mvx2u`, `get_state_mvx2u_gen2`, `get_state_mv6`,
+`get_state_mv7_plus`), each of which calls its own getter slice and feeds every response
+into `apply_response()`.
+
+`apply_response()` dispatches on the 2-byte feature address returned by the device and
+writes the decoded value into the appropriate field of `DeviceState`.
 
 Feature address → `DeviceState` field mapping is documented inline in `protocol.rs`.
 If live device state looks wrong after `get_state()`, check the feature address constants
@@ -163,7 +199,7 @@ Key design decisions:
   etc.) with `#[derive(Serialize, Deserialize)]`. Protocol types in `protocol.rs` stay free of
   serde concerns. Stable on-disk format is decoupled from internal enum evolution.
 - **`PresetSlot`**: captures all configurable DSP settings from `DeviceState` — every field
-  that can be sent to the MVX2U over HID. Hardware-identity fields (`serial_number`,
+  that can be sent to the device over HID. Hardware-identity fields (`serial_number`,
   `firmware_version`) are intentionally excluded.
 - **`PresetSlot::from_device_state()`** — snapshot live state into a slot.
 - **`PresetSlot::apply_to_device_state()`** — restore a slot onto `DeviceState`, preserving identity fields.
@@ -298,7 +334,7 @@ Suggesting improvements:
 
 ## Security
 
-- The MVX2U HID interface is local hardware — no network exposure
+- The device HID interface is local hardware — no network exposure
 - Validate all packet arguments before encoding (clamp ranges, not panic)
 - No secrets in source — if a config file is added, use environment variables or `~/.config/`
 - Never write firmware update packets — the firmware update byte sequences are intentionally
