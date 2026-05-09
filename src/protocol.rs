@@ -3771,7 +3771,10 @@ mod tests {
 
     #[test]
     fn apply_response_mv7_led_solid_theme() {
-        for (byte, expected) in [(0x00u8, LedSolidTheme::Shure), (0x01, LedSolidTheme::Custom)] {
+        for (byte, expected) in [
+            (0x00u8, LedSolidTheme::Shure),
+            (0x01, LedSolidTheme::Custom),
+        ] {
             let mut state = DeviceState::default();
             assert!(apply_response(
                 MV7_FEAT_LED_SOLID_THEME_RESP,

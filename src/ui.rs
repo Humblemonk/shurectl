@@ -3679,7 +3679,10 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
                 "  Reverb       : ",
                 "Plate / Hall / Studio; intensity 0–100%",
             ),
-            ("  LED Panel    : ", "Behavior / Brightness / Theme / Custom RGB"),
+            (
+                "  LED Panel    : ",
+                "Behavior / Brightness / Theme / Custom RGB",
+            ),
             ("  Auto Level   : ", "On / Off"),
         ],
     };
