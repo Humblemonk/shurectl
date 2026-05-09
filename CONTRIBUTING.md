@@ -33,7 +33,7 @@ There are no warnings — only requirements.
 > **If you use an AI coding assistant (Claude, Copilot, Cursor, etc.), load `CLAUDE.md` into
 > its context before starting any work.**
 
-`CLAUDE.md` at the repo root is the authoritative source for this project's architecture,
+`CLAUDE.md` at the repository root is the authoritative source for this project's architecture,
 protocol rules, domain constraints, and coding standards. It covers the USB HID packet
 structure, the data flow between modules, forbidden patterns, and the required workflow for
 adding new commands. An AI working without it will produce code that conflicts with
