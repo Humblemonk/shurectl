@@ -3,8 +3,11 @@
 # No group membership required.
 # Install to: /etc/udev/rules.d/62-shure.rules
 # Then run: sudo udevadm control --reload-rules && sudo udevadm trigger
-# Note: You may need SUBSYSTEMS or SUBSYSTEM based on your linux distro
 # MVX2U Gen 1
 ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
+# MVX2U Gen 2
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1033", TAG+="uaccess"
 # MV6
 ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
+# MV7+
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1019", TAG+="uaccess"

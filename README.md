@@ -63,13 +63,13 @@ interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only Shu
 
 Without a udev rule, `/dev/hidrawN` for the device is only accessible by root.
 
-Create `/etc/udev/rules.d/62-shurectl.rules`:
+Create `/etc/udev/rules.d/62-shure.rules`:
 
 ```
-ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
-ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1033", TAG+="uaccess"
-ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
-ACTION!="remove", SUBSYSTEMS=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1019", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1033", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1019", TAG+="uaccess"
 ```
 
 Then reload udev and replug your device:
