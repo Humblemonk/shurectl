@@ -1,9 +1,9 @@
 # shurectl — Project Instructions
 
 The goal of this project is to build and maintain **shurectl**, an open-source terminal UI
-configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, and MV7+) on Linux
-and macOS. It replaces the Windows/Mac-only ShurePlus MOTIV Desktop app by communicating
-with devices directly over USB HID.
+configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, and MV7+) on Linux,
+macOS, and Windows. It replaces the Windows/Mac-only ShurePlus MOTIV Desktop app by
+communicating with devices directly over USB HID.
 
 This is a Rust project. Operate as a senior Rust developer: write clean, readable, maintainable
 code. Avoid clever abstractions. The simple, obvious solution is almost always correct.
@@ -97,7 +97,8 @@ exactly 64 bytes, sent via `hid_write()` and received via `hid_read()`:
 - **Report ID**: `0x01` — required as byte 0 by hidapi's `hid_write()`; our buffers are 65 bytes total (1 report ID + 64 payload)
 - **CRC**: CRC-16/ANSI — poly `0x8005`, init `0x0000`, reflected input and output (NOT CCITT-FALSE)
 - **Transport**: plain HID Output Reports (`hid_write`) for commands; Input Reports (`hid_read`) for responses — `HIDIOCSFEATURE`/`HIDIOCGFEATURE` are NOT used
-- **Interface**: accessed via `/dev/hidrawN`, not the USB audio class interface
+- **Interface**: accessed via `/dev/hidrawN` on Linux (Windows uses `\\?\HID#VID_...` paths), not the USB audio class interface
+- **Windows HID collections**: Windows enumerates each top-level HID collection as a separate device path, so one mic appears as two entries. The config protocol lives on the vendor collection (usage page `0xFF01`); the second is a telephony/consumer collection (`0x000B`) for the mute button. `device.rs::shure_devices()` filters to the vendor usage-page collection. On Linux all collections share one `/dev/hidrawN` path and dedup-by-path collapses them, so the filter is a harmless refinement there.
 - **SET + CONFIRM**: every SET command must be immediately followed by a CONFIRM packet (`CMD_CONFIRM`); the device will not apply the change without it
 
 All command byte values and feature address constants live in `protocol.rs`.
@@ -227,9 +228,10 @@ This is intentional: demo mode should always be fully navigable.
 
 - `ratatui 0.30` — TUI rendering; use `Frame::render_widget()`, not direct buffer writes
 - `crossterm 0.29` — terminal backend and key events; `KeyEventKind::Press` only
-- `hidapi 2.4` (linux-native feature) — HID device open/read/write via `/dev/hidrawN`
+- `hidapi 2.4` — HID device open/read/write. Per-OS features: `linux-native` (`/dev/hidrawN`),
+  `macos-shared-device`, and the default Windows backend (HID paths like `\\?\HID#VID_...`)
 - `cpal 0.17` — audio capture for the input level meter; default input device only
-- `libc 0.2` — stderr suppression during cpal ALSA/JACK probing (`dup`/`dup2`)
+- `libc 0.2` (unix only) — stderr suppression during cpal ALSA/JACK probing (`dup`/`dup2`)
 - `anyhow` — all fallible functions return `anyhow::Result`
 - `clap 4.5` — CLI argument parsing; `derive` feature only
 - `serde 1` (with `derive` feature) — serialisation traits for preset TOML files
