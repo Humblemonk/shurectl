@@ -49,9 +49,10 @@ This is a single-crate Rust binary. All source lives under `src/`:
 
 ```
 src/
-  main.rs       # Entry point, CLI args (--demo, --list), event loop, key handling
+  main.rs       # Entry point, CLI args + subcommands, event loop, key handling, apply_action
   app.rs        # Application state: Tab, Focus, DeviceState, DeviceAction events
   device.rs     # hidapi wrapper: open ShureDevice, send/receive HID reports, model dispatch
+  headless.rs   # JSON get/set/preset CLI for scripting and automation (no TUI)
   meter.rs      # cpal audio capture: real-time dBFS metering, RollingWindow, PeakWindow
   presets.rs    # Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
   protocol.rs   # Packet encoding, CRC-16/ANSI, all command constructors, apply_response()
@@ -59,6 +60,8 @@ src/
 ```
 
 **Data flow:** key event → `handle_key()` → `DeviceAction` → `apply_action()` → `device.rs` → HID packet → `protocol.rs`
+
+**Headless data flow:** subcommand → `headless::run()` → `device.rs` get_state/set_* → HID packet. The TUI and `headless.rs` are independent consumers of `device.rs`; neither calls the other.
 
 **Meter data flow:** cpal audio callback → `meter_level` (AtomicI32) + `peak_window` (Mutex<PeakWindow>) → `ui.rs` reads on each render tick
 
@@ -217,6 +220,29 @@ Preset name editing is handled in `main.rs::handle_key()`, not in `toggle_focuse
 When `app.editing_preset_name` is `true`, character keys append to the name and `Enter`
 commits (fires `PersistPresetName`), while `Esc` cancels without saving.
 
+### Headless CLI
+
+`headless.rs` is the non-TUI JSON interface (`get`, `set <setting> <value>`,
+`preset list|save|load|delete`). It opens the device and calls the same typed
+`device.rs` methods the TUI uses, then prints one JSON object to stdout. Errors
+print `{"error": ...}` and `exit(1)`.
+
+Key patterns:
+- **Reuses `PresetSlot` for output.** `get` builds its `settings` body from
+  `PresetSlot::from_device_state` and strips the `name` field. Do not add a parallel
+  state DTO — the preset mirror types are the single serialisation source.
+- **`set` enum tokens come from `Ser*` deserialisation.** A setting like `compressor`
+  parses its value by deserialising into `SerCompressorPreset`, so the accepted
+  tokens are exactly what `get` emits (input/output symmetry) and the serde error
+  lists valid variants for free.
+- **Catalog is the single source of truth.** `catalog()` lists every setting, its
+  accepted values, and the models it applies to. `ensure_supported()` (applicability
+  check) and `set help` both read it. When adding a settable field: add a `catalog()`
+  entry, a `dispatch_set()` arm, and extend the `every_catalog_entry_has_a_dispatch_arm`
+  test's name set.
+- **`apply_preset_to_device()` lives in `main.rs`** and is shared by the TUI's
+  `LoadPreset` and headless `preset load`. It sends every model-relevant SET.
+
 ### Demo Mode
 
 `--demo` runs with `device: None`. `send_if_connected()` silently succeeds when
@@ -233,6 +259,7 @@ This is intentional: demo mode should always be fully navigable.
 - `anyhow` — all fallible functions return `anyhow::Result`
 - `clap 4.5` — CLI argument parsing; `derive` feature only
 - `serde 1` (with `derive` feature) — serialisation traits for preset TOML files
+- `serde_json 1` — JSON output for the headless `get`/`set`/`preset` CLI
 - `toml 0.8` — TOML serialisation/deserialisation for preset files
 - `dirs-next 2.0` — platform config directory resolution (`~/.config/` on Linux)
 - `tempfile 3` (dev-dependency) — hermetic temp directories in `presets.rs` tests

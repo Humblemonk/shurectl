@@ -15,6 +15,7 @@
 
 mod app;
 mod device;
+mod headless;
 mod meter;
 mod presets;
 mod protocol;
@@ -25,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -58,12 +59,54 @@ struct Cli {
     /// Open a specific device by its HID path.
     /// Without this flag, the first detected device is opened (error if multiple found).
     /// Use --list to see available paths.
-    #[arg(long, short = 'D')]
+    #[arg(long, short = 'D', global = true)]
     device: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Headless commands for scripting and automation. When omitted, shurectl
+/// launches the interactive TUI. All headless output is JSON on stdout; on error
+/// a `{"error": ...}` object is printed and the process exits non-zero.
+#[derive(Subcommand)]
+enum Command {
+    /// Read the full device state and print it as JSON.
+    Get,
+    /// Set a single setting, then print the resulting device state as JSON.
+    /// Run `shurectl set help` to list every setting and its accepted values.
+    Set {
+        /// Setting name, e.g. gain, mute, hpf, compressor, denoiser, led-behavior.
+        /// Use `help` to print the full catalog.
+        setting: String,
+        /// New value, e.g. 24, on, off, hz75, medium, plate, B2FF33.
+        value: Option<String>,
+    },
+    /// Host-side preset management (stored under ~/.config/shurectl/presets/).
+    Preset {
+        #[command(subcommand)]
+        action: PresetCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PresetCommand {
+    /// List all 4 preset slots as JSON.
+    List,
+    /// Snapshot the current device state into a slot (1-4).
+    Save { slot: usize },
+    /// Apply a saved slot (1-4) to the device.
+    Load { slot: usize },
+    /// Delete a saved slot (1-4).
+    Delete { slot: usize },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(command) = cli.command {
+        return headless::run(command, cli.device.as_deref());
+    }
 
     if cli.list {
         let devs = device::list_devices();
@@ -595,7 +638,9 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             if let Some(slot) = &app.presets[*i].clone() {
                 slot.apply_to_device_state(&mut app.device_state);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
-                apply_preset_to_device(device, &app.device_state, app.device_model)
+                send_if_connected(device, |d| {
+                    apply_preset_to_device(d, &app.device_state, app.device_model)
+                })
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
                 Ok(())
@@ -649,77 +694,75 @@ where
 
 /// Send every configurable field of `state` to the device.
 /// Called after loading a preset to bring the hardware into sync.
-fn apply_preset_to_device(
-    device: &Option<ShureDevice>,
+pub(crate) fn apply_preset_to_device(
+    d: &ShureDevice,
     state: &protocol::DeviceState,
     model: DeviceModel,
 ) -> Result<()> {
-    send_if_connected(device, |d| {
-        d.set_mode(state.mode == InputMode::Auto)?;
-        d.set_gain(state.gain_db)?;
-        d.set_mute(state.muted)?;
-        d.set_hpf(&state.hpf)?;
-        match model {
-            DeviceModel::Mvx2u => {
-                d.set_auto_position(&state.auto_position)?;
-                d.set_auto_tone(&state.auto_tone)?;
-                d.set_auto_gain(&state.auto_gain)?;
-                d.set_phantom(state.phantom_power)?;
-                d.set_monitor_mix(state.monitor_mix)?;
-                d.set_limiter(state.limiter_enabled)?;
-                d.set_compressor(&state.compressor)?;
-                d.set_eq_enable(state.eq_enabled)?;
-                for (band, eq) in state.eq_bands.iter().enumerate() {
-                    d.set_eq_band_enable(band, eq.enabled)?;
-                    d.set_eq_band_gain(band, eq.gain_db)?;
-                }
-            }
-            DeviceModel::Mvx2uGen2 => {
-                d.set_phantom(state.phantom_power)?;
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
-                d.set_limiter(state.limiter_enabled)?;
-                d.set_compressor(&state.compressor)?;
-                d.set_mv6_denoiser(state.denoiser_enabled)?;
-                d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
-                d.set_mv6_tone(state.tone)?;
-                d.set_mv6_gain_lock(state.mv6_gain_locked)?;
-                for (band, eq) in state.eq_bands.iter().enumerate() {
-                    d.set_eq_band_gain(band, eq.gain_db)?;
-                }
-            }
-            DeviceModel::Mv6 => {
-                d.set_mv6_denoiser(state.denoiser_enabled)?;
-                d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
-                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
-                d.set_mv6_tone(state.tone)?;
-                d.set_mv6_gain_lock(state.mv6_gain_locked)?;
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
-            }
-            DeviceModel::Mv7Plus => {
-                d.set_mv6_denoiser(state.denoiser_enabled)?;
-                d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
-                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
-                d.set_mv6_tone(state.tone)?;
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
-                d.set_limiter(state.limiter_enabled)?;
-                d.set_compressor(&state.compressor)?;
-                d.set_mv7_playback_mix(state.playback_mix)?;
-                d.set_mv7_reverb_output(state.reverb_on_output)?;
-                d.set_mv7_reverb_monitor(state.reverb_monitoring)?;
-                d.set_mv7_reverb_type(&state.reverb_type)?;
-                d.set_mv7_reverb_intensity(state.reverb_intensity)?;
-                d.set_mv7_led_behavior(state.led_behavior)?;
-                d.set_mv7_led_brightness(state.led_brightness)?;
-                d.set_mv7_led_live_theme(state.led_live_theme)?;
-                d.set_mv7_led_solid_theme(state.led_solid_theme)?;
-                d.set_mv7_led_pulsing_theme(state.led_pulsing_theme)?;
-                d.set_mv7_led_solid_color(state.led_solid_rgb)?;
-                d.set_mv7_led_pulsing_color(state.led_pulsing_rgb)?;
-                d.set_mv7_led_live_edge(state.led_live_edge_rgb)?;
-                d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
-                d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
+    d.set_mode(state.mode == InputMode::Auto)?;
+    d.set_gain(state.gain_db)?;
+    d.set_mute(state.muted)?;
+    d.set_hpf(&state.hpf)?;
+    match model {
+        DeviceModel::Mvx2u => {
+            d.set_auto_position(&state.auto_position)?;
+            d.set_auto_tone(&state.auto_tone)?;
+            d.set_auto_gain(&state.auto_gain)?;
+            d.set_phantom(state.phantom_power)?;
+            d.set_monitor_mix(state.monitor_mix)?;
+            d.set_limiter(state.limiter_enabled)?;
+            d.set_compressor(&state.compressor)?;
+            d.set_eq_enable(state.eq_enabled)?;
+            for (band, eq) in state.eq_bands.iter().enumerate() {
+                d.set_eq_band_enable(band, eq.enabled)?;
+                d.set_eq_band_gain(band, eq.gain_db)?;
             }
         }
-        Ok(())
-    })
+        DeviceModel::Mvx2uGen2 => {
+            d.set_phantom(state.phantom_power)?;
+            d.set_mv6_monitor_mix(state.monitor_mix)?;
+            d.set_limiter(state.limiter_enabled)?;
+            d.set_compressor(&state.compressor)?;
+            d.set_mv6_denoiser(state.denoiser_enabled)?;
+            d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+            d.set_mv6_tone(state.tone)?;
+            d.set_mv6_gain_lock(state.mv6_gain_locked)?;
+            for (band, eq) in state.eq_bands.iter().enumerate() {
+                d.set_eq_band_gain(band, eq.gain_db)?;
+            }
+        }
+        DeviceModel::Mv6 => {
+            d.set_mv6_denoiser(state.denoiser_enabled)?;
+            d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+            d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+            d.set_mv6_tone(state.tone)?;
+            d.set_mv6_gain_lock(state.mv6_gain_locked)?;
+            d.set_mv6_monitor_mix(state.monitor_mix)?;
+        }
+        DeviceModel::Mv7Plus => {
+            d.set_mv6_denoiser(state.denoiser_enabled)?;
+            d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+            d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+            d.set_mv6_tone(state.tone)?;
+            d.set_mv6_monitor_mix(state.monitor_mix)?;
+            d.set_limiter(state.limiter_enabled)?;
+            d.set_compressor(&state.compressor)?;
+            d.set_mv7_playback_mix(state.playback_mix)?;
+            d.set_mv7_reverb_output(state.reverb_on_output)?;
+            d.set_mv7_reverb_monitor(state.reverb_monitoring)?;
+            d.set_mv7_reverb_type(&state.reverb_type)?;
+            d.set_mv7_reverb_intensity(state.reverb_intensity)?;
+            d.set_mv7_led_behavior(state.led_behavior)?;
+            d.set_mv7_led_brightness(state.led_brightness)?;
+            d.set_mv7_led_live_theme(state.led_live_theme)?;
+            d.set_mv7_led_solid_theme(state.led_solid_theme)?;
+            d.set_mv7_led_pulsing_theme(state.led_pulsing_theme)?;
+            d.set_mv7_led_solid_color(state.led_solid_rgb)?;
+            d.set_mv7_led_pulsing_color(state.led_pulsing_rgb)?;
+            d.set_mv7_led_live_edge(state.led_live_edge_rgb)?;
+            d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
+            d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
+        }
+    }
+    Ok(())
 }

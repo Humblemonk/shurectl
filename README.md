@@ -135,6 +135,29 @@ shurectl --demo                  # Run without a device (explore the UI)
 shurectl --list                  # List detected Shure devices and exit
 ```
 
+### Headless / scripting (JSON)
+
+For scripting and automation, subcommands skip the TUI and speak JSON on stdout. On
+error a `{"error": ...}` object is printed and the process exits non-zero, so a
+caller can branch on the exit code alone.
+
+```bash
+shurectl get                     # Print the full device state as JSON
+shurectl set gain 24             # Apply one setting, print the resulting state
+shurectl set mute on             # Booleans accept on/off, true/false, 1/0
+shurectl set hpf hz75            # Enums use the same tokens that `get` emits
+shurectl set led-solid-rgb B2FF33   # RGB as hex RRGGBB or r,g,b
+shurectl set help                # List every setting, its values, and supported models
+shurectl preset list             # All 4 preset slots as JSON
+shurectl preset save 1           # Snapshot current device state into slot 1
+shurectl preset load 1           # Apply slot 1 to the device
+shurectl preset delete 1         # Delete slot 1
+```
+
+`set` validates against the connected model: a setting that doesn't apply (e.g.
+`phantom` on an MV6, or `led-*` on a non-MV7+) returns an error rather than a
+silent no-op. `--device <path>` works with any subcommand.
+
 ### Keyboard Shortcuts
 
 | Key | Action |
