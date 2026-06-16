@@ -6,9 +6,9 @@
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
 //!
-//! Both devices expose a USB HID configuration interface alongside their
-//! audio interface. hidapi opens the HID interface via /dev/hidrawN on Linux,
-//! bypassing the audio driver entirely.
+//! All four devices expose a USB HID configuration interface alongside their
+//! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
+//! and \\.\HID#VID_... paths on Windows, bypassing the audio driver entirely.
 //!
 //! # Transport
 //!
@@ -58,7 +58,10 @@ use crate::protocol::{
 
 #[cfg(target_os = "linux")]
 const ACCESS_HINT: &str = "ensure the udev rule is installed, or run with sudo";
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+const ACCESS_HINT: &str =
+    "ensure no other software (e.g. ShurePlus MOTIV) has exclusive access to the device";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 const ACCESS_HINT: &str = "ensure the device is plugged in and accessible";
 
 /// How long to wait for a read response, in milliseconds.
@@ -103,14 +106,7 @@ impl ShureDevice {
     /// Use `--device` to select a specific device when multiple are present.
     pub fn open() -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
-
-        // Deduplicate by path — some devices expose multiple HID interfaces
-        // and hidapi enumerates each one separately under the same path.
-        let mut seen_paths = std::collections::HashSet::new();
-        let found: Vec<_> = api
-            .device_list()
-            .filter(|d| is_shure_device(d, &mut seen_paths))
-            .collect();
+        let found = shure_devices(&api);
 
         match found.len() {
             0 => Err(anyhow!(
@@ -144,9 +140,7 @@ impl ShureDevice {
             })?;
 
         let pid = info.product_id();
-        if info.vendor_id() != VID
-            || (pid != PID && pid != MV6_PID && pid != MVX2U_GEN2_PID && pid != MV7_PLUS_PID)
-        {
+        if info.vendor_id() != VID || !is_supported_pid(pid) {
             return Err(anyhow!(
                 "{path} is not a supported Shure device \
                 (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, {:#06x}, or {:#06x}.",
@@ -653,20 +647,40 @@ pub struct DeviceInfo {
     pub model: DeviceModel,
 }
 
-/// Returns `true` if `d` is a supported Shure device that has not been seen before.
+/// Returns `true` if `pid` is one of the four supported Shure device PIDs.
+fn is_supported_pid(pid: u16) -> bool {
+    pid == PID || pid == MVX2U_GEN2_PID || pid == MV6_PID || pid == MV7_PLUS_PID
+}
+
+/// Enumerate supported Shure devices, one entry per physical device.
 ///
-/// `seen_paths` is used to deduplicate entries — hidapi may enumerate the same
-/// physical device multiple times when it exposes more than one HID interface.
-fn is_shure_device(
-    d: &hidapi::DeviceInfo,
-    seen_paths: &mut std::collections::HashSet<String>,
-) -> bool {
-    d.vendor_id() == VID
-        && (d.product_id() == PID
-            || d.product_id() == MVX2U_GEN2_PID
-            || d.product_id() == MV6_PID
-            || d.product_id() == MV7_PLUS_PID)
-        && seen_paths.insert(d.path().to_string_lossy().into_owned())
+/// Two-pass approach:
+/// 1. Filter to VID/PID candidates.
+/// 2. If any candidate advertises a vendor-defined HID usage page (0xFF00–0xFFFF),
+///    restrict to those — this drops the Windows telephony/mute-button collection
+///    (usage page 0x000B) that appears as a phantom second entry on Windows.
+///    Linux backends sometimes report usage_page=0 (descriptor not parsed); in
+///    that case no candidate looks vendor-defined, so all are kept and step 3
+///    handles deduplication.
+/// 3. Deduplicate by path — on Linux all collections share one /dev/hidrawN path.
+const VENDOR_USAGE_PAGE_MIN: u16 = 0xFF00;
+
+fn shure_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
+    let candidates: Vec<&hidapi::DeviceInfo> = api
+        .device_list()
+        .filter(|d| d.vendor_id() == VID && is_supported_pid(d.product_id()))
+        .collect();
+
+    let has_vendor = candidates
+        .iter()
+        .any(|d| d.usage_page() >= VENDOR_USAGE_PAGE_MIN);
+
+    let mut seen_paths = std::collections::HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|d| !has_vendor || d.usage_page() >= VENDOR_USAGE_PAGE_MIN)
+        .filter(|d| seen_paths.insert(d.path().to_string_lossy().into_owned()))
+        .collect()
 }
 
 /// Probe the system for supported Shure devices without opening them.
@@ -674,9 +688,8 @@ pub fn list_devices() -> Vec<DeviceInfo> {
     let Ok(api) = HidApi::new() else {
         return vec![];
     };
-    let mut seen_paths = std::collections::HashSet::new();
-    api.device_list()
-        .filter(|d| is_shure_device(d, &mut seen_paths))
+    shure_devices(&api)
+        .into_iter()
         .map(|d| DeviceInfo {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or("(unknown)").to_owned(),

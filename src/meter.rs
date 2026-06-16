@@ -206,13 +206,18 @@ pub fn start_meter(level: Arc<AtomicI32>, peak_window: Arc<Mutex<PeakWindow>>) -
 /// hook available to suppress them. The suppression window is kept as short as
 /// possible — only the probing calls, not stream construction or playback.
 ///
-/// Safety: `dup` / `dup2` / `open` are async-signal-safe and do not interact
-/// with Rust's I/O machinery. We never write to stderr ourselves inside the
-/// suppression window, so there is no risk of losing our own error output.
+/// On Windows, cpal's WASAPI backend does not write to stderr during probing,
+/// so the non-unix impl is a no-op that keeps `start_meter()` unconditional.
+///
+/// Safety (unix): `dup` / `dup2` / `open` are async-signal-safe and do not
+/// interact with Rust's I/O machinery. We never write to stderr ourselves
+/// inside the suppression window, so there is no risk of losing our own output.
 struct StderrSuppressor {
+    #[cfg(unix)]
     saved_fd: i32,
 }
 
+#[cfg(unix)]
 impl StderrSuppressor {
     fn new() -> Self {
         // SAFETY: dup(2) duplicates the stderr fd; we check for failure.
@@ -229,6 +234,7 @@ impl StderrSuppressor {
     }
 }
 
+#[cfg(unix)]
 impl Drop for StderrSuppressor {
     fn drop(&mut self) {
         if self.saved_fd >= 0 {
@@ -239,6 +245,18 @@ impl Drop for StderrSuppressor {
             }
         }
     }
+}
+
+#[cfg(not(unix))]
+impl StderrSuppressor {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for StderrSuppressor {
+    fn drop(&mut self) {}
 }
 
 // ── Stream builder ────────────────────────────────────────────────────────────

@@ -227,9 +227,9 @@ This is intentional: demo mode should always be fully navigable.
 
 - `ratatui 0.30` — TUI rendering; use `Frame::render_widget()`, not direct buffer writes
 - `crossterm 0.29` — terminal backend and key events; `KeyEventKind::Press` only
-- `hidapi 2.4` (linux-native feature) — HID device open/read/write via `/dev/hidrawN`
+- `hidapi 2.4` — HID device open/read/write. Per-OS features: `linux-native` (`/dev/hidrawN`), `macos-shared-device` (IOKit), and default Windows backend (`\\.\HID#VID_...`)
 - `cpal 0.17` — audio capture for the input level meter; default input device only
-- `libc 0.2` — stderr suppression during cpal ALSA/JACK probing (`dup`/`dup2`)
+- `libc 0.2` (Unix only) — stderr suppression during cpal ALSA/JACK probing (`dup`/`dup2`)
 - `anyhow` — all fallible functions return `anyhow::Result`
 - `clap 4.5` — CLI argument parsing; `derive` feature only
 - `serde 1` (with `derive` feature) — serialisation traits for preset TOML files
