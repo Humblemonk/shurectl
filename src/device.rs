@@ -6,9 +6,9 @@
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
 //!
-//! Both devices expose a USB HID configuration interface alongside their
-//! audio interface. hidapi opens the HID interface via /dev/hidrawN on Linux,
-//! bypassing the audio driver entirely.
+//! All four devices expose a USB HID configuration interface alongside their
+//! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
+//! and \\.\HID#VID_... paths on Windows, bypassing the audio driver entirely.
 //!
 //! # Transport
 //!
@@ -58,7 +58,10 @@ use crate::protocol::{
 
 #[cfg(target_os = "linux")]
 const ACCESS_HINT: &str = "ensure the udev rule is installed, or run with sudo";
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+const ACCESS_HINT: &str =
+    "ensure no other software (e.g. ShurePlus MOTIV) has exclusive access to the device";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 const ACCESS_HINT: &str = "ensure the device is plugged in and accessible";
 
 /// How long to wait for a read response, in milliseconds.
@@ -103,7 +106,6 @@ impl ShureDevice {
     /// Use `--device` to select a specific device when multiple are present.
     pub fn open() -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
-
         let found = shure_devices(&api);
 
         match found.len() {
@@ -138,9 +140,7 @@ impl ShureDevice {
             })?;
 
         let pid = info.product_id();
-        if info.vendor_id() != VID
-            || (pid != PID && pid != MV6_PID && pid != MVX2U_GEN2_PID && pid != MV7_PLUS_PID)
-        {
+        if info.vendor_id() != VID || !is_supported_pid(pid) {
             return Err(anyhow!(
                 "{path} is not a supported Shure device \
                 (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, {:#06x}, or {:#06x}.",
@@ -647,36 +647,30 @@ pub struct DeviceInfo {
     pub model: DeviceModel,
 }
 
-/// Lowest usage page in the HID vendor-defined range (0xFF00–0xFFFF).
-///
-/// Shure exposes its configuration protocol on a vendor-defined collection
-/// (usage page 0xFF01 on the MV6). The same physical interface also carries a
-/// telephony/consumer collection (usage page 0x000B) for the hardware mute
-/// button. On Windows each top-level collection enumerates as a separate device
-/// path, so we must pick the vendor collection and ignore the mute-button one.
-/// On Linux every collection shares the same `/dev/hidrawN` path and dedup by
-/// path already collapses them, so this filter is a harmless refinement there.
-const VENDOR_USAGE_PAGE_MIN: u16 = 0xFF00;
-
+/// Returns `true` if `pid` is one of the four supported Shure device PIDs.
 fn is_supported_pid(pid: u16) -> bool {
     pid == PID || pid == MVX2U_GEN2_PID || pid == MV6_PID || pid == MV7_PLUS_PID
 }
 
 /// Enumerate supported Shure devices, one entry per physical device.
 ///
-/// Two passes: first restrict to the vendor configuration collection if any
-/// candidate advertises a vendor usage page (drops the Windows telephony
-/// collection), then deduplicate by path so a device exposing several HID
-/// interfaces under the same path is only counted once.
+/// Two-pass approach:
+/// 1. Filter to VID/PID candidates.
+/// 2. If any candidate advertises a vendor-defined HID usage page (0xFF00–0xFFFF),
+///    restrict to those — this drops the Windows telephony/mute-button collection
+///    (usage page 0x000B) that appears as a phantom second entry on Windows.
+///    Linux backends sometimes report usage_page=0 (descriptor not parsed); in
+///    that case no candidate looks vendor-defined, so all are kept and step 3
+///    handles deduplication.
+/// 3. Deduplicate by path — on Linux all collections share one /dev/hidrawN path.
+const VENDOR_USAGE_PAGE_MIN: u16 = 0xFF00;
+
 fn shure_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     let candidates: Vec<&hidapi::DeviceInfo> = api
         .device_list()
         .filter(|d| d.vendor_id() == VID && is_supported_pid(d.product_id()))
         .collect();
 
-    // Some Linux backends report usage_page=0 (descriptor not parsed). In that
-    // case no candidate looks like a vendor collection, so keep them all and let
-    // path dedup do the work.
     let has_vendor = candidates
         .iter()
         .any(|d| d.usage_page() >= VENDOR_USAGE_PAGE_MIN);

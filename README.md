@@ -1,7 +1,7 @@
 # shurectl
 
 An open-source terminal UI configurator for the Shure XLR-to-USB audio
-interfaces and microphones on Linux, macOS, and Windows. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+interfaces and microphones on Linux and macOS. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
@@ -92,17 +92,6 @@ shurectl --list
 On macOS, IOKit grants user-space access to HID devices without extra configuration.
 Plug in your device and run `shurectl --list` to confirm detection.
 
-### Windows — No Extra Setup Required
-
-Windows grants user-space HID access out of the box. Plug in your device and run
-`shurectl --list` to confirm detection. Device paths look like
-`\\?\HID#VID_14ED&PID_1026&...` rather than `/dev/hidrawN`.
-
-Building from source needs the MSVC toolchain (the default `rustup` host on Windows)
-and the Microsoft C++ Build Tools with the "MSVC v143 x64/x86 build tools" and
-"Windows SDK" components. Build from a "Developer PowerShell for VS" so the linker is
-on `PATH`.
-
 ---
 
 ## Installing
@@ -192,7 +181,7 @@ On the **Presets tab**:
 ## Troubleshooting
 
 **"Cannot open device"** — device not found or a permissions issue.
-Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS and Windows, ensure no other software (e.g. ShurePlus MOTIV) has exclusive access to the device.
+Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS, ensure no other software has exclusive access to the device.
 
 **Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;
 the device ignores gain commands in Auto Level mode. Switch to Manual mode first.

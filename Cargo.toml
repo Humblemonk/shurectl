@@ -1,6 +1,6 @@
 [package]
 name = "shurectl"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2024"
 description = "shurectl — TUI configurator for the Shure MVX2U audio interface"
 
@@ -19,6 +19,8 @@ toml = "0.8"
 dirs-next = "2.0"
 
 [target.'cfg(unix)'.dependencies]
+# libc is used solely for the stderr suppressor in meter.rs (dup/dup2).
+# WASAPI on Windows does not spam stderr during device probing, so it is not needed there.
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -28,6 +30,7 @@ hidapi = { version = "2.4.1", default-features = false, features = ["linux-nativ
 hidapi = { version = "2.4.1", default-features = false, features = ["macos-shared-device"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Default features pull in the Windows HID backend (setupapi) via the bundled hidapi C library.
 hidapi = "2.4.1"
 
 [dev-dependencies]
