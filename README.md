@@ -1,7 +1,6 @@
 # shurectl
 
-An open-source terminal UI configurator for the Shure XLR-to-USB audio
-interfaces and microphones on Linux, macOS, and Windows. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+An open-source terminal UI configurator for Shure USB audio interfaces and microphones on Linux, macOS, and Windows. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
@@ -87,21 +86,20 @@ shurectl --list
 #   /dev/hidraw2 | Shure MVX2U Gen 2 | S/N: MVX2U GEN 2#2-a646351d...
 ```
 
-### macOS — No Extra Setup Required
+### macOS — No Runtime Setup Required
 
 On macOS, IOKit grants user-space access to HID devices without extra configuration.
 Plug in your device and run `shurectl --list` to confirm detection.
 
-### Windows — No Extra Setup Required
+### Windows — No Runtime Setup Required
 
-Windows grants user-space HID access out of the box. Plug in your device and run
-`shurectl --list` to confirm detection. Device paths look like
-`\\?\HID#VID_14ED&PID_1026&...` rather than `/dev/hidrawN`.
+Windows grants user-space HID access out of the box via the `setupapi` backend — no driver installation or equivalent of a udev rule is needed. Plug in your device and run `shurectl --list` to confirm detection. Device paths look like `\\?\HID#VID_14ED&PID_1026&...` rather than `/dev/hidrawN`.
 
-Building from source needs the MSVC toolchain (the default `rustup` host on Windows)
-and the Microsoft C++ Build Tools with the "MSVC v143 x64/x86 build tools" and
-"Windows SDK" components. Build from a "Developer PowerShell for VS" so the linker is
-on `PATH`.
+Building from source requires the MSVC toolchain. Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, then ensure MSVC is your active rustup toolchain:
+
+```
+rustup default stable-x86_64-pc-windows-msvc
+```
 
 ---
 
@@ -144,6 +142,9 @@ shurectl                         # Connect to first detected device and launch T
 shurectl --device <path>         # Connect to a specific device (use --list to find paths)
 shurectl --demo                  # Run without a device (explore the UI)
 shurectl --list                  # List detected Shure devices and exit
+shurectl --mute                  # Toggle mute without launching the TUI
+shurectl --mute on               # Mute
+shurectl --mute off              # Unmute
 ```
 
 ### Keyboard Shortcuts
