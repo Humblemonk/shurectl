@@ -1,9 +1,10 @@
-//! shurectl — Interactive TUI configurator for Shure USB microphones
+//! shurectl — Interactive TUI configurator for Shure USB audio interfaces and microphones
 //!
 //! Supports:
 //!   - Shure MVX2U Gen 1 (XLR-to-USB audio interface)
 //!   - Shure MVX2U Gen 2 (XLR-to-USB interface with updated DSP)
 //!   - Shure MV6          (USB gaming microphone)
+//!   - Shure MV7+         (USB/XLR dynamic microphone)
 //!
 //! Usage:
 //!   shurectl                   # Connect to device, launch TUI
@@ -12,6 +13,9 @@
 //!   shurectl --demo mvx2u-gen2 # Demo MVX2U Gen 2 without a device
 //!   shurectl --list            # List detected devices and exit
 //!   shurectl --device PATH     # Open a specific device by HID path
+//!   shurectl --mute            # Toggle mute (no TUI)
+//!   shurectl --mute on         # Mute (no TUI)
+//!   shurectl --mute off        # Unmute (no TUI)
 
 mod app;
 mod device;
@@ -24,7 +28,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -39,11 +43,37 @@ use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
 use protocol::{DeviceModel, InputMode};
 
+/// Mute action for the `--mute` flag.
+#[derive(Debug, Clone, PartialEq)]
+enum MuteAction {
+    /// Flip the current mute state.
+    Toggle,
+    /// Mute the microphone.
+    On,
+    /// Unmute the microphone.
+    Off,
+}
+
+impl std::str::FromStr for MuteAction {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "toggle" => Ok(MuteAction::Toggle),
+            "on" => Ok(MuteAction::On),
+            "off" => Ok(MuteAction::Off),
+            other => anyhow::bail!(
+                "unknown mute action \"{other}\". Valid options: toggle, on, off"
+            ),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "shurectl",
     version,
-    about = "shurectl — TUI configurator for Shure MVX2U, MVX2U Gen 2, and MV6 USB microphones"
+    about = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
 )]
 struct Cli {
     /// Run in demo mode without a real device.
@@ -60,15 +90,25 @@ struct Cli {
     /// Use --list to see available paths.
     #[arg(long, short = 'D')]
     device: Option<String>,
+
+    /// Set mute state without launching the TUI.
+    /// toggle (default): flip current state. on: mute. off: unmute.
+    #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION")]
+    mute: Option<MuteAction>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if let Some(action) = cli.mute {
+        let path = cli.device.as_deref();
+        return cmd_mute(action, path);
+    }
+
     if cli.list {
         let devs = device::list_devices();
         if devs.is_empty() {
-            println!("No Shure MVX2U, MVX2U Gen 2, or MV6 devices found.");
+            println!("No supported Shure devices found.");
             #[cfg(target_os = "linux")]
             println!("Check that the device is plugged in and the udev rule is installed.");
             #[cfg(not(target_os = "linux"))]
@@ -173,6 +213,30 @@ fn main() -> Result<()> {
         eprintln!("Error: {e}");
     }
 
+    Ok(())
+}
+
+/// Apply a mute action to the connected device without launching the TUI.
+///
+/// Opens the device (or the specific path if `--device` was given), reads
+/// current state to resolve `Toggle`, then sends a single `set_mute()`.
+/// Prints the resulting state to stdout so the caller can see what happened.
+fn cmd_mute(action: MuteAction, device_path: Option<&str>) -> Result<()> {
+    let dev = match device_path {
+        Some(path) => ShureDevice::open_path(path),
+        None => ShureDevice::open(),
+    }
+    .context("Could not open device")?;
+
+    let muted = if action == MuteAction::Toggle {
+        let state = dev.get_state().context("Could not read device state")?;
+        !state.muted
+    } else {
+        action == MuteAction::On
+    };
+
+    dev.set_mute(muted).context("Could not set mute")?;
+    println!("Mute → {}", if muted { "ON" } else { "OFF" });
     Ok(())
 }
 
