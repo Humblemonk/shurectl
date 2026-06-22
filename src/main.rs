@@ -62,9 +62,9 @@ impl std::str::FromStr for MuteAction {
             "toggle" => Ok(MuteAction::Toggle),
             "on" => Ok(MuteAction::On),
             "off" => Ok(MuteAction::Off),
-            other => anyhow::bail!(
-                "unknown mute action \"{other}\". Valid options: toggle, on, off"
-            ),
+            other => {
+                anyhow::bail!("unknown mute action \"{other}\". Valid options: toggle, on, off")
+            }
         }
     }
 }
