@@ -40,20 +40,20 @@ use hidapi::{HidApi, HidDevice};
 use crate::protocol::{
     self, DeviceModel, DeviceState, MV6_PID, MV7_PLUS_PID, MVX2U_GEN2_PID, PACKET_SIZE, PID, VID,
     apply_response, cmd_confirm, cmd_factory_reset, cmd_get_auto_gain, cmd_get_auto_position,
-    cmd_get_auto_tone, cmd_get_compressor, cmd_get_eq_band_enable, cmd_get_eq_band_gain,
-    cmd_get_eq_enable, cmd_get_gain, cmd_get_hpf, cmd_get_limiter, cmd_get_lock, cmd_get_mix,
-    cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser, cmd_get_mv6_gain_lock, cmd_get_mv6_mix,
-    cmd_get_mv6_mute_btn_disable, cmd_get_mv6_popper_stopper, cmd_get_mv6_tone,
-    cmd_get_mv7_led_behavior, cmd_get_mv7_led_brightness, cmd_get_mv7_led_live_edge,
-    cmd_get_mv7_led_live_interior, cmd_get_mv7_led_live_middle, cmd_get_mv7_led_live_theme,
-    cmd_get_mv7_led_pulsing_color, cmd_get_mv7_led_solid_color, cmd_get_mv7_led_solid_theme,
-    cmd_get_mv7_playback_mix, cmd_get_mv7_reverb_intensity, cmd_get_mv7_reverb_monitor,
-    cmd_get_mv7_reverb_output, cmd_get_mv7_reverb_type, cmd_get_phantom, cmd_set_lock,
-    cmd_set_mv7_gain, cmd_set_mv7_led_behavior, cmd_set_mv7_led_brightness,
-    cmd_set_mv7_led_live_edge, cmd_set_mv7_led_live_interior, cmd_set_mv7_led_live_middle,
-    cmd_set_mv7_led_live_theme, cmd_set_mv7_led_pulsing_color, cmd_set_mv7_led_pulsing_theme,
-    cmd_set_mv7_led_solid_color, cmd_set_mv7_led_solid_theme, parse_response,
-    parse_response_with_prefix,
+    cmd_get_auto_tone, cmd_get_compressor, cmd_get_device_name, cmd_get_eq_band_enable,
+    cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_firmware_version, cmd_get_gain, cmd_get_hpf,
+    cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
+    cmd_get_mv6_gain_lock, cmd_get_mv6_mix, cmd_get_mv6_mute_btn_disable,
+    cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_mv7_led_behavior,
+    cmd_get_mv7_led_brightness, cmd_get_mv7_led_live_edge, cmd_get_mv7_led_live_interior,
+    cmd_get_mv7_led_live_middle, cmd_get_mv7_led_live_theme, cmd_get_mv7_led_pulsing_color,
+    cmd_get_mv7_led_solid_color, cmd_get_mv7_led_solid_theme, cmd_get_mv7_playback_mix,
+    cmd_get_mv7_reverb_intensity, cmd_get_mv7_reverb_monitor, cmd_get_mv7_reverb_output,
+    cmd_get_mv7_reverb_type, cmd_get_phantom, cmd_get_serial, cmd_set_lock, cmd_set_mv7_gain,
+    cmd_set_mv7_led_behavior, cmd_set_mv7_led_brightness, cmd_set_mv7_led_live_edge,
+    cmd_set_mv7_led_live_interior, cmd_set_mv7_led_live_middle, cmd_set_mv7_led_live_theme,
+    cmd_set_mv7_led_pulsing_color, cmd_set_mv7_led_pulsing_theme, cmd_set_mv7_led_solid_color,
+    cmd_set_mv7_led_solid_theme, parse_response, parse_response_with_prefix,
 };
 
 #[cfg(target_os = "linux")]
@@ -275,6 +275,9 @@ impl ShureDevice {
             cmd_get_limiter,
             cmd_get_compressor,
             cmd_get_eq_enable,
+            cmd_get_device_name,
+            cmd_get_firmware_version,
+            cmd_get_serial,
         ];
 
         self.run_getters(getters, &mut state, "get_state");
@@ -313,6 +316,9 @@ impl ShureDevice {
             cmd_get_mv6_popper_stopper,
             cmd_get_mv6_tone,
             cmd_get_mv6_gain_lock,
+            cmd_get_device_name,
+            cmd_get_firmware_version,
+            cmd_get_serial,
         ];
 
         self.run_getters(getters, &mut state, "get_state(mvx2u_gen2)");
@@ -337,6 +343,9 @@ impl ShureDevice {
             cmd_get_mv6_gain_lock,
             cmd_get_mv6_mix,
             cmd_get_mv6_mute_btn_disable,
+            cmd_get_device_name,
+            cmd_get_firmware_version,
+            cmd_get_serial,
         ];
 
         self.run_getters(getters, &mut state, "get_state(mv6)");
@@ -374,6 +383,9 @@ impl ShureDevice {
             cmd_get_mv7_led_pulsing_color,
             cmd_get_mv7_led_solid_theme,
             // Pulsing theme (A6) aliases FEAT_LOCK — not readable via GET.
+            cmd_get_device_name,
+            cmd_get_firmware_version,
+            cmd_get_serial,
         ];
         self.run_getters(getters, &mut state, "get_state(mv7plus)");
 
@@ -387,6 +399,17 @@ impl ShureDevice {
         }
 
         Ok(state)
+    }
+
+    /// Read just the factory serial number (the serial printed on the device,
+    /// shown in the MOTIV app) from an opened device. Returns `None` if the device
+    /// can't be queried or doesn't report one. Used by `--list` to upgrade the
+    /// displayed serial from the USB descriptor value to the printed serial.
+    pub fn read_factory_serial(&self) -> Option<String> {
+        let pkt = cmd_get_serial(self.next_seq());
+        let (feat, value) = self.send_get(&pkt).ok()??;
+        let mut state = DeviceState::default();
+        apply_response(feat, &value, &mut state).then_some(state.factory_serial)
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────

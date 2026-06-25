@@ -12,7 +12,7 @@
 //!   cargo run --bin probe -- --output results.txt
 //!   cargo run --bin probe -- --page 0x03
 //!   cargo run --bin probe -- --also-mix-class          # try is_mix=0x01 for every address
-//!   cargo run --bin probe -- --also-lock-class         # try CMD_GET_LOCK for every address
+//!   cargo run --bin probe -- --also-lock-class         # CMD_GET_LOCK at prefix 0x06 and 0x00
 //!   cargo run --bin probe -- --page 0x01 --also-mix-class  # hunt for MVX2U-style mix features
 //!
 //! The tool is READ-ONLY — it only sends GET packets, never SET or CONFIRM.
@@ -24,6 +24,12 @@
 //!   0x00 — standard features (used for almost everything)
 //!   0x01 — mix features (used for MVX2U monitor mix at [0x01, 0x86])
 //!   0x06 — lock features (used for config lock at [0x00, 0xA6])
+//!
+//! The command class (CMD_GET_FEAT vs CMD_GET_LOCK) and the prefix byte are
+//! independent. Config lock uses CMD_GET_LOCK with prefix 0x06, but the identity
+//! strings — device name [0x00, 0x12], serial [0x00, 0x03], firmware [0x00, 0x09]
+//! — use CMD_GET_LOCK with the standard prefix 0x00. --also-lock-class therefore
+//! sweeps the lock command class at both 0x06 and 0x00.
 //!
 //! # MV6 monitor mix — why the probe missed it
 //!
@@ -206,7 +212,11 @@ struct Cli {
     #[arg(long)]
     page: Option<String>,
 
-    /// Also try CMD_GET_LOCK command class for every address.
+    /// Also sweep every address with the CMD_GET_LOCK command class, using both
+    /// payload prefix 0x06 (config-lock features) and prefix 0x00. The prefix 0x00
+    /// pass surfaces the identity strings — device name [0x00, 0x12], serial
+    /// [0x00, 0x03], firmware [0x00, 0x09] — which answer to the lock command
+    /// class but the standard prefix rather than 0x06.
     #[arg(long)]
     also_lock_class: bool,
 
@@ -455,12 +465,23 @@ impl Probe {
         self.sweep_page_with_prefix(page, &CMD_GET_FEAT, 0x01, "mix")
     }
 
-    /// Sweep all 256 addresses on a page using CMD_GET_LOCK command class.
+    /// Sweep all 256 addresses on a page using the CMD_GET_LOCK command class,
+    /// once with payload prefix 0x06 (config-lock features) and once with prefix
+    /// 0x00. The command class and the payload prefix are independent: config lock
+    /// at [0x00, 0xA6] answers to prefix 0x06, but the identity strings (device
+    /// name [0x00, 0x12], serial [0x00, 0x03], firmware [0x00, 0x09]) answer to
+    /// the same command class with the standard prefix 0x00. Sweeping both is
+    /// required to surface every lock-class feature.
     fn sweep_page_lock_class(&mut self, page: u8) -> Result<()> {
         self.log(&format!(
             "\n── Page 0x{page:02X} sweep (CMD_GET_LOCK class, prefix=0x06) ────────────"
         ));
-        self.sweep_page_with_prefix(page, &CMD_GET_LOCK, 0x06, "lock")
+        self.sweep_page_with_prefix(page, &CMD_GET_LOCK, 0x06, "lock")?;
+
+        self.log(&format!(
+            "\n── Page 0x{page:02X} sweep (CMD_GET_LOCK class, prefix=0x00) ────────────"
+        ));
+        self.sweep_page_with_prefix(page, &CMD_GET_LOCK, 0x00, "lock-std")
     }
 
     /// Sweep all 256 sub-addresses on a page using MV7+ 3-level addressing:

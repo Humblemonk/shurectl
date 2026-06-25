@@ -116,11 +116,18 @@ fn main() -> Result<()> {
         } else {
             println!("Found {} Shure device(s):", devs.len());
             for d in devs {
+                // Show the factory serial (printed on the device) when we can read
+                // it; fall back to the USB descriptor serial if the device can't be
+                // opened or doesn't report one. This briefly opens each device.
+                let serial = device::ShureDevice::open_path(&d.path)
+                    .ok()
+                    .and_then(|dev| dev.read_factory_serial())
+                    .unwrap_or(d.serial);
                 println!(
                     "  {} | {} | S/N: {}",
                     d.path,
                     d.model.display_name(),
-                    d.serial
+                    serial
                 );
             }
         }

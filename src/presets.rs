@@ -874,6 +874,9 @@ mod tests {
             led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
             led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("TEST001"),
+            device_name: String::from("Unknown"),
+            firmware_version: String::from("Unknown"),
+            factory_serial: String::from("Unknown"),
         }
     }
 
@@ -1029,6 +1032,9 @@ mod tests {
             led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
             led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("MV6TEST"),
+            device_name: String::from("Unknown"),
+            firmware_version: String::from("Unknown"),
+            factory_serial: String::from("Unknown"),
         }
     }
 

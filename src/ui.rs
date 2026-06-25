@@ -97,6 +97,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         )
     };
 
+    // Identity label: the user-set device name when present, otherwise the model.
+    let device_label: &str = if app.device_state.device_name != "Unknown" {
+        &app.device_state.device_name
+    } else {
+        app.device_model.display_name()
+    };
+
     let title = vec![
         Span::styled(
             "shurectl",
@@ -104,8 +111,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         demo_tag,
+        Span::styled(format!("  {device_label}"), Style::default().fg(C_TEXT)),
         Span::styled(
-            format!("  S/N: {}", app.device_state.serial_number),
+            format!("  S/N: {}", app.device_state.display_serial()),
             Style::default().fg(C_DIM),
         ),
     ];
@@ -3619,10 +3627,33 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Model        : ", Style::default().fg(C_DIM)),
             Span::styled(model.display_name(), Style::default().fg(C_TEXT)),
         ]),
-        Line::from(vec![
-            Span::styled("  Serial No.   : ", Style::default().fg(C_DIM)),
-            Span::styled(&*ds.serial_number, Style::default().fg(C_TEXT)),
-        ]),
+    ];
+
+    // Device name (user-set) sits under Model so the panel reads "what it is and
+    // what you call it", then the device-reported identifiers below. Name and
+    // firmware are read over HID from the lock-class identity features; each is
+    // shown only when the device reported it (otherwise the field stays "Unknown"
+    // and the row is hidden), so we never display an empty field.
+    if ds.device_name != "Unknown" {
+        lines.push(Line::from(vec![
+            Span::styled("  Device Name  : ", Style::default().fg(C_DIM)),
+            Span::styled(&*ds.device_name, Style::default().fg(C_TEXT)),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  Serial No.   : ", Style::default().fg(C_DIM)),
+        Span::styled(ds.display_serial(), Style::default().fg(C_TEXT)),
+    ]));
+
+    if ds.firmware_version != "Unknown" {
+        lines.push(Line::from(vec![
+            Span::styled("  Firmware     : ", Style::default().fg(C_DIM)),
+            Span::styled(&*ds.firmware_version, Style::default().fg(C_TEXT)),
+        ]));
+    }
+
+    lines.extend([
         Line::from(vec![
             Span::styled("  USB VID/PID  : ", Style::default().fg(C_DIM)),
             Span::styled(vid_pid, Style::default().fg(C_TEXT)),
@@ -3641,7 +3672,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Presets      : ", Style::default().fg(C_DIM)),
             Span::styled("4 slots (host-side TOML)", Style::default().fg(C_TEXT)),
         ]),
-    ];
+    ]);
 
     let cap_rows: &[(&str, &str)] = match model {
         DeviceModel::Mvx2u => &[
