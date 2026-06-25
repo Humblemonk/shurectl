@@ -262,6 +262,20 @@ const FEAT_AUTO_TONE: [u8; 2] = [0x01, 0x83];
 const FEAT_AUTO_GAIN: [u8; 2] = [0x01, 0x87];
 const FEAT_EQ: [u8; 2] = [0x02, 0x00];
 
+// ── Identity strings (read-only, lock class, payload prefix 0x00) ─────────────
+// These live on page 0x00 and answer to CMD_GET_LOCK with prefix 0x00 — not 0x06,
+// which is the config-lock prefix. The response value is a length-prefixed ASCII
+// string: [len_hi, len_lo, bytes…] where len is a big-endian u16 equal to the
+// whole value length. Confirmed on MVX2U Gen 2 (PID 0x1033); see issue #63.
+/// User-set device name (set in the MOTIV app, persisted on the adapter).
+const FEAT_DEVICE_NAME: [u8; 2] = [0x00, 0x12];
+/// Firmware version string, e.g. "1.2.0.6".
+const FEAT_FIRMWARE: [u8; 2] = [0x00, 0x09];
+/// Factory serial number printed on the device and shown in the MOTIV app
+/// (e.g. "3EK26001276"). Distinct from the USB descriptor serial. Confirmed at
+/// [00 02] on MVX2U Gen 2 (PID 0x1033); see issue #64.
+const FEAT_SERIAL: [u8; 2] = [0x00, 0x02];
+
 // EQ band feature addresses: [enable_addr, gain_addr]
 // Bands are fixed at 100, 250, 1000, 4000, 10000 Hz.
 const EQ_BAND_ADDRS: [([u8; 2], [u8; 2]); 5] = [
@@ -446,6 +460,17 @@ pub struct DeviceState {
 
     /// Device serial number string, populated after connection.
     pub serial_number: String,
+    /// User-set device name read from the adapter (lock-class feature 0x0012).
+    /// "Unknown" if the device does not report it.
+    pub device_name: String,
+    /// Firmware version string read from the adapter (lock-class feature 0x0009),
+    /// e.g. "1.2.0.6". "Unknown" if the device does not report it.
+    pub firmware_version: String,
+    /// Factory serial number read from the adapter (lock-class feature 0x0002),
+    /// e.g. "3EK26001276" — the serial printed on the device and shown in the
+    /// MOTIV app. "Unknown" if the device does not report it; callers fall back
+    /// to `serial_number` (the USB descriptor serial) in that case.
+    pub factory_serial: String,
 }
 
 impl Default for DeviceState {
@@ -490,6 +515,22 @@ impl Default for DeviceState {
             led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
             led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("Unknown"),
+            device_name: String::from("Unknown"),
+            firmware_version: String::from("Unknown"),
+            factory_serial: String::from("Unknown"),
+        }
+    }
+}
+
+impl DeviceState {
+    /// The serial number to show the user: the factory serial (printed on the
+    /// device, shown in the MOTIV app) when the device reported one, otherwise the
+    /// USB descriptor serial as a fallback so the field is never blank.
+    pub fn display_serial(&self) -> &str {
+        if self.factory_serial != "Unknown" {
+            &self.factory_serial
+        } else {
+            &self.serial_number
         }
     }
 }
@@ -1440,6 +1481,30 @@ pub fn cmd_get_lock(seq: u8) -> Vec<u8> {
     build_packet(seq, &CMD_GET_LOCK, &payload)
 }
 
+/// Build a GET packet for the user-set device name.
+/// Lock command class with payload prefix 0x00 (the identity strings answer to
+/// the lock class but the standard prefix, not the config-lock prefix 0x06).
+/// The response is a length-prefixed ASCII string; see `decode_lp_string`.
+pub fn cmd_get_device_name(seq: u8) -> Vec<u8> {
+    let payload = [0x00, FEAT_DEVICE_NAME[0], FEAT_DEVICE_NAME[1]];
+    build_packet(seq, &CMD_GET_LOCK, &payload)
+}
+
+/// Build a GET packet for the firmware version string (e.g. "1.2.0.6").
+/// Same framing as `cmd_get_device_name`: lock class, payload prefix 0x00.
+pub fn cmd_get_firmware_version(seq: u8) -> Vec<u8> {
+    let payload = [0x00, FEAT_FIRMWARE[0], FEAT_FIRMWARE[1]];
+    build_packet(seq, &CMD_GET_LOCK, &payload)
+}
+
+/// Build a GET packet for the factory serial number (printed on the device,
+/// shown in the MOTIV app). Same framing as the other identity strings: lock
+/// class, payload prefix 0x00, length-prefixed ASCII response.
+pub fn cmd_get_serial(seq: u8) -> Vec<u8> {
+    let payload = [0x00, FEAT_SERIAL[0], FEAT_SERIAL[1]];
+    build_packet(seq, &CMD_GET_LOCK, &payload)
+}
+
 /// Build a SET packet for the config-lock feature.
 /// `locked = true` locks the device; `false` unlocks it.
 pub fn cmd_set_lock(seq: u8, locked: bool) -> Vec<u8> {
@@ -1755,6 +1820,33 @@ pub fn cmd_set_mv7_gain(seq: u8, gain_db: u8) -> Vec<u8> {
 }
 
 // ── Response decoder ──────────────────────────────────────────────────────────
+/// Decode a length-prefixed ASCII string as returned by the lock-class identity
+/// features (device name, firmware). The value is `[len_hi, len_lo, bytes…]` where
+/// `len` is a big-endian u16 equal to the full value length.
+///
+/// Returns `None` if the value is too short to hold the 2-byte length plus at
+/// least one payload byte, or if the declared length does not match the actual
+/// length. The length check rejects binary or non-string features that may answer
+/// at the same address on models we have not verified, and rejecting an empty
+/// payload means a device that reports a blank string is treated the same as one
+/// that reports nothing — both leave the field "Unknown" and hidden, rather than
+/// rendering an empty row.
+fn decode_lp_string(value: &[u8]) -> Option<String> {
+    // 2-byte length prefix + at least one payload byte.
+    if value.len() < 3 {
+        return None;
+    }
+    let declared = usize::from(u16::from_be_bytes([value[0], value[1]]));
+    if declared != value.len() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&value[2..])
+            .trim_end_matches('\0')
+            .to_string(),
+    )
+}
+
 /// Apply a parsed feature response `(feat_addr, value_bytes)` to `state`.
 ///
 /// Returns `true` if the feature was recognised and applied, `false` if the
@@ -2002,6 +2094,27 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             state.led_live_interior_rgb = [value[1], value[2], value[3]];
             true
         }
+        f if f == FEAT_DEVICE_NAME => match decode_lp_string(value) {
+            Some(name) => {
+                state.device_name = name;
+                true
+            }
+            None => false,
+        },
+        f if f == FEAT_FIRMWARE => match decode_lp_string(value) {
+            Some(version) => {
+                state.firmware_version = version;
+                true
+            }
+            None => false,
+        },
+        f if f == FEAT_SERIAL => match decode_lp_string(value) {
+            Some(serial) => {
+                state.factory_serial = serial;
+                true
+            }
+            None => false,
+        },
         _ => {
             // Check EQ band addresses
             for (i, (en_addr, gain_addr)) in EQ_BAND_ADDRS.iter().enumerate() {
@@ -2729,6 +2842,120 @@ mod tests {
         let applied = apply_response([0xFF, 0xFF], &[0x01], &mut state);
         assert!(!applied, "unknown feature must return false");
         assert_eq!(state.gain_db, original_gain, "state must not be mutated");
+    }
+
+    #[test]
+    fn apply_response_device_name() {
+        let mut state = DeviceState::default();
+        // [len_hi, len_lo] = 0x0013 (19 bytes total), then "MONKS MVX2U GEN 2".
+        let value = [
+            0x00, 0x13, b'M', b'O', b'N', b'K', b'S', b' ', b'M', b'V', b'X', b'2', b'U', b' ',
+            b'G', b'E', b'N', b' ', b'2',
+        ];
+        assert!(apply_response(FEAT_DEVICE_NAME, &value, &mut state));
+        assert_eq!(state.device_name, "MONKS MVX2U GEN 2");
+    }
+
+    #[test]
+    fn apply_response_firmware_version() {
+        let mut state = DeviceState::default();
+        // [len_hi, len_lo] = 0x0009 (9 bytes total), then "1.2.0.6".
+        let value = [0x00, 0x09, b'1', b'.', b'2', b'.', b'0', b'.', b'6'];
+        assert!(apply_response(FEAT_FIRMWARE, &value, &mut state));
+        assert_eq!(state.firmware_version, "1.2.0.6");
+    }
+
+    #[test]
+    fn apply_response_device_name_empty_returns_false() {
+        let mut state = DeviceState::default();
+        assert!(!apply_response(FEAT_DEVICE_NAME, &[], &mut state));
+        assert_eq!(state.device_name, "Unknown", "state must not be mutated");
+    }
+
+    #[test]
+    fn decode_lp_string_trims_trailing_nul() {
+        // Timer-style responses carry a trailing NUL counted inside the length.
+        let value = [0x00, 0x05, b'A', b'B', 0x00];
+        assert_eq!(decode_lp_string(&value).as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn decode_lp_string_rejects_length_mismatch() {
+        // A binary feature (e.g. the firmware tuple at [00 04]) is not a valid
+        // string: the declared length 0x0001 does not equal the value length.
+        let value = [0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0a];
+        assert_eq!(decode_lp_string(&value), None);
+    }
+
+    #[test]
+    fn decode_lp_string_rejects_short() {
+        assert_eq!(decode_lp_string(&[0x00]), None);
+        assert_eq!(decode_lp_string(&[]), None);
+    }
+
+    #[test]
+    fn decode_lp_string_rejects_empty_payload() {
+        // A well-formed header declaring length 2 carries no payload bytes; treat
+        // it as "not reported" so the field stays "Unknown" and the row is hidden.
+        assert_eq!(decode_lp_string(&[0x00, 0x02]), None);
+    }
+
+    #[test]
+    fn display_serial_prefers_factory() {
+        let state = DeviceState {
+            factory_serial: String::from("3EK26001276"),
+            serial_number: String::from("MVX2U GEN 2#2-abcd"),
+            ..Default::default()
+        };
+        assert_eq!(state.display_serial(), "3EK26001276");
+    }
+
+    #[test]
+    fn display_serial_falls_back_to_descriptor() {
+        // factory_serial stays "Unknown" via Default.
+        let state = DeviceState {
+            serial_number: String::from("MVX2U GEN 2#2-abcd"),
+            ..Default::default()
+        };
+        assert_eq!(state.display_serial(), "MVX2U GEN 2#2-abcd");
+    }
+
+    #[test]
+    fn device_name_get_packet_uses_lock_class_prefix_zero() {
+        let pkt = cmd_get_device_name(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(&pkt[10..13], &CMD_GET_LOCK, "must use CMD_GET_LOCK");
+        assert_eq!(pkt[13], 0x00, "identity payload prefix must be 0x00");
+        assert_eq!(&pkt[14..16], &FEAT_DEVICE_NAME);
+    }
+
+    #[test]
+    fn firmware_get_packet_uses_lock_class_prefix_zero() {
+        let pkt = cmd_get_firmware_version(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(&pkt[10..13], &CMD_GET_LOCK, "must use CMD_GET_LOCK");
+        assert_eq!(pkt[13], 0x00, "identity payload prefix must be 0x00");
+        assert_eq!(&pkt[14..16], &FEAT_FIRMWARE);
+    }
+
+    #[test]
+    fn apply_response_factory_serial() {
+        let mut state = DeviceState::default();
+        // [len_hi, len_lo] = 0x000d (13 bytes total), then "3EK26001276".
+        let value = [
+            0x00, 0x0d, b'3', b'E', b'K', b'2', b'6', b'0', b'0', b'1', b'2', b'7', b'6',
+        ];
+        assert!(apply_response(FEAT_SERIAL, &value, &mut state));
+        assert_eq!(state.factory_serial, "3EK26001276");
+    }
+
+    #[test]
+    fn serial_get_packet_uses_lock_class_prefix_zero() {
+        let pkt = cmd_get_serial(0);
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert_eq!(&pkt[10..13], &CMD_GET_LOCK, "must use CMD_GET_LOCK");
+        assert_eq!(pkt[13], 0x00, "identity payload prefix must be 0x00");
+        assert_eq!(&pkt[14..16], &FEAT_SERIAL);
     }
 
     #[test]

@@ -24,7 +24,7 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 - **High-Pass Filter** — Off / 75 Hz / 150 Hz
 - **Real-time Level Meter** — dBFS input meter with peak-hold display
 - **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
-- **Device Info** — serial number
+- **Device Info** — factory serial number, device name, and firmware version
 - **Demo mode** — run without a device plugged in (`--demo`)
 
 ### MVX2U Gen 1
