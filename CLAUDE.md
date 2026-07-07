@@ -127,7 +127,7 @@ See `Cargo.toml` for versions. Usage notes that matter:
 - Exhaustive match arms — avoid wildcard `_` that silently swallows variants
 - Meaningful names (`gain_db` not `g`); delete replaced code, no versioned function names
 - Validate packet arguments before encoding (clamp, don't panic)
-- Never write firmware-update packets — those byte sequences are intentionally omitted (see README legal section)
+- Never write firmware-update packets — those byte sequences are intentionally omitted (see readme legal section)
 
 ## Testing
 
