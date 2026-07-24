@@ -86,12 +86,12 @@ shurectl --list
 #   /dev/hidraw2 | Shure MVX2U Gen 2 | S/N: MVX2U GEN 2#2-a646351d...
 ```
 
-### macOS — No Runtime Setup Required
+### macOS
 
 On macOS, IOKit grants user-space access to HID devices without extra configuration.
 Plug in your device and run `shurectl --list` to confirm detection.
 
-### Windows — No Runtime Setup Required
+### Windows
 
 Windows grants user-space HID access out of the box via the `setupapi` backend — no driver installation or equivalent of a udev rule is needed. Plug in your device and run `shurectl --list` to confirm detection. Device paths look like `\\?\HID#VID_14ED&PID_1026&...` rather than `/dev/hidrawN`.
 
@@ -209,10 +209,6 @@ Initial protocol reverse-engineering credit goes to **PennRobotics** and the
 [shux project](https://gitlab.com/PennRobotics/shux) (Apache 2.0), without which
 this tool would not exist. If you find shurectl useful, consider starring their
 repository.
-
-This project was developed with the assistance of Claude (Anthropic) as a pair-programmer
-throughout: writing and reviewing Rust code, reasoning about the HID protocol, and catching
-issues during implementation. All code was reviewed and tested by the author before merging.
 
 ---
 
