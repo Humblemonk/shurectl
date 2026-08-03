@@ -31,6 +31,32 @@ There are no warnings — only requirements.
 
 ---
 
+## Using AI Assistants
+
+> **If you use an AI coding assistant (Claude, Copilot, Cursor, etc.), load `CLAUDE.md` into
+> its context before starting any work.**
+
+`CLAUDE.md` at the repository root is the authoritative source for this project's architecture,
+protocol rules, domain constraints, and coding standards. It covers the USB HID packet
+structure, the data flow between modules, forbidden patterns, and the required workflow for
+adding new commands. An AI working without it will produce code that conflicts with
+established patterns and is likely to introduce protocol bugs.
+
+Most AI tools support a project instructions file natively:
+
+- **Claude Projects** — add `CLAUDE.md` as project knowledge, or paste it into the system
+  prompt
+- **Cursor / Windsurf** — rename or symlink to `.cursorrules` / `.windsurfrules`, or
+  reference it in your rules file
+- **GitHub Copilot** — add it to `.github/copilot-instructions.md`
+- **Any chat-based tool** — paste the contents at the start of your session
+
+The key rules AI assistants must follow are called out explicitly in `CLAUDE.md`:
+the Research → Plan → Implement sequence, the one-change-at-a-time discipline when touching
+protocol code, and the requirement to run the quality gate before considering any work done.
+
+---
+
 ## Project Structure
 
 ```
@@ -54,9 +80,7 @@ All USB HID command byte values, feature addresses, and packet structure details
 
 The probe is **read-only** — it only sends GET packets, never SET or CONFIRM. It is safe to run against a live device; no settings will be changed.
 
-The probe binary is named `shurectl-probe` and is gated behind the `probe` cargo feature, so
-it is **not built by default**. This keeps it out of `cargo install` and Homebrew installs —
-end users have no reason to have an HID address sweeper in their `PATH`.
+The probe binary is named `shurectl-probe` and is gated behind the `probe` cargo feature, so it is **not built by default**. This keeps it out of `cargo install` and Homebrew installs — end users have no reason to have an HID address sweeper in their `PATH`.
 
 ```bash
 cargo run --bin shurectl-probe --features probe                          # scan MVX2U Gen 2 (default)
