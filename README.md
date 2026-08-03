@@ -127,6 +127,15 @@ Or for your user only:
 install -m 755 target/release/shurectl ~/.local/bin/
 ```
 
+### Via Homebrew (macOS)
+
+```bash
+brew install humblemonk/shurectl/shurectl
+```
+
+Updates arrive through `brew upgrade` like any other formula. The formula builds from
+source, so the first install pulls in a Rust toolchain and takes a minute or two.
+
 ### Via cargo install
 
 ```bash

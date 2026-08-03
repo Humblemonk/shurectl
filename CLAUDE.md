@@ -10,8 +10,10 @@ abstractions.
 Before considering any change complete:
 
 ```
-cargo clippy -- -D warnings && cargo fmt --check && cargo test
+cargo clippy --features probe -- -D warnings && cargo fmt --check && cargo test
 ```
+
+`--features probe` is required — `shurectl-probe` is feature-gated and clippy skips it otherwise.
 
 For non-trivial features, explore the relevant code and confirm a plan before implementing.
 
@@ -26,6 +28,7 @@ src/
   presets.rs    # Host-side presets: TOML load/save/delete, PresetSlot
   protocol.rs   # Packet encoding, CRC-16/ANSI, command constructors, apply_response()
   ui.rs         # ratatui rendering: 5 tabs (Main | EQ | Dynamics | Presets | Info) + help overlay
+  bin/probe.rs  # Maintainer-only HID address sweeper — builds only under `--features probe`
 ```
 
 **Control flow:** key event → `handle_key()` → `DeviceAction` → `apply_action()` (main.rs) → `device.rs` → `protocol.rs` packet.
@@ -35,6 +38,7 @@ src/
 **Layering rules (strict):**
 - `apply_action()` in `main.rs` is the *only* place that writes to the device. Never call `device.rs` from `ui.rs` or `app.rs`.
 - Raw protocol byte values live *only* in `protocol.rs` as named constants. Never hardcode bytes elsewhere.
+- `src/bin/probe.rs` builds as `shurectl-probe` only under `--features probe`. It is a maintainer tool and must never ship to end users via `cargo install` or Homebrew.
 
 ## USB HID Protocol
 

@@ -12,6 +12,14 @@ categories = ["command-line-utilities", "hardware-support", "multimedia::audio"]
 name = "shurectl"
 path = "src/main.rs"
 
+[[bin]]
+name = "shurectl-probe"
+path = "src/bin/probe.rs"
+required-features = ["probe"]
+
+[features]
+probe = []
+
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
