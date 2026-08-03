@@ -1,0 +1,76 @@
+name: Bump Homebrew tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, e.g. v2.5.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: macos-latest
+    steps:
+      - name: Resolve tag
+        id: meta
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not resolve a tag"
+            exit 1
+          fi
+          echo "tag=$TAG"          >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}"  >> "$GITHUB_OUTPUT"
+
+      - name: Compute source tarball checksum
+        id: sha
+        run: |
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${{ steps.meta.outputs.tag }}.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 5 -o source.tar.gz "$URL"
+          echo "sha256=$(shasum -a 256 source.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Check out tap
+        uses: actions/checkout@v4
+        with:
+          repository: Humblemonk/homebrew-shurectl
+          token: ${{ secrets.TAP_TOKEN }}
+          path: tap
+
+      - name: Rewrite formula
+        run: |
+          cd tap
+          FORMULA="Formula/shurectl.rb"
+          test -f "$FORMULA" || { echo "::error::$FORMULA not found"; exit 1; }
+
+          sed -E \
+            -e "s|^(  url \").*(\")$|\1${{ steps.sha.outputs.url }}\2|" \
+            -e "s|^(  sha256 \").*(\")$|\1${{ steps.sha.outputs.sha256 }}\2|" \
+            "$FORMULA" > "$FORMULA.tmp" && mv "$FORMULA.tmp" "$FORMULA"
+
+          grep -q "${{ steps.meta.outputs.tag }}" "$FORMULA" \
+            || { echo "::error::url rewrite did not take"; exit 1; }
+          grep -q "${{ steps.sha.outputs.sha256 }}" "$FORMULA" \
+            || { echo "::error::sha256 rewrite did not take"; exit 1; }
+
+      - name: Validate formula
+        run: |
+          brew style tap/Formula/shurectl.rb
+
+      - name: Commit and push
+        run: |
+          cd tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/shurectl.rb
+          if git diff --cached --quiet; then
+            echo "Formula already current, nothing to push."
+            exit 0
+          fi
+          git commit -m "chore: bump shurectl to ${{ steps.meta.outputs.version }}"
+          git push
