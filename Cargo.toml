@@ -1,12 +1,24 @@
 [package]
 name = "shurectl"
-version = "2.5.0"
+version = "2.5.1"
 edition = "2024"
 description = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
+license = "GPL-3.0-only"
+repository = "https://github.com/Humblemonk/shurectl"
+keywords = ["shure", "motiv", "microphone", "usb-hid", "audio-interface"]
+categories = ["command-line-utilities", "hardware-support", "multimedia::audio"]
 
 [[bin]]
 name = "shurectl"
 path = "src/main.rs"
+
+[[bin]]
+name = "shurectl-probe"
+path = "src/bin/probe.rs"
+required-features = ["probe"]
+
+[features]
+probe = []
 
 [dependencies]
 ratatui = "0.30"
