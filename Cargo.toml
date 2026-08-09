@@ -2,6 +2,7 @@
 name = "shurectl"
 version = "2.5.1"
 edition = "2024"
+rust-version = "1.88"
 description = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
 license = "GPL-3.0-only"
 repository = "https://github.com/Humblemonk/shurectl"
