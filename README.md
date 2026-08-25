@@ -56,9 +56,71 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 
 ---
 
+## Installing
+
+### Via the AUR (Arch Linux)
+
+```bash
+paru -S shurectl        # or: yay -S shurectl
+```
+
+The package installs the udev rules to `/usr/lib/udev/rules.d/62-shure.rules` for you, so
+the [Linux setup step](#linux--udev-rules-required-for-non-root-access) below can be
+skipped — **replug the device after installing** so udev applies the new rules to it.
+
+### Via Homebrew (macOS)
+
+```bash
+brew install humblemonk/shurectl/shurectl
+```
+
+Updates arrive through `brew upgrade` like any other formula. The formula builds from
+source, so the first install pulls in a Rust toolchain and takes a minute or two.
+
+### Via cargo install
+
+```bash
+cargo install --git https://github.com/Humblemonk/shurectl.git
+```
+
+### From source
+
+```bash
+git clone https://github.com/Humblemonk/shurectl.git
+cd shurectl
+cargo build --release
+```
+
+The binary will be at `target/release/shurectl`.
+
+To install system-wide:
+
+```bash
+sudo install -m 755 target/release/shurectl /usr/local/bin/
+```
+
+Or for your user only:
+
+```bash
+install -m 755 target/release/shurectl ~/.local/bin/
+```
+
+On Windows, building from source requires the MSVC toolchain. Install
+[Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+with the "Desktop development with C++" workload, then ensure MSVC is your active rustup
+toolchain:
+
+```
+rustup default stable-x86_64-pc-windows-msvc
+```
+
+---
+
 ## Platform Setup
 
 ### Linux — udev Rules (Required for Non-Root Access)
+
+Skip this section if you installed via the AUR package — it ships these rules already.
 
 Without a udev rule, `/dev/hidrawN` for the device is only accessible by root.
 
@@ -94,53 +156,6 @@ Plug in your device and run `shurectl --list` to confirm detection.
 ### Windows
 
 Windows grants user-space HID access out of the box via the `setupapi` backend — no driver installation or equivalent of a udev rule is needed. Plug in your device and run `shurectl --list` to confirm detection. Device paths look like `\\?\HID#VID_14ED&PID_1026&...` rather than `/dev/hidrawN`.
-
-Building from source requires the MSVC toolchain. Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, then ensure MSVC is your active rustup toolchain:
-
-```
-rustup default stable-x86_64-pc-windows-msvc
-```
-
----
-
-## Installing
-
-### From source
-
-```bash
-git clone https://github.com/Humblemonk/shurectl.git
-cd shurectl
-cargo build --release
-```
-
-The binary will be at `target/release/shurectl`.
-
-To install system-wide:
-
-```bash
-sudo install -m 755 target/release/shurectl /usr/local/bin/
-```
-
-Or for your user only:
-
-```bash
-install -m 755 target/release/shurectl ~/.local/bin/
-```
-
-### Via Homebrew (macOS)
-
-```bash
-brew install humblemonk/shurectl/shurectl
-```
-
-Updates arrive through `brew upgrade` like any other formula. The formula builds from
-source, so the first install pulls in a Rust toolchain and takes a minute or two.
-
-### Via cargo install
-
-```bash
-cargo install --git https://github.com/Humblemonk/shurectl.git
-```
 
 ---
 
