@@ -1,6 +1,6 @@
 [package]
 name = "shurectl"
-version = "2.5.1"
+version = "2.5.2"
 edition = "2024"
 rust-version = "1.88"
 description = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
@@ -26,9 +26,9 @@ ratatui = "0.30"
 crossterm = "0.29"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
-cpal = "0.17"
+cpal = "0.18.2"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 dirs-next = "2.0"
 
 [target.'cfg(unix)'.dependencies]
