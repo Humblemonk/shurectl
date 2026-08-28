@@ -161,11 +161,11 @@ pub fn start_meter(level: Arc<AtomicI32>, peak_window: Arc<Mutex<PeakWindow>>) -
     // Probing is done; restore stderr before building the stream.
     drop(stderr_suppressed);
 
-    let stream_config: StreamConfig = config.clone().into();
+    let stream_config: StreamConfig = config.into();
 
     // Error callback: write METER_SILENT so the UI shows no reading.
     let level_err = Arc::clone(&level);
-    let err_fn = move |_e: cpal::StreamError| {
+    let err_fn = move |_e: cpal::Error| {
         level_err.store(METER_SILENT, Ordering::Relaxed);
     };
 
@@ -273,14 +273,14 @@ fn build_stream<S>(
     config: &StreamConfig,
     level: Arc<AtomicI32>,
     peak_window: Arc<Mutex<PeakWindow>>,
-    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<Stream, cpal::BuildStreamError>
+    err_fn: impl FnMut(cpal::Error) + Send + 'static,
+) -> Result<Stream, cpal::Error>
 where
     S: SizedSample + Send + 'static,
     f32: FromSample<S>,
 {
     device.build_input_stream(
-        config,
+        *config,
         move |data: &[S], _info: &cpal::InputCallbackInfo| {
             // Find the peak absolute sample value in this callback buffer.
             let peak: f32 = data
