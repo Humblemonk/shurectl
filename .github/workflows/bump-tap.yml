@@ -46,7 +46,7 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Check out tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Humblemonk/homebrew-shurectl
           token: ${{ secrets.TAP_TOKEN }}
