@@ -46,3 +46,4 @@ jobs:
           VALIDATE_MARKDOWN_PRETTIER: false
           VALIDATE_RUST_CLIPPY: false
           VALIDATE_TRIVY: false
+          VALIDATE_SPELL_CODESPELL: false
