@@ -11,10 +11,22 @@ abstractions.
 Before considering any change complete:
 
 ```
-cargo clippy --features probe -- -D warnings && cargo fmt --check && cargo test
+cargo clippy --features probe -- -D warnings && cargo build --all-targets --features probe \
+  && cargo fmt --check && cargo test
 ```
 
 `--features probe` is required — `shurectl-probe` is feature-gated and clippy skips it otherwise.
+
+`cargo build --all-targets` is required for a different reason: clippy without `--all-targets`
+never compiles `#[cfg(test)]` code, so a dead import or unused helper left behind in a test
+module passes the clippy gate and only surfaces later in someone else's build log. Read the
+`cargo test` output rather than grepping it for `test result` — that is where such warnings
+appear.
+
+Adding `--all-targets` to the clippy line as well would be better still, but it currently
+fails on ~39 pre-existing `clippy::field_reassign_with_default` warnings in the `app.rs`
+tests (the `let mut app = App::default(); app.active_tab = …;` pattern). Fold those into
+struct literals first, then tighten the gate.
 
 CI also runs a duplicate-code detector (jscpd, via super-linter). Its budget lives in
 `.github/linters/.jscpd.json` and is currently 7% duplicated lines against ~5.5% actual, so
