@@ -16,6 +16,13 @@ cargo clippy --features probe -- -D warnings && cargo fmt --check && cargo test
 
 `--features probe` is required — `shurectl-probe` is feature-gated and clippy skips it otherwise.
 
+CI also runs a copy-paste detector (jscpd, via super-linter). Its budget lives in
+`.github/linters/.jscpd.json` and is currently 7% duplicated lines against ~5.5% actual, so
+a new near-copy of an existing block can push the build over. Reproduce it locally with
+`npx jscpd -c .github/linters/.jscpd.json .`. Raise the threshold only if the duplication is
+genuinely unavoidable — the intended fix is to extend a shared helper (see **Cross-Device UI
+Consistency**).
+
 For non-trivial features, explore the relevant code and confirm a plan before implementing.
 
 ## Architecture

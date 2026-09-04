@@ -1657,177 +1657,217 @@ fn draw_mv6_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Shared Dynamics / Reverb card helpers
+//
+// Every model's Dynamics tab is assembled from the same two card shapes, so the
+// labels, wording, and focus styling live here once instead of being repeated
+// in each per-model draw_*_dynamics_tab(). Adding a model means calling these,
+// never copying them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The bordered frame shared by every Dynamics/Reverb card.
+fn card_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
+    Block::default()
+        .title(Span::styled(format!("  {title}  "), focused_style(focused)))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if focused {
+            Style::default().fg(C_FOCUS)
+        } else {
+            Style::default().fg(C_BORDER)
+        })
+        .padding(Padding::horizontal(1))
+}
+
+/// Card for a boolean control toggled with Enter.
+///
+/// `status_label` is the text in front of the ON/OFF span ("Status: ",
+/// "Disabled: ", …); `description` renders one line per entry.
+fn draw_toggle_card(
+    f: &mut Frame,
+    focused: bool,
+    title: &str,
+    status_label: &str,
+    value: bool,
+    description: &[&str],
+    area: Rect,
+) {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(status_label, Style::default().fg(C_DIM)),
+            bool_span(value),
+        ]),
+        Line::from(""),
+    ];
+    lines.extend(
+        description
+            .iter()
+            .map(|text| Line::from(Span::styled(*text, Style::default().fg(C_DIM)))),
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "[Enter] to toggle",
+        Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
+    )));
+
+    f.render_widget(
+        Paragraph::new(lines).block(card_block(title, focused)),
+        area,
+    );
+}
+
+/// Card for an enum control cycled with Enter: one row per variant, the current
+/// one marked with ▶. `options` pairs each label with whether it is selected.
+fn draw_enum_card(
+    f: &mut Frame,
+    focused: bool,
+    title: &str,
+    options: &[(String, bool)],
+    area: Rect,
+) {
+    let mut lines = vec![Line::from("")];
+    lines.extend(options.iter().map(|(label, selected)| {
+        Line::from(vec![
+            Span::styled(
+                if *selected { "▶ " } else { "  " },
+                Style::default().fg(C_ACCENT),
+            ),
+            Span::styled(
+                label.as_str(),
+                if *selected {
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_DIM)
+                },
+            ),
+        ])
+    }));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "[Enter] to cycle",
+        Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
+    )));
+
+    f.render_widget(
+        Paragraph::new(lines).block(card_block(title, focused)),
+        area,
+    );
+}
+
+/// Label/selected pairs for a set of enum variants, in display order.
+fn enum_options<T: PartialEq + ToString>(variants: &[T], current: T) -> Vec<(String, bool)> {
+    variants
+        .iter()
+        .map(|variant| (variant.to_string(), *variant == current))
+        .collect()
+}
+
+// ── The individual cards, shared by every model that has the control ──────────
+
+fn draw_denoiser_card(f: &mut Frame, app: &App, area: Rect) {
+    draw_toggle_card(
+        f,
+        app.focus == Focus::Denoiser,
+        "Denoiser",
+        "Status: ",
+        app.device_state.denoiser_enabled,
+        &["Reduces background", "noise in real time."],
+        area,
+    );
+}
+
+fn draw_popper_stopper_card(f: &mut Frame, app: &App, area: Rect) {
+    draw_toggle_card(
+        f,
+        app.focus == Focus::PopperStopper,
+        "Popper Stopper",
+        "Status: ",
+        app.device_state.popper_stopper_enabled,
+        &["Reduces plosive", "sounds (p, b, t)."],
+        area,
+    );
+}
+
+fn draw_mute_btn_card(f: &mut Frame, app: &App, area: Rect) {
+    draw_toggle_card(
+        f,
+        app.focus == Focus::MuteBtnDisable,
+        "Mute Button",
+        "Disabled: ",
+        app.device_state.mute_btn_disabled,
+        &[
+            "Prevents the physical",
+            "mute button from",
+            "toggling mute.",
+        ],
+        area,
+    );
+}
+
+fn draw_limiter_card(f: &mut Frame, app: &App, area: Rect) {
+    draw_toggle_card(
+        f,
+        app.focus == Focus::Limiter,
+        "Limiter",
+        "Status: ",
+        app.device_state.limiter_enabled,
+        &[
+            "Prevents clipping by",
+            "capping the output",
+            "level at 0 dBFS.",
+        ],
+        area,
+    );
+}
+
+fn draw_compressor_card(f: &mut Frame, app: &App, area: Rect) {
+    let options = enum_options(
+        &[
+            CompressorPreset::Off,
+            CompressorPreset::Light,
+            CompressorPreset::Medium,
+            CompressorPreset::Heavy,
+        ],
+        app.device_state.compressor,
+    );
+    draw_enum_card(
+        f,
+        app.focus == Focus::Compressor,
+        "Compressor",
+        &options,
+        area,
+    );
+}
+
+fn draw_hpf_card(f: &mut Frame, app: &App, area: Rect) {
+    let options = enum_options(
+        &[HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150],
+        app.device_state.hpf,
+    );
+    draw_enum_card(
+        f,
+        app.focus == Focus::Hpf,
+        "High-Pass Filter",
+        &options,
+        area,
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MV6 Dynamics Tab — Denoiser, Popper Stopper, Mute Button, HPF
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
-    let ds = &app.device_state;
-
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
+        .constraints(vec![Constraint::Ratio(1, 4); 4])
         .margin(1)
         .split(area);
 
-    // ── Denoiser ──────────────────────────────────────────────────────────────
-    let den_foc = app.focus == Focus::Denoiser;
-    let den_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.denoiser_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Reduces background",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "noise in real time.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if den_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Denoiser  ", focused_style(den_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if den_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(den_p, cols[0]);
-
-    // ── Popper Stopper ────────────────────────────────────────────────────────
-    let pop_foc = app.focus == Focus::PopperStopper;
-    let pop_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.popper_stopper_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("Reduces plosive", Style::default().fg(C_DIM))),
-        Line::from(Span::styled(
-            "sounds (p, b, t).",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if pop_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Popper Stopper  ", focused_style(pop_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if pop_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(pop_p, cols[1]);
-
-    // ── Mute Button Disable ───────────────────────────────────────────────────
-    let mbd_foc = app.focus == Focus::MuteBtnDisable;
-    let mbd_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Disabled: ", Style::default().fg(C_DIM)),
-            bool_span(ds.mute_btn_disabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Prevents the physical",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled("mute button from", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("toggling mute.", Style::default().fg(C_DIM))),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if mbd_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Mute Button  ", focused_style(mbd_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if mbd_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(mbd_p, cols[2]);
-
-    // ── HPF ───────────────────────────────────────────────────────────────────
-    let hpf_foc = app.focus == Focus::Hpf;
-    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
-        .iter()
-        .map(|freq| {
-            let selected = *freq == ds.hpf;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    freq.to_string(),
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
-    let mut hpf_content = vec![Line::from("")];
-    hpf_content.extend(hpf_lines);
-    hpf_content.push(Line::from(""));
-    hpf_content.push(Line::from(Span::styled(
-        "[Enter] to cycle",
-        Style::default().fg(if hpf_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-    let hpf_p = Paragraph::new(hpf_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  High-Pass Filter  ",
-                if hpf_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if hpf_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(hpf_p, cols[3]);
+    draw_denoiser_card(f, app, cols[0]);
+    draw_popper_stopper_card(f, app, cols[1]);
+    draw_mute_btn_card(f, app, cols[2]);
+    draw_hpf_card(f, app, cols[3]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2002,15 +2042,10 @@ fn draw_gen2_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 // MVX2U Gen 2 Dynamics Tab — Limiter + Compressor (Gen 1 style) + Denoiser + Popper Stopper + HPF
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_gen2_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
-    let ds = &app.device_state;
-
     // Auto mode: only Denoiser, Popper Stopper, HPF are available.
     // Manual mode: all five controls.
-    let (num_cols, show_limiter_comp) = if ds.mode == InputMode::Auto {
-        (3usize, false)
-    } else {
-        (5usize, true)
-    };
+    let show_limiter_comp = app.device_state.mode != InputMode::Auto;
+    let num_cols = if show_limiter_comp { 5usize } else { 3usize };
 
     let constraints: Vec<Constraint> = (0..num_cols)
         .map(|_| Constraint::Ratio(1, num_cols as u32))
@@ -2025,235 +2060,18 @@ fn draw_gen2_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
     let mut col = 0usize;
 
     if show_limiter_comp {
-        // ── Limiter — identical to Gen 1 ─────────────────────────────────────
-        let lim_foc = app.focus == Focus::Limiter;
-        let lim_p = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(C_DIM)),
-                bool_span(ds.limiter_enabled),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Prevents clipping by",
-                Style::default().fg(C_DIM),
-            )),
-            Line::from(Span::styled(
-                "capping the output",
-                Style::default().fg(C_DIM),
-            )),
-            Line::from(Span::styled("level at 0 dBFS.", Style::default().fg(C_DIM))),
-            Line::from(""),
-            Line::from(Span::styled(
-                "[Enter] to toggle",
-                Style::default().fg(if lim_foc { C_FOCUS } else { C_DISABLED }),
-            )),
-        ])
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    "  Limiter  ",
-                    if lim_foc {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_TEXT)
-                    },
-                ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if lim_foc {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                })
-                .padding(Padding::horizontal(1)),
-        );
-        f.render_widget(lim_p, cols[col]);
+        // Limiter and Compressor render exactly as they do on Gen 1.
+        draw_limiter_card(f, app, cols[col]);
         col += 1;
-
-        // ── Compressor — identical to Gen 1 ──────────────────────────────────
-        let comp_foc = app.focus == Focus::Compressor;
-        let comp_lines: Vec<Line> = [
-            CompressorPreset::Off,
-            CompressorPreset::Light,
-            CompressorPreset::Medium,
-            CompressorPreset::Heavy,
-        ]
-        .iter()
-        .map(|preset| {
-            let selected = *preset == ds.compressor;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    preset.to_string(),
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
-
-        let mut comp_content = vec![Line::from("")];
-        comp_content.extend(comp_lines);
-        comp_content.push(Line::from(""));
-        comp_content.push(Line::from(Span::styled(
-            "[Enter] to cycle",
-            Style::default().fg(if comp_foc { C_FOCUS } else { C_DISABLED }),
-        )));
-
-        let comp_p = Paragraph::new(comp_content).block(
-            Block::default()
-                .title(Span::styled(
-                    "  Compressor  ",
-                    if comp_foc {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_TEXT)
-                    },
-                ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if comp_foc {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                })
-                .padding(Padding::horizontal(1)),
-        );
-        f.render_widget(comp_p, cols[col]);
+        draw_compressor_card(f, app, cols[col]);
         col += 1;
     }
 
-    // ── Denoiser — always visible ─────────────────────────────────────────────
-    let den_foc = app.focus == Focus::Denoiser;
-    let den_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.denoiser_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Reduces background",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "noise in real time.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if den_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Denoiser  ", focused_style(den_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if den_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(den_p, cols[col]);
+    draw_denoiser_card(f, app, cols[col]);
     col += 1;
-
-    // ── Popper Stopper — always visible ───────────────────────────────────────
-    let pop_foc = app.focus == Focus::PopperStopper;
-    let pop_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.popper_stopper_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("Reduces plosive", Style::default().fg(C_DIM))),
-        Line::from(Span::styled(
-            "sounds (p, b, t).",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if pop_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Popper Stopper  ", focused_style(pop_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if pop_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(pop_p, cols[col]);
+    draw_popper_stopper_card(f, app, cols[col]);
     col += 1;
-
-    // ── HPF — always visible ──────────────────────────────────────────────────
-    let hpf_foc = app.focus == Focus::Hpf;
-    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
-        .iter()
-        .map(|freq| {
-            let selected = *freq == ds.hpf;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    freq.to_string(),
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
-
-    let mut hpf_content = vec![Line::from("")];
-    hpf_content.extend(hpf_lines);
-    hpf_content.push(Line::from(""));
-    hpf_content.push(Line::from(Span::styled(
-        "[Enter] to cycle",
-        Style::default().fg(if hpf_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-
-    let hpf_p = Paragraph::new(hpf_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  High-Pass Filter  ",
-                if hpf_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if hpf_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(hpf_p, cols[col]);
+    draw_hpf_card(f, app, cols[col]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2488,269 +2306,18 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 // MV7+ Dynamics Tab — Standard controls + Reverb section
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_mv7plus_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
-    let ds = &app.device_state;
-
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Ratio(1, 6); 6])
         .margin(1)
         .split(area);
 
-    // ── Limiter ───────────────────────────────────────────────────────────────
-    let lim_foc = app.focus == Focus::Limiter;
-    let lim_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.limiter_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Prevents clipping by",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "capping the output",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled("level at 0 dBFS.", Style::default().fg(C_DIM))),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if lim_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled(
-                "  Limiter  ",
-                if lim_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if lim_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(lim_p, cols[0]);
-
-    // ── Compressor ────────────────────────────────────────────────────────────
-    let comp_foc = app.focus == Focus::Compressor;
-    let comp_lines: Vec<Line> = [
-        CompressorPreset::Off,
-        CompressorPreset::Light,
-        CompressorPreset::Medium,
-        CompressorPreset::Heavy,
-    ]
-    .iter()
-    .map(|preset| {
-        let selected = *preset == ds.compressor;
-        Line::from(vec![
-            Span::styled(
-                if selected { "▶ " } else { "  " },
-                Style::default().fg(C_ACCENT),
-            ),
-            Span::styled(
-                preset.to_string(),
-                if selected {
-                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_DIM)
-                },
-            ),
-        ])
-    })
-    .collect();
-    let mut comp_content = vec![Line::from("")];
-    comp_content.extend(comp_lines);
-    comp_content.push(Line::from(""));
-    comp_content.push(Line::from(Span::styled(
-        "[Enter] to cycle",
-        Style::default().fg(if comp_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-    let comp_p = Paragraph::new(comp_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  Compressor  ",
-                if comp_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if comp_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(comp_p, cols[1]);
-
-    // ── Denoiser ──────────────────────────────────────────────────────────────
-    let den_foc = app.focus == Focus::Denoiser;
-    let den_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.denoiser_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Reduces background",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "noise in real time.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if den_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Denoiser  ", focused_style(den_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if den_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(den_p, cols[2]);
-
-    // ── Popper Stopper ────────────────────────────────────────────────────────
-    let pop_foc = app.focus == Focus::PopperStopper;
-    let pop_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(ds.popper_stopper_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("Reduces plosive", Style::default().fg(C_DIM))),
-        Line::from(Span::styled(
-            "sounds (p, b, t).",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if pop_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Popper Stopper  ", focused_style(pop_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if pop_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(pop_p, cols[3]);
-
-    // ── Mute Button Disable ───────────────────────────────────────────────────
-    let mbd_foc = app.focus == Focus::MuteBtnDisable;
-    let mbd_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Disabled: ", Style::default().fg(C_DIM)),
-            bool_span(ds.mute_btn_disabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Prevents the physical",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled("mute button from", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("toggling mute.", Style::default().fg(C_DIM))),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if mbd_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Mute Button  ", focused_style(mbd_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if mbd_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(mbd_p, cols[4]);
-
-    // ── High-Pass Filter ──────────────────────────────────────────────────────
-    let hpf_foc = app.focus == Focus::Hpf;
-    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
-        .iter()
-        .map(|freq| {
-            let selected = *freq == ds.hpf;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    freq.to_string(),
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
-    let mut hpf_content = vec![Line::from("")];
-    hpf_content.extend(hpf_lines);
-    hpf_content.push(Line::from(""));
-    hpf_content.push(Line::from(Span::styled(
-        "[Enter] to cycle",
-        Style::default().fg(if hpf_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-    let hpf_p = Paragraph::new(hpf_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  High-Pass Filter  ",
-                if hpf_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if hpf_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(hpf_p, cols[5]);
+    draw_limiter_card(f, app, cols[0]);
+    draw_compressor_card(f, app, cols[1]);
+    draw_denoiser_card(f, app, cols[2]);
+    draw_popper_stopper_card(f, app, cols[3]);
+    draw_mute_btn_card(f, app, cols[4]);
+    draw_hpf_card(f, app, cols[5]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2770,129 +2337,37 @@ fn draw_reverb_tab(f: &mut Frame, app: &App, area: Rect) {
         .constraints(vec![Constraint::Ratio(1, 3); 3])
         .split(rows[0]);
 
-    // Reverb Output
-    let rout_foc = app.focus == Focus::ReverbOutput;
-    let rout_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("On output: ", Style::default().fg(C_DIM)),
-            bool_span(ds.reverb_on_output),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Applies reverb to",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "speaker/headphones.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] toggle",
-            Style::default().fg(if rout_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Reverb Output  ", focused_style(rout_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if rout_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
+    draw_toggle_card(
+        f,
+        app.focus == Focus::ReverbOutput,
+        "Reverb Output",
+        "On output: ",
+        ds.reverb_on_output,
+        &["Applies reverb to", "speaker/headphones."],
+        rev_cols[0],
     );
-    f.render_widget(rout_p, rev_cols[0]);
 
-    // Reverb Monitor
-    let rmon_foc = app.focus == Focus::ReverbMonitor;
-    let rmon_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Monitoring: ", Style::default().fg(C_DIM)),
-            bool_span(ds.reverb_monitoring),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Applies reverb to",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "direct monitor mix.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] toggle",
-            Style::default().fg(if rmon_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled("  Reverb Monitor  ", focused_style(rmon_foc)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if rmon_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
+    draw_toggle_card(
+        f,
+        app.focus == Focus::ReverbMonitor,
+        "Reverb Monitor",
+        "Monitoring: ",
+        ds.reverb_monitoring,
+        &["Applies reverb to", "direct monitor mix."],
+        rev_cols[1],
     );
-    f.render_widget(rmon_p, rev_cols[1]);
 
-    // Reverb Type
-    let rtype_foc = app.focus == Focus::ReverbPreset;
-    let rtype_lines: Vec<Line> = [ReverbType::Plate, ReverbType::Hall, ReverbType::Studio]
-        .iter()
-        .map(|rt| {
-            let selected = *rt == ds.reverb_type;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    rt.to_string(),
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
-    let mut rtype_content = vec![Line::from("")];
-    rtype_content.extend(rtype_lines);
-    rtype_content.push(Line::from(""));
-    rtype_content.push(Line::from(Span::styled(
-        "[Enter] cycle",
-        Style::default().fg(if rtype_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-    let rtype_p = Paragraph::new(rtype_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  Reverb Type  ",
-                if rtype_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if rtype_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
+    let reverb_types = enum_options(
+        &[ReverbType::Plate, ReverbType::Hall, ReverbType::Studio],
+        ds.reverb_type,
     );
-    f.render_widget(rtype_p, rev_cols[2]);
+    draw_enum_card(
+        f,
+        app.focus == Focus::ReverbPreset,
+        "Reverb Type",
+        &reverb_types,
+        rev_cols[2],
+    );
 
     // Reverb Intensity — full-width bar across the bottom
     let rint_foc = app.focus == Focus::ReverbIntensity;
@@ -3253,167 +2728,13 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
     }
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-        ])
+        .constraints(vec![Constraint::Ratio(1, 3); 3])
         .margin(1)
         .split(area);
 
-    // ── Limiter ───────────────────────────────────────────────────────────────
-    let lim_foc = app.focus == Focus::Limiter;
-    let lim_p = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(C_DIM)),
-            bool_span(app.device_state.limiter_enabled),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Prevents clipping by",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "capping the output",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled("level at 0 dBFS.", Style::default().fg(C_DIM))),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Enter] to toggle",
-            Style::default().fg(if lim_foc { C_FOCUS } else { C_DISABLED }),
-        )),
-    ])
-    .block(
-        Block::default()
-            .title(Span::styled(
-                "  Limiter  ",
-                if lim_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if lim_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(lim_p, cols[0]);
-
-    // ── Compressor ────────────────────────────────────────────────────────────
-    let comp_foc = app.focus == Focus::Compressor;
-    let comp_lines: Vec<Line> = [
-        CompressorPreset::Off,
-        CompressorPreset::Light,
-        CompressorPreset::Medium,
-        CompressorPreset::Heavy,
-    ]
-    .iter()
-    .map(|preset| {
-        let selected = *preset == app.device_state.compressor;
-        Line::from(vec![
-            Span::styled(
-                if selected { "▶ " } else { "  " },
-                Style::default().fg(C_ACCENT),
-            ),
-            Span::styled(
-                preset.to_string(),
-                if selected {
-                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_DIM)
-                },
-            ),
-        ])
-    })
-    .collect();
-
-    let mut comp_content = vec![Line::from("")];
-    comp_content.extend(comp_lines);
-    comp_content.push(Line::from(""));
-    comp_content.push(Line::from(Span::styled(
-        "[Enter] to cycle",
-        Style::default().fg(if comp_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-
-    let comp_p = Paragraph::new(comp_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  Compressor  ",
-                if comp_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if comp_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(comp_p, cols[1]);
-
-    // ── HPF ───────────────────────────────────────────────────────────────────
-    let hpf_foc = app.focus == Focus::Hpf;
-    let hpf_lines: Vec<Line> = [HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150]
-        .iter()
-        .map(|freq| {
-            let selected = *freq == app.device_state.hpf;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▶ " } else { "  " },
-                    Style::default().fg(C_ACCENT),
-                ),
-                Span::styled(
-                    freq.to_string(),
-                    if selected {
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ])
-        })
-        .collect();
-
-    let mut hpf_content = vec![Line::from("")];
-    hpf_content.extend(hpf_lines);
-    hpf_content.push(Line::from(""));
-    hpf_content.push(Line::from(Span::styled(
-        "[Enter] to cycle",
-        Style::default().fg(if hpf_foc { C_FOCUS } else { C_DISABLED }),
-    )));
-
-    let hpf_p = Paragraph::new(hpf_content).block(
-        Block::default()
-            .title(Span::styled(
-                "  High-Pass Filter  ",
-                if hpf_foc {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if hpf_foc {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
-    f.render_widget(hpf_p, cols[2]);
+    draw_limiter_card(f, app, cols[0]);
+    draw_compressor_card(f, app, cols[1]);
+    draw_hpf_card(f, app, cols[2]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
