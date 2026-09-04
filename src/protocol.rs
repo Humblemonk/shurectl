@@ -2455,6 +2455,103 @@ mod tests {
 
     // ── parse_response ────────────────────────────────────────────────────────
 
+    // ── Golden packets ────────────────────────────────────────────────────────
+    //
+    // Full literal byte sequences for four representative packets. Every other
+    // encoding test asserts individual offsets, and `make_response` builds its
+    // fixtures with `build_packet` — so without these, a change to the framing
+    // would move the builder and the parser together and no test would notice.
+    // The CRC in each was verified against an independent implementation of
+    // CRC-16/ANSI (poly 0x8005 reflected, init 0x0000) rather than copied from
+    // this module's own output.
+    //
+    // If one of these fails, the wire format changed. Confirm against a usbmon
+    // capture before updating the literal — do not just paste in the new bytes.
+
+    /// Standard framing, HDR_CONSTANT=0x03: SET gain to 30 dB, seq 0x05.
+    #[test]
+    fn golden_packet_set_gain() {
+        let pkt = cmd_set_gain(0x05, 30);
+        assert_eq!(
+            &pkt[..20],
+            &[
+                0x01, // report ID
+                0x12, // total_len
+                0x11, 0x22, // header magic
+                0x05, // seq
+                0x03, // HDR_CONSTANT
+                0x08, // HDR_END
+                0x0A, // data_len
+                0x70, // DATA_START
+                0x0A, // data_len (repeated)
+                0x02, 0x02, 0x02, // CMD_SET_FEAT
+                0x00, // is_mix
+                0x01, 0x02, // FEAT_GAIN
+                0x0B, 0xB8, // 3000 = 30 dB in hundredths
+                0x8A, 0xD6, // CRC-16/ANSI
+            ]
+        );
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        assert!(
+            pkt[20..].iter().all(|&b| b == 0x00),
+            "tail must be zero padded"
+        );
+    }
+
+    /// Standard framing with a single-byte value: SET phantom power on, seq 0x05.
+    #[test]
+    fn golden_packet_set_phantom() {
+        let pkt = cmd_set_phantom(0x05, true);
+        assert_eq!(
+            &pkt[..19],
+            &[
+                0x01, 0x11, 0x11, 0x22, 0x05, 0x03, 0x08, 0x09, 0x70, 0x09, //
+                0x02, 0x02, 0x02, // CMD_SET_FEAT
+                0x00, // is_mix
+                0x01, 0x66, // FEAT_PHANTOM
+                0x30, // PHANTOM_ON (48 = 48V)
+                0x5E, 0x85, // CRC-16/ANSI
+            ]
+        );
+        assert_eq!(pkt.len(), PACKET_SIZE);
+    }
+
+    /// The other framing variant, HDR_CONSTANT=0x00: MV6 monitor mix at 50, seq 0x05.
+    /// Byte 5 is the only difference from the standard framing above.
+    #[test]
+    fn golden_packet_mv6_mix_uses_hdr_constant_zero() {
+        let pkt = cmd_set_mv6_mix(0x05, 50);
+        assert_eq!(
+            &pkt[..19],
+            &[
+                0x01, 0x11, 0x11, 0x22, 0x05, //
+                0x00, // HDR_CONSTANT=0x00, not 0x03
+                0x08, 0x09, 0x70, 0x09, //
+                0x02, 0x02, 0x02, // CMD_SET_FEAT
+                0x00, // is_mix
+                0x01, 0x86, // FEAT_MIX
+                0x32, // mix = 50
+                0x5B, 0x49, // CRC-16/ANSI
+            ]
+        );
+        assert_eq!(pkt.len(), PACKET_SIZE);
+    }
+
+    /// The CONFIRM packet that must follow every SET, seq 0x05.
+    #[test]
+    fn golden_packet_confirm() {
+        let pkt = cmd_confirm(0x05);
+        assert_eq!(
+            &pkt[..15],
+            &[
+                0x01, 0x0D, 0x11, 0x22, 0x05, 0x03, 0x08, 0x05, 0x70, 0x05, //
+                0x01, 0x00, 0x00, // CMD_CONFIRM
+                0x8B, 0x16, // CRC-16/ANSI
+            ]
+        );
+        assert_eq!(pkt.len(), PACKET_SIZE);
+    }
+
     /// Build a synthetic response from the device for testing parse_response.
     fn make_response(seq: u8, resp_cmd: &[u8; 3], feat_addr: &[u8; 2], value: &[u8]) -> Vec<u8> {
         let is_mix: u8 = 0x00;
