@@ -1101,7 +1101,17 @@ pub fn crc16_ansi(data: &[u8]) -> u16 {
 /// [0x01][total_len][0x11][0x22][seq][0x03][0x08][data_len][0x70][data_len][cmd×3][payload...]
 /// ```
 /// CRC-16/ANSI covers from `[0x11]` to end of payload (exclusive of CRC bytes).
-fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
+pub fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
+    build_packet_with_hdr(seq, HDR_CONSTANT, cmd, payload)
+}
+
+/// Frame a 64-byte HID packet with an explicit header-constant byte.
+///
+/// The only field that varies between the two framings is `hdr_constant`:
+/// [`HDR_CONSTANT`] (0x03) for standard packets, 0x00 for the MV7+ SET class
+/// and the handful of MV6 commands that mirror it. Everything else — lengths,
+/// CRC coverage, zero padding — is identical, so both wrappers share this body.
+fn build_packet_with_hdr(seq: u8, hdr_constant: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     // data_len counts: DATA_START(1) + data_len(1) + cmd(3) + payload
     let data_len = (3 + payload.len() + 2) as u8;
 
@@ -1109,7 +1119,7 @@ fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     inner.push(HEADER_MAGIC[0]);
     inner.push(HEADER_MAGIC[1]);
     inner.push(seq);
-    inner.push(HDR_CONSTANT);
+    inner.push(hdr_constant);
     inner.push(HDR_END);
     inner.push(data_len);
     inner.push(DATA_START);
@@ -1216,31 +1226,7 @@ pub fn parse_response_with_prefix(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> 
 /// Required for ALL MV7+ SET commands. The MV7+ rejects SET packets with
 /// the standard HDR_CONSTANT=0x03. GET commands still use `build_packet`.
 fn build_packet_hdr0(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
-    let data_len = (3 + payload.len() + 2) as u8;
-
-    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    inner.push(HEADER_MAGIC[0]);
-    inner.push(HEADER_MAGIC[1]);
-    inner.push(seq);
-    inner.push(0x00); // HDR_CONSTANT=0x00 for MV7+ SET commands
-    inner.push(HDR_END);
-    inner.push(data_len);
-    inner.push(DATA_START);
-    inner.push(data_len);
-    inner.extend_from_slice(cmd);
-    inner.extend_from_slice(payload);
-
-    let total_len = (inner.len() + 2) as u8;
-    let crc = crc16_ansi(&inner);
-
-    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    pkt.push(REPORT_ID);
-    pkt.push(total_len);
-    pkt.extend_from_slice(&inner);
-    pkt.push((crc >> 8) as u8);
-    pkt.push((crc & 0xFF) as u8);
-    pkt.resize(PACKET_SIZE, 0x00);
-    pkt
+    build_packet_with_hdr(seq, 0x00, cmd, payload)
 }
 
 /// Build a GET packet for a single feature. Returns the packet bytes.
@@ -1654,31 +1640,8 @@ pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
         mix_byte,
         enable_byte,
     ];
-    let data_len = (3 + payload.len() + 2) as u8;
-
-    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    inner.push(HEADER_MAGIC[0]);
-    inner.push(HEADER_MAGIC[1]);
-    inner.push(seq);
-    inner.push(0x00); // HDR_CONSTANT=0x00 for this command (not the usual 0x03)
-    inner.push(HDR_END);
-    inner.push(data_len);
-    inner.push(DATA_START);
-    inner.push(data_len);
-    inner.extend_from_slice(&CMD_SET_LOCK); // [02 02 01], not CMD_SET_FEAT
-    inner.extend_from_slice(&payload);
-
-    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
-    let crc = crc16_ansi(&inner);
-
-    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    pkt.push(REPORT_ID);
-    pkt.push(total_len);
-    pkt.extend_from_slice(&inner);
-    pkt.push((crc >> 8) as u8);
-    pkt.push((crc & 0xFF) as u8);
-    pkt.resize(PACKET_SIZE, 0x00);
-    pkt
+    // CMD_SET_LOCK ([02 02 01], not CMD_SET_FEAT) with HDR_CONSTANT=0x00.
+    build_packet_hdr0(seq, &CMD_SET_LOCK, &payload)
 }
 
 /// Set the MV6 monitor mix level.
@@ -1690,31 +1653,7 @@ pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
 pub fn cmd_set_mv6_mix(seq: u8, mix: u8) -> Vec<u8> {
     let value = mix.min(100);
     let payload = [0x00, FEAT_MIX[0], FEAT_MIX[1], value];
-    let data_len = (3 + payload.len() + 2) as u8;
-
-    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    inner.push(HEADER_MAGIC[0]);
-    inner.push(HEADER_MAGIC[1]);
-    inner.push(seq);
-    inner.push(0x00); // HDR_CONSTANT=0x00 (not the usual 0x03)
-    inner.push(HDR_END);
-    inner.push(data_len);
-    inner.push(DATA_START);
-    inner.push(data_len);
-    inner.extend_from_slice(&CMD_SET_FEAT);
-    inner.extend_from_slice(&payload);
-
-    let total_len = (inner.len() + 2) as u8; // +2 for CRC bytes
-    let crc = crc16_ansi(&inner);
-
-    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    pkt.push(REPORT_ID);
-    pkt.push(total_len);
-    pkt.extend_from_slice(&inner);
-    pkt.push((crc >> 8) as u8);
-    pkt.push((crc & 0xFF) as u8);
-    pkt.resize(PACKET_SIZE, 0x00);
-    pkt
+    build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
 }
 
 /// Set the MV6 tone character.
@@ -2522,30 +2461,7 @@ mod tests {
         let mut payload = vec![is_mix, feat_addr[0], feat_addr[1]];
         payload.extend_from_slice(value);
 
-        let data_len = (3 + payload.len() + 2) as u8;
-        let mut inner: Vec<u8> = Vec::new();
-        inner.push(HEADER_MAGIC[0]);
-        inner.push(HEADER_MAGIC[1]);
-        inner.push(seq);
-        inner.push(HDR_CONSTANT);
-        inner.push(HDR_END);
-        inner.push(data_len);
-        inner.push(DATA_START);
-        inner.push(data_len);
-        inner.extend_from_slice(resp_cmd);
-        inner.extend_from_slice(&payload);
-
-        let total_len = (inner.len() + 2) as u8;
-        let crc = crc16_ansi(&inner);
-
-        let mut buf = Vec::with_capacity(64);
-        buf.push(REPORT_ID);
-        buf.push(total_len);
-        buf.extend_from_slice(&inner);
-        buf.push((crc >> 8) as u8);
-        buf.push((crc & 0xFF) as u8);
-        buf.resize(64, 0x00);
-        buf
+        build_packet(seq, resp_cmd, &payload)
     }
 
     #[test]

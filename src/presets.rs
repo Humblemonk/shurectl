@@ -816,9 +816,10 @@ mod tests {
         LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
     };
 
+    /// A fully populated state whose every field differs from `DeviceState::default()`
+    /// where the roundtrip tests care, so a dropped field shows up as a mismatch.
     fn example_state() -> DeviceState {
         DeviceState {
-            gain_db: 36,
             mode: InputMode::Manual,
             auto_position: MicPosition::Far,
             auto_tone: AutoTone::Bright,
@@ -852,31 +853,12 @@ mod tests {
                     gain_db: -80, // -8.0 dB in tenths
                 },
             ],
-            locked: false,
             denoiser_enabled: true,
             popper_stopper_enabled: false,
             mute_btn_disabled: true,
             tone: -5,
-            mv6_gain_locked: false,
-            playback_mix: 0,
-            reverb_on_output: false,
-            reverb_monitoring: false,
-            reverb_type: ReverbType::Plate,
-            reverb_intensity: 50,
-            led_behavior: LedBehavior::Live,
-            led_brightness: LedBrightness::High,
-            led_live_theme: LedLiveTheme::Default,
-            led_solid_theme: LedSolidTheme::Shure,
-            led_pulsing_theme: LedPulsingTheme::Shure,
-            led_solid_rgb: [0xB2, 0xFF, 0x33],
-            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
-            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
-            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
-            led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("TEST001"),
-            device_name: String::from("Unknown"),
-            firmware_version: String::from("Unknown"),
-            factory_serial: String::from("Unknown"),
+            ..DeviceState::default()
         }
     }
 
@@ -999,42 +981,13 @@ mod tests {
         DeviceState {
             gain_db: 24,
             mode: InputMode::Manual,
-            auto_position: MicPosition::Near,
-            auto_tone: AutoTone::Natural,
-            auto_gain: AutoGain::Normal,
-            muted: false,
-            phantom_power: false,
             monitor_mix: 62,
-            limiter_enabled: false,
-            compressor: CompressorPreset::Off,
             hpf: HpfFrequency::Hz75,
-            eq_enabled: false,
-            eq_bands: [EqBand::default(); 5],
-            locked: false,
             denoiser_enabled: true,
-            popper_stopper_enabled: true,
             mute_btn_disabled: true,
             tone: 5,
-            mv6_gain_locked: false,
-            playback_mix: 0,
-            reverb_on_output: false,
-            reverb_monitoring: false,
-            reverb_type: ReverbType::Plate,
-            reverb_intensity: 50,
-            led_behavior: LedBehavior::Live,
-            led_brightness: LedBrightness::High,
-            led_live_theme: LedLiveTheme::Default,
-            led_solid_theme: LedSolidTheme::Shure,
-            led_pulsing_theme: LedPulsingTheme::Shure,
-            led_solid_rgb: [0xB2, 0xFF, 0x33],
-            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
-            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
-            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
-            led_live_interior_rgb: [0x00, 0x00, 0x00],
             serial_number: String::from("MV6TEST"),
-            device_name: String::from("Unknown"),
-            firmware_version: String::from("Unknown"),
-            factory_serial: String::from("Unknown"),
+            ..DeviceState::default()
         }
     }
 

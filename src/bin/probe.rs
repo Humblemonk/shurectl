@@ -53,6 +53,17 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use hidapi::{HidApi, HidDevice};
 
+/// The probe is a separate binary target, so it cannot reach `shurectl`'s own
+/// modules through `crate::`. `protocol.rs` has no dependencies of its own, so
+/// it is compiled directly into the probe instead of re-implementing the CRC,
+/// the packet framing, and the response parser here. `dead_code` is allowed
+/// because the probe only exercises the read-only slice of the protocol.
+#[allow(dead_code)]
+#[path = "../protocol.rs"]
+mod protocol;
+
+use protocol::PACKET_SIZE;
+
 const VID: u16 = 0x14ED;
 /// MVX2U Gen 1
 const PID_MVX2U: u16 = 0x1013;
@@ -62,22 +73,10 @@ const PID_MVX2U_GEN2: u16 = 0x1033;
 const PID_MV6: u16 = 0x1026;
 /// MV7+
 const PID_MV7_PLUS: u16 = 0x1019;
-const PACKET_SIZE: usize = 64;
 const READ_TIMEOUT_MS: i32 = 150;
-
-const REPORT_ID: u8 = 0x01;
-const HEADER_MAGIC: [u8; 2] = [0x11, 0x22];
-const HDR_CONSTANT: u8 = 0x03;
-const HDR_END: u8 = 0x08;
-const DATA_START: u8 = 0x70;
 
 const CMD_GET_FEAT: [u8; 3] = [0x01, 0x02, 0x02];
 const CMD_GET_LOCK: [u8; 3] = [0x01, 0x02, 0x01];
-
-const RES_GET_FEAT: [u8; 3] = [0x03, 0x02, 0x02];
-const RES_GET_LOCK: [u8; 3] = [0x03, 0x02, 0x01];
-const RES_SET_FEAT: [u8; 3] = [0x04, 0x02, 0x02];
-const RES_SET_LOCK: [u8; 3] = [0x04, 0x02, 0x01];
 
 const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
     (
@@ -241,23 +240,6 @@ struct Cli {
     delay_ms: u64,
 }
 
-// ── CRC-16/ANSI ───────────────────────────────────────────────────────────────
-fn crc16_ansi(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0x0000;
-    for &byte in data {
-        let mut b = byte;
-        for _ in 0..8 {
-            let bit = (crc ^ b as u16) & 1;
-            crc >>= 1;
-            if bit != 0 {
-                crc ^= 0xA001;
-            }
-            b >>= 1;
-        }
-    }
-    crc
-}
-
 // ── Packet builder ────────────────────────────────────────────────────────────
 fn build_get_packet(seq: u8, cmd: &[u8; 3], feat_addr: [u8; 2], is_mix_or_lock: u8) -> Vec<u8> {
     let payload = [is_mix_or_lock, feat_addr[0], feat_addr[1]];
@@ -272,31 +254,7 @@ fn build_get_packet_mv7_lock(seq: u8, page: u8, sub_addr: u8) -> Vec<u8> {
 }
 
 fn build_get_packet_raw(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
-    let data_len = (3 + payload.len() + 2) as u8;
-
-    let mut inner: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    inner.push(HEADER_MAGIC[0]);
-    inner.push(HEADER_MAGIC[1]);
-    inner.push(seq);
-    inner.push(HDR_CONSTANT);
-    inner.push(HDR_END);
-    inner.push(data_len);
-    inner.push(DATA_START);
-    inner.push(data_len);
-    inner.extend_from_slice(cmd);
-    inner.extend_from_slice(payload);
-
-    let total_len = (inner.len() + 2) as u8;
-    let crc = crc16_ansi(&inner);
-
-    let mut pkt: Vec<u8> = Vec::with_capacity(PACKET_SIZE);
-    pkt.push(REPORT_ID);
-    pkt.push(total_len);
-    pkt.extend_from_slice(&inner);
-    pkt.push((crc >> 8) as u8);
-    pkt.push((crc & 0xFF) as u8);
-    pkt.resize(PACKET_SIZE, 0x00);
-    pkt
+    protocol::build_packet(seq, cmd, payload)
 }
 
 // ── Response parser ───────────────────────────────────────────────────────────
@@ -307,33 +265,7 @@ struct ParsedResponse {
 }
 
 fn parse_response(buf: &[u8]) -> Option<ParsedResponse> {
-    if buf.len() < 18 {
-        return None;
-    }
-    let contents_end = buf[1] as usize;
-    if contents_end + 2 > buf.len() {
-        return None;
-    }
-    if buf[2] != HEADER_MAGIC[0] || buf[3] != HEADER_MAGIC[1] {
-        return None;
-    }
-    let expected_crc = ((buf[contents_end] as u16) << 8) | buf[contents_end + 1] as u16;
-    let actual_crc = crc16_ansi(&buf[2..contents_end]);
-    if actual_crc != expected_crc {
-        return None;
-    }
-    let resp_type: [u8; 3] = buf[10..13].try_into().ok()?;
-    match resp_type {
-        _ if resp_type == RES_GET_FEAT
-            || resp_type == RES_SET_FEAT
-            || resp_type == RES_GET_LOCK
-            || resp_type == RES_SET_LOCK => {}
-        _ => return None,
-    }
-    if buf.len() < 16 {
-        return None;
-    }
-    let value_bytes = buf[16..contents_end].to_vec();
+    let (_prefix, _feat_addr, value_bytes) = protocol::parse_response_with_prefix(buf)?;
     Some(ParsedResponse {
         value_bytes,
         raw: buf.to_vec(),

@@ -16,6 +16,13 @@ cargo clippy --features probe -- -D warnings && cargo fmt --check && cargo test
 
 `--features probe` is required — `shurectl-probe` is feature-gated and clippy skips it otherwise.
 
+CI also runs a duplicate-code detector (jscpd, via super-linter). Its budget lives in
+`.github/linters/.jscpd.json` and is currently 7% duplicated lines against ~5.5% actual, so
+a new near-copy of an existing block can push the build over. Reproduce it locally with
+`npx jscpd -c .github/linters/.jscpd.json .`. Raise the threshold only if the duplication is
+genuinely unavoidable — the intended fix is to extend a shared helper (see **Cross-Device UI
+Consistency**).
+
 For non-trivial features, explore the relevant code and confirm a plan before implementing.
 
 ## Architecture
@@ -94,7 +101,7 @@ Follow this sequence, no skipped steps:
 ## Cross-Device UI Consistency
 
 **Every supported model must feel like the same program.** A user owns one device but reads
-one README, one help overlay, and one set of screenshots. If "Gain Lock" on the Gen 2 is
+one readme, one help overlay, and one set of screenshots. If "Gain Lock" on the Gen 2 is
 "Lock" on the MV6, or Tab order differs, or ←/→ adjusts on one model and Enter cycles on
 another, the docs stop matching reality for most users. It is also the single largest
 maintenance cost in this codebase: `ui.rs` already carries eight `draw_main_left_*` variants
@@ -137,7 +144,7 @@ Never leave a control visible and focusable but inert — that reads as a bug.
 5. Verify with `--demo mvx2u`, `--demo mvx2u-gen2`, `--demo mv6`, and `--demo mv7plus`, not
    just the model on your desk.
 
-**Anti-patterns:**
+**Antipatterns:**
 
 - Copying `draw_main_left_gen2_manual()` to bootstrap a new model, then tweaking strings —
   this is how label drift starts
