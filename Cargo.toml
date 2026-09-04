@@ -1,6 +1,6 @@
 [package]
 name = "shurectl"
-version = "2.5.2"
+version = "2.5.3"
 edition = "2024"
 rust-version = "1.88"
 description = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
