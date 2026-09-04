@@ -812,9 +812,6 @@ impl From<SerLedPulsingTheme> for LedPulsingTheme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{
-        LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
-    };
 
     /// A fully populated state whose every field differs from `DeviceState::default()`
     /// where the roundtrip tests care, so a dropped field shows up as a mismatch.

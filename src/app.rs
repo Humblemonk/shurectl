@@ -1976,6 +1976,98 @@ mod tests {
         assert_eq!(app.focus, Focus::Denoiser); // wrap
     }
 
+    /// Gen 2 Manual shows all five controls. The order must match the card order
+    /// in `draw_gen2_dynamics_tab()`.
+    #[test]
+    fn gen2_dynamics_tab_manual_focus_cycles_all_five_controls() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mvx2uGen2;
+        app.active_tab = Tab::Dynamics;
+        app.device_state.mode = InputMode::Manual;
+        app.focus = Focus::Limiter;
+
+        // Forward: Limiter → Compressor → Denoiser → PopperStopper → Hpf → wrap
+        for expected in [
+            Focus::Compressor,
+            Focus::Denoiser,
+            Focus::PopperStopper,
+            Focus::Hpf,
+            Focus::Limiter,
+        ] {
+            app.focus_next();
+            assert_eq!(app.focus, expected, "focus_next: expected {expected:?}");
+        }
+
+        // Backward over the same cycle
+        for expected in [
+            Focus::Hpf,
+            Focus::PopperStopper,
+            Focus::Denoiser,
+            Focus::Compressor,
+            Focus::Limiter,
+        ] {
+            app.focus_prev();
+            assert_eq!(app.focus, expected, "focus_prev: expected {expected:?}");
+        }
+    }
+
+    /// Gen 2 Auto hides Limiter and Compressor, so focus must skip them entirely
+    /// rather than land on a control the tab does not draw.
+    #[test]
+    fn gen2_dynamics_tab_auto_focus_skips_limiter_and_compressor() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mvx2uGen2;
+        app.active_tab = Tab::Dynamics;
+        app.device_state.mode = InputMode::Auto;
+        app.focus = Focus::Denoiser;
+
+        for expected in [Focus::PopperStopper, Focus::Hpf, Focus::Denoiser] {
+            app.focus_next();
+            assert_eq!(app.focus, expected, "focus_next: expected {expected:?}");
+            assert_ne!(app.focus, Focus::Limiter);
+            assert_ne!(app.focus, Focus::Compressor);
+        }
+
+        for expected in [Focus::Hpf, Focus::PopperStopper, Focus::Denoiser] {
+            app.focus_prev();
+            assert_eq!(app.focus, expected, "focus_prev: expected {expected:?}");
+        }
+    }
+
+    /// MV7+ shows all six controls. The order must match the card order in
+    /// `draw_mv7plus_dynamics_tab()`.
+    #[test]
+    fn mv7plus_dynamics_tab_focus_cycles_all_six_controls() {
+        let mut app = App::default();
+        app.device_model = DeviceModel::Mv7Plus;
+        app.active_tab = Tab::Dynamics;
+        app.focus = Focus::Limiter;
+
+        for expected in [
+            Focus::Compressor,
+            Focus::Denoiser,
+            Focus::PopperStopper,
+            Focus::MuteBtnDisable,
+            Focus::Hpf,
+            Focus::Limiter,
+        ] {
+            app.focus_next();
+            assert_eq!(app.focus, expected, "focus_next: expected {expected:?}");
+        }
+
+        for expected in [
+            Focus::Hpf,
+            Focus::MuteBtnDisable,
+            Focus::PopperStopper,
+            Focus::Denoiser,
+            Focus::Compressor,
+            Focus::Limiter,
+        ] {
+            app.focus_prev();
+            assert_eq!(app.focus, expected, "focus_prev: expected {expected:?}");
+        }
+    }
+
     // ── preset focus / toggle ─────────────────────────────────────────────────
 
     #[test]

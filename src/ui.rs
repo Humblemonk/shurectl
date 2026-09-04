@@ -3251,6 +3251,61 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
 
+    // ── enum_options ──────────────────────────────────────────────────────────
+    //
+    // Single source of truth for the ▶ marker on every Enter-cycled control
+    // (HPF, Compressor, Reverb Type) across all four models, so a bug here is a
+    // bug on every Dynamics and Reverb tab at once.
+
+    #[test]
+    fn enum_options_marks_exactly_the_current_variant() {
+        let opts = enum_options(
+            &[HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150],
+            HpfFrequency::Hz75,
+        );
+        assert_eq!(opts.len(), 3);
+        assert_eq!(opts.iter().filter(|(_, selected)| *selected).count(), 1);
+        assert!(opts[1].1, "Hz75 is the current value");
+        assert!(!opts[0].1);
+        assert!(!opts[2].1);
+    }
+
+    #[test]
+    fn enum_options_preserves_declaration_order_and_labels() {
+        let opts = enum_options(
+            &[
+                CompressorPreset::Off,
+                CompressorPreset::Light,
+                CompressorPreset::Medium,
+                CompressorPreset::Heavy,
+            ],
+            CompressorPreset::Heavy,
+        );
+        let labels: Vec<&str> = opts.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                CompressorPreset::Off.to_string(),
+                CompressorPreset::Light.to_string(),
+                CompressorPreset::Medium.to_string(),
+                CompressorPreset::Heavy.to_string(),
+            ]
+        );
+        assert!(opts[3].1, "last variant is the current value");
+    }
+
+    #[test]
+    fn enum_options_marks_nothing_when_current_is_absent() {
+        // Guards the Gen 1 Auto case, where a control can hold a value the
+        // rendered list does not offer: no row should be marked rather than
+        // defaulting the marker onto the first one.
+        let opts = enum_options(
+            &[HpfFrequency::Hz75, HpfFrequency::Hz150],
+            HpfFrequency::Off,
+        );
+        assert!(opts.iter().all(|(_, selected)| !*selected));
+    }
+
     // ── meter_color ───────────────────────────────────────────────────────────
 
     #[test]
