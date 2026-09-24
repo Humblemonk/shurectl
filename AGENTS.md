@@ -56,7 +56,7 @@ src/
 - Raw protocol byte values live *only* in `protocol.rs` as named constants.
 - `shurectl-probe` must never ship to end users via `cargo install` or Homebrew.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
-  the README legal section).
+  the readme legal section).
 
 **Demo mode:** `--demo` runs with `device: None`, and `send_if_connected()` silently succeeds.
 State changes still apply; only HID writes are skipped. Demo mode must stay fully navigable.
@@ -92,7 +92,7 @@ Follow this sequence without skipping steps:
 
 ## Cross-Device UI Consistency
 
-A user owns one device but reads one README, one help overlay, and one set of screenshots.
+A user owns one device but reads one readme, one help overlay, and one set of screenshots.
 If "Gain Lock" on the Gen 2 is "Lock" on the MV6, the docs stop matching reality. Divergence
 is also the largest maintenance cost here: `ui.rs` has eight `draw_main_left_*` variants and
 four-way `DeviceModel` matches in `draw_main_right()` and `draw_info_tab()`, and `app.rs`
