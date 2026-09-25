@@ -1,6 +1,6 @@
 # shurectl
 
-Terminal UI configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, MV7+) on
+Terminal UI configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, MV7, MV7+) on
 Linux and macOS. Talks to the device directly over USB HID, replacing the Windows/Mac-only
 ShurePlus MOTIV Desktop app. Single-crate Rust binary. Prefer the simple, obvious solution
 over clever abstractions.
@@ -94,8 +94,8 @@ Follow this sequence without skipping steps:
 
 A user owns one device but reads one readme, one help overlay, and one set of screenshots.
 If "Gain Lock" on the Gen 2 is "Lock" on the MV6, the docs stop matching reality. Divergence
-is also the largest maintenance cost here: `ui.rs` has eight `draw_main_left_*` variants and
-four-way `DeviceModel` matches in `draw_main_right()` and `draw_info_tab()`, and `app.rs`
+is also the largest maintenance cost here: `ui.rs` has ten `draw_main_left_*` variants and
+five-way `DeviceModel` matches in `draw_main_right()` and `draw_info_tab()`, and `app.rs`
 matches on `DeviceModel` in `reset_focus_for_tab()`, `focus_next()`, and `focus_prev()`.
 
 **The rule:** any control that exists on more than one model has identical label, units,
@@ -133,7 +133,7 @@ Shared across all models unless the hardware makes it impossible:
 4. Update *every* `DeviceModel` match: focus fns, both `draw_main_*`, `draw_info_tab()`, and
    preset serialization. Wherever `_` was used, a missing arm is a silent UX divergence
    rather than a compile error.
-5. Verify with `--demo mvx2u`, `--demo mvx2u-gen2`, `--demo mv6`, and `--demo mv7plus`.
+5. Verify with `--demo mvx2u`, `--demo mvx2u-gen2`, `--demo mv6`, `--demo mv7`, and `--demo mv7plus`.
 
 **Antipatterns:**
 
@@ -163,7 +163,7 @@ Shared across all models unless the hardware makes it impossible:
 | New protocol command | Roundtrip test in `protocol.rs` first |
 | Packet encoding changes | Test CRC correctness and 64-byte length invariant |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
-| Focus/navigation changes | Manual test in `--demo` for all four models |
+| Focus/navigation changes | Manual test in `--demo` for all five models |
 | `main()` / CLI args | No tests |
 
 Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific

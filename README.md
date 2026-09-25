@@ -10,6 +10,7 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 - MVX2U Gen 1 — Digital Audio Interface
 - MVX2U Gen 2 — Digital Audio Interface
 - MV6 — USB Gaming Microphone
+- MV7 — USB/XLR Dynamic Microphone (original)
 - MV7+ — USB/XLR Dynamic Microphone
 
 ---
@@ -17,11 +18,11 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 ## Features
 
 ### All Devices
-- **Gain Control** — Auto Level / Manual toggle
+- **Gain Control** — Auto Level / Manual toggle; manual gain in 0.5 dB steps (1.5 dB on the MV7)
 - **Mic Mute** — toggle mute
 - **Monitor Mix** — mic vs. playback blend slider
 - **Compressor** — Off / Light / Medium / Heavy
-- **High-Pass Filter** — Off / 75 Hz / 150 Hz
+- **High-Pass Filter** — Off / 75 Hz / 150 Hz (not on the MV7)
 - **Real-time Level Meter** — dBFS input meter with peak-hold display
 - **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
 - **Device Info** — factory serial number, device name, and firmware version
@@ -49,6 +50,15 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 - **Popper Stopper** — enable/disable
 - **Mute Button Disable** — prevent accidental mutes
 - **Gain Lock** — hardware freeze of the gain control (Manual mode only)
+
+### MV7
+- **Gain range** — 0–36 dB in 1.5 dB steps (the hardware's own step size)
+- **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright)
+- **EQ** — Flat / High Pass / Presence Boost / High Pass + Presence Boost
+- **Panel Lock** — lock the touch panel
+- **LED Panel** — Live Meter on/off, Night Mode (dimmed LEDs) on/off
+- EQ and Dynamics are managed by the mic in Auto Level mode, as on the MVX2U Gen 1
+- The limiter MOTIV shows for the MV7 is processing inside the MOTIV app, not a mic setting, so shurectl does not offer it
 
 ### MV7+ - Builds on MV6 features with the following
 - **Reverb** — output and monitor enable/disable; Type: Plate / Hall / Studio; Intensity: 0–100%
@@ -130,6 +140,7 @@ Create `/etc/udev/rules.d/62-shure.rules`:
 ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1013", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1033", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1026", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1012", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="14ed", ATTRS{idProduct}=="1019", TAG+="uaccess"
 ```
 
@@ -165,6 +176,7 @@ Windows grants user-space HID access out of the box via the `setupapi` backend �
 shurectl                         # Connect to first detected device and launch TUI
 shurectl --device <path>         # Connect to a specific device (use --list to find paths)
 shurectl --demo                  # Run without a device (explore the UI)
+shurectl --demo mv7              # Demo a specific model: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus
 shurectl --list                  # List detected Shure devices and exit
 shurectl --mute                  # Toggle mute without launching the TUI
 shurectl --mute on               # Mute
@@ -221,6 +233,10 @@ Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confi
 
 **Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;
 the device ignores gain commands in Auto Level mode. Switch to Manual mode first.
+
+**MV7: MOTIV stops showing the mic's settings** — The MV7 has a single command channel
+that MOTIV and shurectl share. Quit MOTIV before using shurectl with an MV7; if MOTIV
+already lost the mic, quit it, replug the mic, and reopen it.
 
 **PipeWire/PulseAudio volume vs. device gain** — This tool controls the **hardware DSP gain**
 on the device itself, not the OS capture volume level. Both can be set independently.
