@@ -4,6 +4,7 @@
 //!   - Shure MVX2U Gen 1 (XLR-to-USB audio interface)
 //!   - Shure MVX2U Gen 2 (XLR-to-USB interface with updated DSP)
 //!   - Shure MV6          (USB gaming microphone)
+//!   - Shure MV7          (USB/XLR dynamic microphone, original)
 //!   - Shure MV7+         (USB/XLR dynamic microphone)
 //!
 //! Usage:
@@ -11,6 +12,7 @@
 //!   shurectl --demo            # Demo MVX2U (default model) without a device
 //!   shurectl --demo mv6        # Demo MV6 without a device
 //!   shurectl --demo mvx2u-gen2 # Demo MVX2U Gen 2 without a device
+//!   shurectl --demo mv7        # Demo MV7 without a device
 //!   shurectl --list            # List detected devices and exit
 //!   shurectl --device PATH     # Open a specific device by HID path
 //!   shurectl --mute            # Toggle mute (no TUI)
@@ -41,7 +43,7 @@ use app::{App, DeviceAction};
 use device::ShureDevice;
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
-use protocol::{DeviceModel, InputMode};
+use protocol::{DeviceModel, InputMode, format_gain};
 
 /// Mute action for the `--mute` flag.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,7 +79,7 @@ impl std::str::FromStr for MuteAction {
 )]
 struct Cli {
     /// Run in demo mode without a real device.
-    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6, mv7plus.
+    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6, mv7, mv7plus.
     #[arg(long, short, num_args = 0..=1, default_missing_value = "mvx2u", value_name = "MODEL")]
     demo: Option<String>,
 
@@ -254,10 +256,11 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
         "mvx2u" => Ok(DeviceModel::Mvx2u),
         "mvx2u-gen2" | "mvx2ugen2" => Ok(DeviceModel::Mvx2uGen2),
         "mv6" => Ok(DeviceModel::Mv6),
+        "mv7" => Ok(DeviceModel::Mv7),
         "mv7plus" | "mv7+" => Ok(DeviceModel::Mv7Plus),
         other => {
             anyhow::bail!(
-                "unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6, mv7plus"
+                "unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus"
             )
         }
     }
@@ -440,21 +443,30 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
                 Ok(())
             }
         }
-        DeviceAction::SetGain(g) => {
-            app.set_ok(format!("Gain → {} dB", g));
-            send_if_connected(device, |d| d.set_gain(*g))
+        DeviceAction::SetGain(gain_tenths) => {
+            app.set_ok(format!("Gain → {}", format_gain(*gain_tenths)));
+            send_if_connected(device, |d| d.set_gain(*gain_tenths))
         }
         DeviceAction::SetMode(mode) => {
             app.set_ok(format!("Mode → {}", mode));
-            send_if_connected(device, |d| d.set_mode(*mode == InputMode::Auto))
+            let state = &app.device_state;
+            send_if_connected(device, |d| {
+                d.set_mode(
+                    *mode == InputMode::Auto,
+                    state.auto_position,
+                    state.auto_tone,
+                )
+            })
         }
         DeviceAction::SetAutoPosition(pos) => {
             app.set_ok(format!("Mic Position → {}", pos));
-            send_if_connected(device, |d| d.set_auto_position(pos))
+            let tone = app.device_state.auto_tone;
+            send_if_connected(device, |d| d.set_auto_position(*pos, tone))
         }
         DeviceAction::SetAutoTone(tone) => {
             app.set_ok(format!("Tone → {}", tone));
-            send_if_connected(device, |d| d.set_auto_tone(tone))
+            let position = app.device_state.auto_position;
+            send_if_connected(device, |d| d.set_auto_tone(position, *tone))
         }
         DeviceAction::SetAutoGain(gain) => {
             app.set_ok(format!("Auto Gain → {}", gain));
@@ -646,6 +658,19 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
             ));
             send_if_connected(device, |d| d.set_mv7_led_live_interior(*rgb))
         }
+        // ── MV7 exclusive actions ─────────────────────────────────────────────
+        DeviceAction::SetEqPreset(preset) => {
+            app.set_ok(format!("EQ → {preset}"));
+            send_if_connected(device, |d| d.set_eq_preset(*preset))
+        }
+        DeviceAction::SetLedLiveMeter(en) => {
+            app.set_ok(format!("Live Meter → {}", if *en { "ON" } else { "OFF" }));
+            send_if_connected(device, |d| d.set_led_live_meter(*en))
+        }
+        DeviceAction::SetLedNightMode(en) => {
+            app.set_ok(format!("Night Mode → {}", if *en { "ON" } else { "OFF" }));
+            send_if_connected(device, |d| d.set_led_night_mode(*en))
+        }
         // ── Preset actions ────────────────────────────────────────────────────
         DeviceAction::SavePreset(i) => {
             let name = app.presets[*i]
@@ -726,14 +751,21 @@ fn apply_preset_to_device(
     model: DeviceModel,
 ) -> Result<()> {
     send_if_connected(device, |d| {
-        d.set_mode(state.mode == InputMode::Auto)?;
-        d.set_gain(state.gain_db)?;
+        d.set_mode(
+            state.mode == InputMode::Auto,
+            state.auto_position,
+            state.auto_tone,
+        )?;
         d.set_mute(state.muted)?;
-        d.set_hpf(&state.hpf)?;
+        // The MV7 has no HPF, and manages gain itself in Auto Level.
+        if model != DeviceModel::Mv7 {
+            d.set_gain(state.gain_tenths)?;
+            d.set_hpf(&state.hpf)?;
+        }
         match model {
             DeviceModel::Mvx2u => {
-                d.set_auto_position(&state.auto_position)?;
-                d.set_auto_tone(&state.auto_tone)?;
+                d.set_auto_position(state.auto_position, state.auto_tone)?;
+                d.set_auto_tone(state.auto_position, state.auto_tone)?;
                 d.set_auto_gain(&state.auto_gain)?;
                 d.set_phantom(state.phantom_power)?;
                 d.set_monitor_mix(state.monitor_mix)?;
@@ -765,6 +797,16 @@ fn apply_preset_to_device(
                 d.set_mv6_tone(state.tone)?;
                 d.set_mv6_gain_lock(state.mv6_gain_locked)?;
                 d.set_mv6_monitor_mix(state.monitor_mix)?;
+            }
+            DeviceModel::Mv7 => {
+                if state.mode == InputMode::Manual {
+                    d.set_gain(state.gain_tenths)?;
+                    d.set_compressor(&state.compressor)?;
+                    d.set_eq_preset(state.eq_preset)?;
+                }
+                d.set_mv6_monitor_mix(state.monitor_mix)?;
+                d.set_led_live_meter(state.led_live_meter)?;
+                d.set_led_night_mode(state.led_night_mode)?;
             }
             DeviceModel::Mv7Plus => {
                 d.set_mv6_denoiser(state.denoiser_enabled)?;
