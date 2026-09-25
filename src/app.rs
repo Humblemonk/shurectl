@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use crate::meter::{METER_SILENT, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, HpfFrequency, InputMode,
-    LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition,
-    ReverbType,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, HpfFrequency,
+    InputMode, LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
+    MicPosition, ReverbType,
 };
 
 /// Which top-level tab/panel is active.
@@ -91,6 +91,8 @@ pub enum Focus {
     EqGain(usize),
     // EQ tab — MV6 tone
     Tone,
+    // EQ tab — MV7 EQ preset
+    EqPreset,
     // Dynamics tab — MVX2U
     Limiter,
     Compressor,
@@ -128,6 +130,9 @@ pub enum Focus {
     LedLiveInteriorR,
     LedLiveInteriorG,
     LedLiveInteriorB,
+    // LED tab — MV7 controls
+    LedLiveMeter,
+    LedNightMode,
     // Presets tab — usize is slot index 0–3
     PresetName(usize),
     PresetActions(usize),
@@ -204,22 +209,38 @@ impl App {
 
     // ── Tab navigation ────────────────────────────────────────────────────────
 
+    /// Returns true when a tab does not exist on this model at all (Reverb
+    /// everywhere but the MV7+, LED on models without LED settings). Hidden tabs
+    /// are left out of the tab bar entirely.
+    pub fn is_tab_hidden(&self, tab: Tab) -> bool {
+        matches!(
+            (tab, self.device_model),
+            (
+                Tab::Reverb,
+                DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7
+            ) | (
+                Tab::Led,
+                DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2
+            )
+        )
+    }
+
     /// Returns true when a tab should be inaccessible given the current device state.
     ///
-    /// MVX2U Gen 1: EQ and Dynamics are locked in Auto Level mode — the device
-    /// manages those parameters itself and rejects SETs while in Auto.
-    /// MVX2U Gen 2 and MV6: EQ and Dynamics are always accessible regardless of mode,
-    /// so only Gen 1 is gated here.
+    /// MVX2U Gen 1 and MV7: EQ and Dynamics are locked in Auto Level mode — the
+    /// device manages those parameters itself (the MV7 resets them on entering Auto).
+    /// MVX2U Gen 2 and MV6: EQ and Dynamics are always accessible regardless of mode.
+    /// Hidden tabs count as locked so tab cycling skips them.
     pub fn is_tab_locked(&self, tab: Tab) -> bool {
-        matches!(
-            (tab, self.device_model, self.device_state.mode),
-            (Tab::Eq | Tab::Dynamics, DeviceModel::Mvx2u, InputMode::Auto)
-                | (
-                    Tab::Reverb | Tab::Led,
-                    DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2,
-                    _,
+        self.is_tab_hidden(tab)
+            || matches!(
+                (tab, self.device_model, self.device_state.mode),
+                (
+                    Tab::Eq | Tab::Dynamics,
+                    DeviceModel::Mvx2u | DeviceModel::Mv7,
+                    InputMode::Auto
                 )
-        )
+            )
     }
 
     pub fn next_tab(&mut self) {
@@ -258,6 +279,10 @@ impl App {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
             },
+            (Tab::Main, DeviceModel::Mv7) => match self.device_state.mode {
+                InputMode::Manual => Focus::Gain,
+                InputMode::Auto => Focus::Mode,
+            },
             (Tab::Main, DeviceModel::Mvx2u) => match self.device_state.mode {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
@@ -268,6 +293,7 @@ impl App {
             },
             (Tab::Eq, DeviceModel::Mv6 | DeviceModel::Mv7Plus) => Focus::Tone,
             (Tab::Eq, DeviceModel::Mvx2u) => Focus::EqEnable,
+            (Tab::Eq, DeviceModel::Mv7) => Focus::EqPreset,
             (Tab::Eq, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
                 InputMode::Auto => Focus::Tone,
                 InputMode::Manual => Focus::EqBandSelect,
@@ -275,11 +301,13 @@ impl App {
             (Tab::Dynamics, DeviceModel::Mv6) => Focus::Denoiser,
             (Tab::Dynamics, DeviceModel::Mv7Plus) => Focus::Limiter,
             (Tab::Dynamics, DeviceModel::Mvx2u) => Focus::Limiter,
+            (Tab::Dynamics, DeviceModel::Mv7) => Focus::Compressor,
             (Tab::Dynamics, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
                 InputMode::Auto => Focus::Denoiser,
                 InputMode::Manual => Focus::Limiter,
             },
             (Tab::Reverb, _) => Focus::ReverbOutput,
+            (Tab::Led, DeviceModel::Mv7) => Focus::LedLiveMeter,
             (Tab::Led, _) => Focus::LedBehavior,
             (Tab::Presets, _) => Focus::PresetName(0),
             (Tab::Info, _) => Focus::FactoryReset,
@@ -312,6 +340,11 @@ impl App {
     //
     // MV6 EQ:      Tone (slider only, no bands)
     // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
+    //
+    // MV7 Main cycles (Gen 1 order, minus Auto Gain and Phantom which it lacks):
+    //   Manual: Mode → Mute → Gain → MonitorMix → Lock → (wrap)
+    //   Auto:   Mode → Mute → AutoPosition → AutoTone → MonitorMix → Lock → (wrap)
+    // MV7 EQ: EqPreset. MV7 Dynamics: Compressor. MV7 LED: LedLiveMeter → LedNightMode.
     pub fn focus_next(&mut self) {
         self.focus = match (
             &self.active_tab,
@@ -435,6 +468,23 @@ impl App {
             (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv7Plus, _) => Focus::Hpf,
             (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv7Plus, _) => Focus::Limiter,
             (Tab::Dynamics, _, DeviceModel::Mv7Plus, _) => Focus::Limiter,
+
+            // ── MV7 Main cycle ────────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mv7, _) => Focus::Mute,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv7, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv7, InputMode::Manual) => Focus::MonitorMix,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
+            (Tab::Main, Focus::AutoPosition, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoTone,
+            (Tab::Main, Focus::AutoTone, DeviceModel::Mv7, InputMode::Auto) => Focus::MonitorMix,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7, _) => Focus::Lock,
+            (Tab::Main, Focus::Lock, DeviceModel::Mv7, _) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mv7, _) => Focus::Mode,
+
+            // ── MV7 EQ, Dynamics, LED ─────────────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mv7, _) => Focus::EqPreset,
+            (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Compressor,
+            (Tab::Led, Focus::LedLiveMeter, DeviceModel::Mv7, _) => Focus::LedNightMode,
+            (Tab::Led, _, DeviceModel::Mv7, _) => Focus::LedLiveMeter,
 
             // ── Reverb tab (MV7+ only)
             (Tab::Reverb, Focus::ReverbOutput, _, _) => Focus::ReverbMonitor,
@@ -605,6 +655,23 @@ impl App {
             (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv7Plus, _) => Focus::MuteBtnDisable,
             (Tab::Dynamics, _, DeviceModel::Mv7Plus, _) => Focus::Limiter,
 
+            // ── MV7 Main reverse ──────────────────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mv7, _) => Focus::Lock,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv7, _) => Focus::Mode,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv7, InputMode::Manual) => Focus::Mute,
+            (Tab::Main, Focus::AutoPosition, DeviceModel::Mv7, InputMode::Auto) => Focus::Mute,
+            (Tab::Main, Focus::AutoTone, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoTone,
+            (Tab::Main, Focus::Lock, DeviceModel::Mv7, _) => Focus::MonitorMix,
+            (Tab::Main, _, DeviceModel::Mv7, _) => Focus::Mode,
+
+            // ── MV7 EQ, Dynamics, LED reverse ─────────────────────────────────
+            (Tab::Eq, _, DeviceModel::Mv7, _) => Focus::EqPreset,
+            (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Compressor,
+            (Tab::Led, Focus::LedNightMode, DeviceModel::Mv7, _) => Focus::LedLiveMeter,
+            (Tab::Led, _, DeviceModel::Mv7, _) => Focus::LedNightMode,
+
             // ── Reverb tab reverse (MV7+ only)
             (Tab::Reverb, Focus::ReverbOutput, _, _) => Focus::ReverbIntensity,
             (Tab::Reverb, Focus::ReverbMonitor, _, _) => Focus::ReverbOutput,
@@ -686,10 +753,13 @@ impl App {
                 if self.device_state.mv6_gain_locked {
                     return None;
                 }
-                let max = self.device_model.max_gain_db() as i32;
-                let g = &mut self.device_state.gain_db;
-                *g = ((*g as i32) + delta).clamp(0, max) as u8;
-                Some(DeviceAction::SetGain(self.device_state.gain_db))
+                let step = i32::from(self.device_model.gain_step_tenths());
+                let max = i32::from(self.device_model.max_gain_tenths());
+                let moved = (i32::from(self.device_state.gain_tenths) + delta * step).clamp(0, max);
+                // Land on the step grid even if the device reported an off-grid value.
+                let snapped = moved - moved % step;
+                self.device_state.gain_tenths = u16::try_from(snapped).unwrap_or(0);
+                Some(DeviceAction::SetGain(self.device_state.gain_tenths))
             }
             Focus::MonitorMix => {
                 let m = &mut self.device_state.monitor_mix;
@@ -700,9 +770,10 @@ impl App {
                 }
                 let mix = self.device_state.monitor_mix;
                 match self.device_model {
-                    DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7Plus => {
-                        Some(DeviceAction::SetMv6MonitorMix(mix))
-                    }
+                    DeviceModel::Mv6
+                    | DeviceModel::Mvx2uGen2
+                    | DeviceModel::Mv7
+                    | DeviceModel::Mv7Plus => Some(DeviceAction::SetMv6MonitorMix(mix)),
                     DeviceModel::Mvx2u => Some(DeviceAction::SetMonitorMix(mix)),
                 }
             }
@@ -872,7 +943,7 @@ impl App {
                     InputMode::Manual => InputMode::Auto,
                 };
                 self.focus = match (self.device_model, self.device_state.mode) {
-                    (DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
+                    (DeviceModel::Mvx2u | DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
                     // MV7+ has no focusable gain — always move to Mute
                     (DeviceModel::Mv7Plus, _) => Focus::Mute,
                     (_, InputMode::Manual) => Focus::Gain,
@@ -1008,6 +1079,23 @@ impl App {
                     ))
                 }
             },
+            // ── MV7 controls ──────────────────────────────────────────────────
+            Focus::EqPreset => {
+                self.device_state.eq_preset = self.device_state.eq_preset.cycle_next();
+                Some(DeviceAction::SetEqPreset(self.device_state.eq_preset))
+            }
+            Focus::LedLiveMeter => {
+                self.device_state.led_live_meter = !self.device_state.led_live_meter;
+                Some(DeviceAction::SetLedLiveMeter(
+                    self.device_state.led_live_meter,
+                ))
+            }
+            Focus::LedNightMode => {
+                self.device_state.led_night_mode = !self.device_state.led_night_mode;
+                Some(DeviceAction::SetLedNightMode(
+                    self.device_state.led_night_mode,
+                ))
+            }
             Focus::PresetActions(i) => {
                 if self.presets[i].is_some() {
                     Some(DeviceAction::LoadPreset(i))
@@ -1023,7 +1111,8 @@ impl App {
 /// Commands to send to the device, produced by App but executed by main.
 #[derive(Debug)]
 pub enum DeviceAction {
-    SetGain(u8),
+    /// Gain in tenths of a dB.
+    SetGain(u16),
     SetMode(InputMode),
     SetAutoPosition(MicPosition),
     SetAutoTone(AutoTone),
@@ -1068,6 +1157,10 @@ pub enum DeviceAction {
     SetMv7LedLiveEdgeRgb([u8; 3]),
     SetMv7LedLiveMiddleRgb([u8; 3]),
     SetMv7LedLiveInteriorRgb([u8; 3]),
+    // ── MV7 exclusive actions ─────────────────────────────────────────────────
+    SetEqPreset(EqPreset),
+    SetLedLiveMeter(bool),
+    SetLedNightMode(bool),
     // ── Preset actions ────────────────────────────────────────────────────────
     SavePreset(usize),
     LoadPreset(usize),
@@ -1442,26 +1535,77 @@ mod tests {
     fn adjust_gain_increments_and_clamps_at_max() {
         let mut app = App::default();
         app.focus = Focus::Gain;
-        app.device_state.gain_db = 59;
+        app.device_state.gain_tenths = 595;
 
         app.adjust_focused(1);
-        assert_eq!(app.device_state.gain_db, 60);
+        assert_eq!(app.device_state.gain_tenths, 600);
 
         app.adjust_focused(1); // already at max
-        assert_eq!(app.device_state.gain_db, 60, "gain must not exceed 60");
+        assert_eq!(
+            app.device_state.gain_tenths, 600,
+            "gain must not exceed 60 dB"
+        );
     }
 
     #[test]
     fn adjust_gain_decrements_and_clamps_at_zero() {
         let mut app = App::default();
         app.focus = Focus::Gain;
-        app.device_state.gain_db = 1;
+        app.device_state.gain_tenths = 5;
 
         app.adjust_focused(-1);
-        assert_eq!(app.device_state.gain_db, 0);
+        assert_eq!(app.device_state.gain_tenths, 0);
 
         app.adjust_focused(-1); // already at min
-        assert_eq!(app.device_state.gain_db, 0, "gain must not underflow");
+        assert_eq!(app.device_state.gain_tenths, 0, "gain must not underflow");
+    }
+
+    #[test]
+    fn adjust_gain_steps_half_a_db_and_snaps_off_grid_values() {
+        let mut app = App::default();
+        app.focus = Focus::Gain;
+        app.device_state.gain_tenths = 283;
+
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetGain(285))
+        ));
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetGain(290))
+        ));
+        assert!(matches!(
+            app.adjust_focused(-1),
+            Some(DeviceAction::SetGain(285))
+        ));
+    }
+
+    #[test]
+    fn adjust_gain_on_mv7_uses_the_1_5_db_hardware_step() {
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            focus: Focus::Gain,
+            ..App::default()
+        };
+        app.device_state.gain_tenths = 285;
+
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetGain(300))
+        ));
+        assert!(matches!(
+            app.adjust_focused(-1),
+            Some(DeviceAction::SetGain(285))
+        ));
+        app.device_state.gain_tenths = 355;
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetGain(360))
+        ));
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetGain(360))
+        ));
     }
 
     #[test]
@@ -1627,7 +1771,7 @@ mod tests {
         let mut app = App::default();
         app.device_model = DeviceModel::Mv6;
         app.focus = Focus::Gain;
-        app.device_state.gain_db = 20;
+        app.device_state.gain_tenths = 200;
         app.device_state.mv6_gain_locked = true;
 
         let action = app.adjust_focused(1);
@@ -1636,7 +1780,7 @@ mod tests {
             "adjust must return None when gain is locked"
         );
         assert_eq!(
-            app.device_state.gain_db, 20,
+            app.device_state.gain_tenths, 200,
             "gain must not change when locked"
         );
     }
@@ -1646,12 +1790,12 @@ mod tests {
         let mut app = App::default();
         app.device_model = DeviceModel::Mv6;
         app.focus = Focus::Gain;
-        app.device_state.gain_db = 20;
+        app.device_state.gain_tenths = 200;
         app.device_state.mv6_gain_locked = false;
 
         let action = app.adjust_focused(1);
-        assert!(matches!(action, Some(DeviceAction::SetGain(21))));
-        assert_eq!(app.device_state.gain_db, 21);
+        assert!(matches!(action, Some(DeviceAction::SetGain(205))));
+        assert_eq!(app.device_state.gain_tenths, 205);
     }
 
     // ── toggle_focused ────────────────────────────────────────────────────────
@@ -2076,55 +2220,169 @@ mod tests {
         app.active_tab = Tab::Presets;
         app.focus = Focus::PresetActions(2);
         // Populate slot 2 with a minimal preset.
-        use crate::presets::{
-            PresetSlot, SerAutoGain, SerAutoTone, SerCompressorPreset, SerEqBand, SerHpfFrequency,
-            SerInputMode, SerLedBehavior, SerLedBrightness, SerLedLiveTheme, SerLedPulsingTheme,
-            SerLedSolidTheme, SerMicPosition, SerReverbType,
-        };
-        app.presets[2] = Some(PresetSlot {
-            name: String::from("Test"),
-            gain_db: 36,
-            mode: SerInputMode::Manual,
-            auto_position: SerMicPosition::Near,
-            auto_tone: SerAutoTone::Natural,
-            auto_gain: SerAutoGain::Normal,
-            muted: false,
-            phantom_power: false,
-            monitor_mix: 0,
-            limiter_enabled: false,
-            compressor: SerCompressorPreset::Off,
-            hpf: SerHpfFrequency::Off,
-            eq_enabled: false,
-            eq_bands: [SerEqBand {
-                enabled: false,
-                gain_db: 0,
-            }; 5],
-            denoiser_enabled: false,
-            popper_stopper_enabled: true,
-            mute_btn_disabled: false,
-            tone: 0,
-            mv6_gain_locked: false,
-            playback_mix: 0,
-            reverb_on_output: false,
-            reverb_monitoring: false,
-            reverb_type: SerReverbType::Plate,
-            reverb_intensity: 50,
-            led_behavior: SerLedBehavior::Live,
-            led_brightness: SerLedBrightness::High,
-            led_live_theme: SerLedLiveTheme::Default,
-            led_solid_theme: SerLedSolidTheme::Shure,
-            led_pulsing_theme: SerLedPulsingTheme::Shure,
-            led_solid_rgb: [0xB2, 0xFF, 0x33],
-            led_pulsing_rgb: [0x10, 0x3F, 0xFB],
-            led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
-            led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
-            led_live_interior_rgb: [0x00, 0x00, 0x00],
-        });
+        app.presets[2] = Some(crate::presets::PresetSlot::from_device_state(
+            "Test",
+            &DeviceState::default(),
+        ));
 
         let action = app.toggle_focused();
         assert!(
             matches!(action, Some(DeviceAction::LoadPreset(2))),
             "filled PresetActions slot must return LoadPreset"
         );
+    }
+
+    // ── MV7 ───────────────────────────────────────────────────────────────────
+
+    fn mv7_app(mode: InputMode) -> App {
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            ..App::default()
+        };
+        app.device_state.mode = mode;
+        app
+    }
+
+    fn assert_focus_cycle(app: &mut App, cycle: &[Focus]) {
+        app.focus = cycle[0];
+        for expected in &cycle[1..] {
+            app.focus_next();
+            assert_eq!(app.focus, *expected, "focus_next");
+        }
+        for expected in cycle[..cycle.len() - 1].iter().rev() {
+            app.focus_prev();
+            assert_eq!(app.focus, *expected, "focus_prev");
+        }
+    }
+
+    #[test]
+    fn mv7_main_manual_focus_cycle() {
+        let mut app = mv7_app(InputMode::Manual);
+        app.active_tab = Tab::Main;
+        assert_focus_cycle(
+            &mut app,
+            &[
+                Focus::Mode,
+                Focus::Mute,
+                Focus::Gain,
+                Focus::MonitorMix,
+                Focus::Lock,
+                Focus::Mode,
+            ],
+        );
+    }
+
+    #[test]
+    fn mv7_main_auto_focus_cycle() {
+        let mut app = mv7_app(InputMode::Auto);
+        app.active_tab = Tab::Main;
+        assert_focus_cycle(
+            &mut app,
+            &[
+                Focus::Mode,
+                Focus::Mute,
+                Focus::AutoPosition,
+                Focus::AutoTone,
+                Focus::MonitorMix,
+                Focus::Lock,
+                Focus::Mode,
+            ],
+        );
+    }
+
+    #[test]
+    fn mv7_led_focus_cycle() {
+        let mut app = mv7_app(InputMode::Manual);
+        app.active_tab = Tab::Led;
+        assert_focus_cycle(
+            &mut app,
+            &[
+                Focus::LedLiveMeter,
+                Focus::LedNightMode,
+                Focus::LedLiveMeter,
+            ],
+        );
+    }
+
+    #[test]
+    fn mv7_tabs_hide_reverb_and_show_led() {
+        let app = mv7_app(InputMode::Manual);
+        assert!(app.is_tab_hidden(Tab::Reverb));
+        assert!(!app.is_tab_hidden(Tab::Led));
+        for tab in [
+            Tab::Main,
+            Tab::Eq,
+            Tab::Dynamics,
+            Tab::Led,
+            Tab::Presets,
+            Tab::Info,
+        ] {
+            assert!(!app.is_tab_locked(tab), "{tab:?} must be open in Manual");
+        }
+    }
+
+    #[test]
+    fn mv7_eq_and_dynamics_lock_in_auto_mode() {
+        let app = mv7_app(InputMode::Auto);
+        assert!(app.is_tab_locked(Tab::Eq));
+        assert!(app.is_tab_locked(Tab::Dynamics));
+        assert!(!app.is_tab_hidden(Tab::Eq), "locked tabs stay visible");
+    }
+
+    #[test]
+    fn mv7_tab_cycle_lands_on_each_tabs_first_control() {
+        let mut app = mv7_app(InputMode::Manual);
+        let expected = [
+            (Tab::Eq, Focus::EqPreset),
+            (Tab::Dynamics, Focus::Compressor),
+            (Tab::Led, Focus::LedLiveMeter),
+            (Tab::Presets, Focus::PresetName(0)),
+        ];
+        app.active_tab = Tab::Main;
+        for (tab, focus) in expected {
+            app.next_tab();
+            assert_eq!((app.active_tab, app.focus), (tab, focus));
+        }
+    }
+
+    #[test]
+    fn mv7_toggles_produce_mv7_actions() {
+        let mut app = mv7_app(InputMode::Manual);
+        app.focus = Focus::EqPreset;
+        assert!(matches!(
+            app.toggle_focused(),
+            Some(DeviceAction::SetEqPreset(EqPreset::HighPass))
+        ));
+        app.focus = Focus::LedNightMode;
+        assert!(matches!(
+            app.toggle_focused(),
+            Some(DeviceAction::SetLedNightMode(true))
+        ));
+        app.focus = Focus::LedLiveMeter;
+        assert!(matches!(
+            app.toggle_focused(),
+            Some(DeviceAction::SetLedLiveMeter(false))
+        ));
+    }
+
+    #[test]
+    fn mv7_switching_to_auto_focuses_mic_position() {
+        let mut app = mv7_app(InputMode::Manual);
+        app.focus = Focus::Mode;
+        assert!(matches!(
+            app.toggle_focused(),
+            Some(DeviceAction::SetMode(InputMode::Auto))
+        ));
+        assert_eq!(app.focus, Focus::AutoPosition);
+    }
+
+    #[test]
+    fn mv7_monitor_mix_uses_the_shared_action() {
+        let mut app = mv7_app(InputMode::Manual);
+        app.focus = Focus::MonitorMix;
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetMv6MonitorMix(1))
+        ));
     }
 }

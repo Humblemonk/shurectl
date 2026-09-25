@@ -16,9 +16,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqBand, HpfFrequency,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqBand, EqPreset, HpfFrequency,
     InputMode, LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
-    MicPosition, ReverbType,
+    MicPosition, ReverbType, format_gain,
 };
 
 pub const PRESET_COUNT: usize = 4;
@@ -33,7 +33,9 @@ pub struct PresetSlot {
     pub name: String,
 
     // ── Shared ───────────────────────────────────────────────────────────────
-    pub gain_db: u8,
+    /// Manual gain in dB, e.g. `28.5`. Presets saved before half-dB gain stored a
+    /// whole number here, which still loads.
+    pub gain_db: f32,
     pub mode: SerInputMode,
     pub muted: bool,
     pub hpf: SerHpfFrequency,
@@ -106,6 +108,24 @@ pub struct PresetSlot {
     pub led_live_middle_rgb: [u8; 3],
     #[serde(default = "default_led_live_interior_rgb")]
     pub led_live_interior_rgb: [u8; 3],
+
+    // ── MV7-specific ─────────────────────────────────────────────────────────
+    #[serde(default)]
+    pub eq_preset: SerEqPreset,
+    #[serde(default = "default_led_live_meter")]
+    pub led_live_meter: bool,
+    #[serde(default)]
+    pub led_night_mode: bool,
+}
+
+fn default_led_live_meter() -> bool {
+    true
+}
+
+/// Preset gain (dB) → tenths of a dB, rounded and clamped to the `u16` range.
+/// Model-specific ceilings are applied when the gain is sent to the device.
+fn gain_db_to_tenths(gain_db: f32) -> u16 {
+    (gain_db * 10.0).round().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
 fn default_popper_stopper() -> bool {
@@ -141,7 +161,7 @@ impl PresetSlot {
     pub fn from_device_state(name: impl Into<String>, state: &DeviceState) -> Self {
         Self {
             name: name.into(),
-            gain_db: state.gain_db,
+            gain_db: f32::from(state.gain_tenths) / 10.0,
             mode: SerInputMode::from(state.mode),
             muted: state.muted,
             hpf: SerHpfFrequency::from(state.hpf),
@@ -174,13 +194,16 @@ impl PresetSlot {
             led_live_edge_rgb: state.led_live_edge_rgb,
             led_live_middle_rgb: state.led_live_middle_rgb,
             led_live_interior_rgb: state.led_live_interior_rgb,
+            eq_preset: SerEqPreset::from(state.eq_preset),
+            led_live_meter: state.led_live_meter,
+            led_night_mode: state.led_night_mode,
         }
     }
 
     /// Apply this preset's settings onto a `DeviceState`, preserving
     /// hardware-identity fields (`serial_number`).
     pub fn apply_to_device_state(&self, state: &mut DeviceState) {
-        state.gain_db = self.gain_db;
+        state.gain_tenths = gain_db_to_tenths(self.gain_db);
         state.mode = InputMode::from(self.mode);
         state.muted = self.muted;
         state.hpf = HpfFrequency::from(self.hpf);
@@ -213,6 +236,14 @@ impl PresetSlot {
         state.led_live_edge_rgb = self.led_live_edge_rgb;
         state.led_live_middle_rgb = self.led_live_middle_rgb;
         state.led_live_interior_rgb = self.led_live_interior_rgb;
+        state.eq_preset = EqPreset::from(self.eq_preset);
+        state.led_live_meter = self.led_live_meter;
+        state.led_night_mode = self.led_night_mode;
+    }
+
+    /// The preset's gain formatted the same way as everywhere else in the UI.
+    fn gain_str(&self) -> String {
+        format_gain(gain_db_to_tenths(self.gain_db))
     }
 
     /// Format the denoiser state as a display string.
@@ -259,10 +290,25 @@ impl PresetSlot {
                 let popper_str = self.popper_str();
                 let tone_str = self.tone_str();
                 format!(
-                    "{}dB · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str}",
-                    self.gain_db
+                    "{} · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str}",
+                    self.gain_str()
                 )
             }
+            DeviceModel::Mv7 => match InputMode::from(self.mode) {
+                InputMode::Auto => {
+                    let pos = MicPosition::from(self.auto_position);
+                    let tone = AutoTone::from(self.auto_tone);
+                    format!("Auto · {pos} · {tone}")
+                }
+                InputMode::Manual => {
+                    let comp_str = CompressorPreset::from(self.compressor).to_string();
+                    let eq_str = EqPreset::from(self.eq_preset).to_string();
+                    format!(
+                        "Manual · {} · Comp: {comp_str} · EQ: {eq_str}",
+                        self.gain_str()
+                    )
+                }
+            },
             DeviceModel::Mv7Plus => {
                 let denoiser_str = self.denoiser_str();
                 let popper_str = self.popper_str();
@@ -273,8 +319,8 @@ impl PresetSlot {
                     "Reverb: off".to_string()
                 };
                 format!(
-                    "{}dB · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str} · {reverb_str}",
-                    self.gain_db
+                    "{} · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str} · {reverb_str}",
+                    self.gain_str()
                 )
             }
             DeviceModel::Mvx2uGen2 => {
@@ -300,8 +346,8 @@ impl PresetSlot {
                             "Limiter off"
                         };
                         format!(
-                            "Manual · {}dB · {limiter_str} · Comp: {comp_str} · {phantom_str} · {denoiser_str} · {popper_str} · {hpf_str}",
-                            self.gain_db
+                            "Manual · {} · {limiter_str} · Comp: {comp_str} · {phantom_str} · {denoiser_str} · {popper_str} · {hpf_str}",
+                            self.gain_str()
                         )
                     }
                 }
@@ -323,8 +369,8 @@ impl PresetSlot {
                         let eq_str = if self.eq_enabled { "EQ on" } else { "EQ off" };
                         let comp_str = CompressorPreset::from(self.compressor).to_string();
                         format!(
-                            "Manual · {}dB · {eq_str} · Comp: {comp_str} · {phantom_str} · {hpf_str}",
-                            self.gain_db
+                            "Manual · {} · {eq_str} · Comp: {comp_str} · {phantom_str} · {hpf_str}",
+                            self.gain_str()
                         )
                     }
                 }
@@ -622,6 +668,38 @@ impl From<SerEqBand> for EqBand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SerEqPreset {
+    #[default]
+    Flat,
+    HighPass,
+    PresenceBoost,
+    HighPassPresenceBoost,
+}
+
+impl From<EqPreset> for SerEqPreset {
+    fn from(v: EqPreset) -> Self {
+        match v {
+            EqPreset::Flat => Self::Flat,
+            EqPreset::HighPass => Self::HighPass,
+            EqPreset::PresenceBoost => Self::PresenceBoost,
+            EqPreset::HighPassPresenceBoost => Self::HighPassPresenceBoost,
+        }
+    }
+}
+
+impl From<SerEqPreset> for EqPreset {
+    fn from(v: SerEqPreset) -> Self {
+        match v {
+            SerEqPreset::Flat => Self::Flat,
+            SerEqPreset::HighPass => Self::HighPass,
+            SerEqPreset::PresenceBoost => Self::PresenceBoost,
+            SerEqPreset::HighPassPresenceBoost => Self::HighPassPresenceBoost,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SerReverbType {
     #[default]
     Plate,
@@ -883,7 +961,7 @@ mod tests {
 
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "My Preset");
-        assert_eq!(decoded.gain_db, 36);
+        assert_eq!(decoded.gain_db, 36.0);
         assert!(decoded.muted);
         assert_eq!(decoded.eq_bands[0].gain_db, 40); // +4.0 dB in tenths
         assert_eq!(decoded.eq_bands[4].gain_db, -80); // -8.0 dB in tenths
@@ -902,7 +980,7 @@ mod tests {
 
         slot.apply_to_device_state(&mut target);
 
-        assert_eq!(target.gain_db, 36);
+        assert_eq!(target.gain_tenths, 360);
         assert_eq!(target.mode, InputMode::Manual);
         assert_eq!(target.auto_position, MicPosition::Far);
         assert_eq!(target.auto_tone, AutoTone::Bright);
@@ -937,13 +1015,13 @@ mod tests {
     fn summary_manual_mode_contains_gain_eq_dynamics_phantom_hpf() {
         let mut state = example_state();
         state.mode = InputMode::Manual;
-        state.gain_db = 36;
+        state.gain_tenths = 360;
         state.phantom_power = true;
         state.hpf = HpfFrequency::Hz75;
         let slot = PresetSlot::from_device_state("S", &state);
         let s = slot.summary(DeviceModel::Mvx2u);
         assert!(s.contains("Manual"), "summary: {s}");
-        assert!(s.contains("36dB"), "summary: {s}");
+        assert!(s.contains("36.0 dB"), "summary: {s}");
         assert!(s.contains("EQ"), "summary: {s}");
         assert!(s.contains("Comp:"), "summary: {s}");
         assert!(s.contains("48V on"), "summary: {s}");
@@ -976,7 +1054,7 @@ mod tests {
 
     fn mv6_example_state() -> DeviceState {
         DeviceState {
-            gain_db: 24,
+            gain_tenths: 240,
             mode: InputMode::Manual,
             monitor_mix: 62,
             hpf: HpfFrequency::Hz75,
@@ -997,7 +1075,7 @@ mod tests {
 
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "MV6 Preset");
-        assert_eq!(decoded.gain_db, 24);
+        assert_eq!(decoded.gain_db, 24.0);
         assert!(decoded.denoiser_enabled);
         assert!(decoded.popper_stopper_enabled);
         assert!(decoded.mute_btn_disabled);
@@ -1019,7 +1097,7 @@ mod tests {
 
         slot.apply_to_device_state(&mut target);
 
-        assert_eq!(target.gain_db, 24);
+        assert_eq!(target.gain_tenths, 240);
         assert!(target.denoiser_enabled);
         assert!(target.popper_stopper_enabled);
         assert!(target.mute_btn_disabled);
@@ -1075,7 +1153,7 @@ mod tests {
         state.hpf = HpfFrequency::Hz75;
         let slot = PresetSlot::from_device_state("S", &state);
         let s = slot.summary(DeviceModel::Mv6);
-        assert!(s.contains("24dB"), "summary: {s}");
+        assert!(s.contains("24.0 dB"), "summary: {s}");
         assert!(s.contains("Denoiser on"), "summary: {s}");
         assert!(s.contains("Popper off"), "summary: {s}");
         assert!(s.contains("HPF 75 Hz"), "summary: {s}");
@@ -1109,5 +1187,104 @@ mod tests {
             slot2.summary(DeviceModel::Mv6).contains("30% Dark"),
             "negative tone should be Dark"
         );
+    }
+
+    #[test]
+    fn half_db_gain_roundtrips_through_toml() {
+        let state = DeviceState {
+            gain_tenths: 285,
+            ..DeviceState::default()
+        };
+        let slot = PresetSlot::from_device_state("Half", &state);
+        let decoded = toml_roundtrip(&slot);
+        assert_eq!(decoded.gain_db, 28.5);
+
+        let mut target = DeviceState::default();
+        decoded.apply_to_device_state(&mut target);
+        assert_eq!(target.gain_tenths, 285);
+    }
+
+    #[test]
+    fn preset_saved_with_whole_db_gain_still_loads() {
+        let slot = PresetSlot::from_device_state("Old", &DeviceState::default());
+        let text = toml::to_string_pretty(&slot)
+            .expect("serialise")
+            .replace("gain_db = 36.0", "gain_db = 36");
+        assert!(text.contains("gain_db = 36\n"), "fixture: {text}");
+        let loaded: PresetSlot = toml::from_str(&text).expect("old format must parse");
+        let mut target = DeviceState::default();
+        loaded.apply_to_device_state(&mut target);
+        assert_eq!(target.gain_tenths, 360);
+    }
+
+    #[test]
+    fn preset_without_mv7_fields_loads_with_defaults() {
+        let slot = PresetSlot::from_device_state("Pre-MV7", &DeviceState::default());
+        let text: String = toml::to_string_pretty(&slot)
+            .expect("serialise")
+            .lines()
+            .filter(|line| {
+                !line.starts_with("eq_preset")
+                    && !line.starts_with("led_live_meter")
+                    && !line.starts_with("led_night_mode")
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let loaded: PresetSlot = toml::from_str(&text).expect("parse");
+        assert_eq!(loaded.eq_preset, SerEqPreset::Flat);
+        assert!(loaded.led_live_meter);
+        assert!(!loaded.led_night_mode);
+    }
+
+    fn mv7_example_state() -> DeviceState {
+        DeviceState {
+            gain_tenths: 195,
+            mode: InputMode::Manual,
+            monitor_mix: 74,
+            compressor: CompressorPreset::Light,
+            eq_preset: EqPreset::HighPassPresenceBoost,
+            led_live_meter: false,
+            led_night_mode: true,
+            ..DeviceState::default()
+        }
+    }
+
+    #[test]
+    fn mv7_preset_roundtrips_mv7_fields() {
+        let original = mv7_example_state();
+        let slot = PresetSlot::from_device_state("MV7", &original);
+        let loaded = write_and_reload(&slot);
+        assert_eq!(slot, loaded);
+
+        let mut target = DeviceState::default();
+        loaded.apply_to_device_state(&mut target);
+        assert_eq!(target.gain_tenths, 195);
+        assert_eq!(target.monitor_mix, 74);
+        assert_eq!(target.compressor, CompressorPreset::Light);
+        assert_eq!(target.eq_preset, EqPreset::HighPassPresenceBoost);
+        assert!(!target.led_live_meter);
+        assert!(target.led_night_mode);
+    }
+
+    #[test]
+    fn summary_mv7_manual_shows_gain_compressor_and_eq() {
+        let slot = PresetSlot::from_device_state("S", &mv7_example_state());
+        let s = slot.summary(DeviceModel::Mv7);
+        assert!(s.contains("Manual"), "summary: {s}");
+        assert!(s.contains("19.5 dB"), "summary: {s}");
+        assert!(s.contains("Comp: Light"), "summary: {s}");
+        assert!(s.contains("EQ: High Pass + Presence Boost"), "summary: {s}");
+        assert!(!s.contains("HPF"), "MV7 has no HPF: {s}");
+        assert!(!s.contains("Denoiser"), "MV7 has no denoiser: {s}");
+    }
+
+    #[test]
+    fn summary_mv7_auto_shows_position_and_tone() {
+        let mut state = mv7_example_state();
+        state.mode = InputMode::Auto;
+        state.auto_position = MicPosition::Far;
+        state.auto_tone = AutoTone::Dark;
+        let s = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv7);
+        assert_eq!(s, "Auto · Far · Dark");
     }
 }

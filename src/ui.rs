@@ -10,8 +10,9 @@ use ratatui::{
 
 use crate::app::{App, Focus, Tab};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, HpfFrequency, InputMode,
-    LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, ReverbType,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
+    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, ReverbType,
+    format_gain,
 };
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -131,18 +132,14 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
-    // Permanently locked tabs (Reverb, LED on non-MV7+ devices) are hidden
-    // entirely — they have no meaning for those devices. Temporarily locked
-    // tabs (EQ, Dynamics on MVX2U Gen 1 in Auto mode) remain visible with a
-    // lock icon since they're meaningful but currently inaccessible.
+    // Tabs the model has no settings for (Reverb and LED on most devices) are
+    // hidden entirely. Temporarily locked tabs (EQ, Dynamics on MVX2U Gen 1 and
+    // MV7 in Auto mode) remain visible with a lock icon since they're meaningful
+    // but currently inaccessible.
     let visible: Vec<Tab> = Tab::ALL
         .iter()
         .copied()
-        .filter(|t| {
-            let permanently_locked = matches!(t, Tab::Reverb | Tab::Led)
-                && app.device_model != crate::protocol::DeviceModel::Mv7Plus;
-            !permanently_locked
-        })
+        .filter(|t| !app.is_tab_hidden(*t))
         .collect();
 
     let titles: Vec<Line> = visible
@@ -244,6 +241,8 @@ fn draw_main_left(f: &mut Frame, app: &App, area: Rect) {
         (DeviceModel::Mv7Plus, InputMode::Auto) => draw_main_left_mv7plus_auto(f, app, area),
         (DeviceModel::Mv6, InputMode::Manual) => draw_main_left_mv6_manual(f, app, area),
         (DeviceModel::Mv6, InputMode::Auto) => draw_main_left_mv6_auto(f, app, area),
+        (DeviceModel::Mv7, InputMode::Manual) => draw_main_left_mv7_manual(f, app, area),
+        (DeviceModel::Mv7, InputMode::Auto) => draw_main_left_mv7_auto(f, app, area),
         (DeviceModel::Mvx2uGen2, InputMode::Manual) => draw_main_left_gen2_manual(f, app, area),
         (DeviceModel::Mvx2uGen2, InputMode::Auto) => draw_main_left_gen2_auto(f, app, area),
         (DeviceModel::Mvx2u, InputMode::Auto) => draw_main_left_auto(f, app, area),
@@ -269,45 +268,7 @@ fn draw_main_left_mv7plus(f: &mut Frame, app: &App, area: Rect) {
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
 
-    let gain_focused = app.focus == Focus::Gain;
-    let gain = app.device_state.gain_db;
-    let gauge =
-        Gauge::default()
-            .block(
-                Block::default()
-                    .title(Line::from(vec![
-                        Span::styled("  GAIN  ", focused_style(gain_focused)),
-                        Span::styled(
-                            format!(" {} dB ", gain),
-                            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            if gain_focused {
-                                "  ◄ ► or ←→ to adjust"
-                            } else {
-                                ""
-                            },
-                            Style::default().fg(C_DIM),
-                        ),
-                    ]))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(if gain_focused {
-                        Style::default().fg(C_FOCUS)
-                    } else {
-                        Style::default().fg(C_BORDER)
-                    }),
-            )
-            .gauge_style(Style::default().fg(C_ACCENT).bg(C_SURFACE).add_modifier(
-                if gain_focused {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                },
-            ))
-            .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
-            .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
-    f.render_widget(gauge, rows[2]);
+    draw_gain_gauge(f, app, rows[2]);
 
     draw_meter(f, app, rows[3]);
     draw_monitor_mix_gauge(f, app, rows[4]);
@@ -363,6 +324,54 @@ fn draw_mv7plus_playback_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(gauge, area);
 }
 
+// MV7 Manual: Mode → Mute → Gain → Meter → MonitorMix → Lock
+fn draw_main_left_mv7_manual(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(3), // gain gauge
+            Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // lock
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+    draw_gain_gauge(f, app, rows[2]);
+    draw_meter(f, app, rows[3]);
+    draw_monitor_mix_gauge(f, app, rows[4]);
+    draw_config_lock_block(f, app, rows[5]);
+}
+
+// MV7 Auto: Mode → Mute → Auto Level (Position, Tone) → Meter → MonitorMix → Lock
+fn draw_main_left_mv7_auto(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(4), // auto controls (2 rows + 2 borders)
+            Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // lock
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+    draw_auto_controls(f, app, rows[2], false);
+    draw_meter(f, app, rows[3]);
+    draw_monitor_mix_gauge(f, app, rows[4]);
+    draw_config_lock_block(f, app, rows[5]);
+}
+
 fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -381,52 +390,7 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
 
-    let gain_focused = app.focus == Focus::Gain;
-    let gain = app.device_state.gain_db;
-    let gain_locked = app.device_state.mv6_gain_locked;
-    let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled("  GAIN  ", focused_style(gain_focused)),
-                    Span::styled(
-                        format!(" {} dB ", gain),
-                        Style::default()
-                            .fg(if gain_locked { C_DIM } else { C_ACCENT })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if gain_focused && !gain_locked {
-                            "  ◄ ► or ←→ to adjust"
-                        } else if gain_focused && gain_locked {
-                            "  🔒 locked"
-                        } else {
-                            ""
-                        },
-                        Style::default().fg(C_DIM),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if gain_focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(
-            Style::default()
-                .fg(if gain_locked { C_DISABLED } else { C_ACCENT })
-                .bg(C_SURFACE)
-                .add_modifier(if gain_focused {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        )
-        .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
-        .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
-    f.render_widget(gauge, rows[2]);
+    draw_gain_gauge(f, app, rows[2]);
 
     draw_gain_lock_block(f, app, rows[3]);
 
@@ -473,52 +437,7 @@ fn draw_main_left_gen2_manual(f: &mut Frame, app: &App, area: Rect) {
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
 
-    let gain_focused = app.focus == Focus::Gain;
-    let gain = app.device_state.gain_db;
-    let gain_locked = app.device_state.mv6_gain_locked;
-    let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled("  GAIN  ", focused_style(gain_focused)),
-                    Span::styled(
-                        format!(" {} dB ", gain),
-                        Style::default()
-                            .fg(if gain_locked { C_DIM } else { C_ACCENT })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if gain_focused && !gain_locked {
-                            "  ◄ ► or ←→ to adjust"
-                        } else if gain_focused && gain_locked {
-                            "  🔒 locked"
-                        } else {
-                            ""
-                        },
-                        Style::default().fg(C_DIM),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if gain_focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(
-            Style::default()
-                .fg(if gain_locked { C_DISABLED } else { C_ACCENT })
-                .bg(C_SURFACE)
-                .add_modifier(if gain_focused {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        )
-        .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
-        .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
-    f.render_widget(gauge, rows[2]);
+    draw_gain_gauge(f, app, rows[2]);
 
     draw_gain_lock_block(f, app, rows[3]);
     draw_meter(f, app, rows[4]);
@@ -567,46 +486,7 @@ fn draw_main_left_manual(f: &mut Frame, app: &App, area: Rect) {
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
 
-    // ── Gain ──────────────────────────────────────────────────────────────────
-    let gain_focused = app.focus == Focus::Gain;
-    let gain = app.device_state.gain_db;
-    let gauge =
-        Gauge::default()
-            .block(
-                Block::default()
-                    .title(Line::from(vec![
-                        Span::styled("  GAIN  ", focused_style(gain_focused)),
-                        Span::styled(
-                            format!(" {} dB ", gain),
-                            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            if gain_focused {
-                                "  ◄ ► or ←→ to adjust"
-                            } else {
-                                ""
-                            },
-                            Style::default().fg(C_DIM),
-                        ),
-                    ]))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(if gain_focused {
-                        Style::default().fg(C_FOCUS)
-                    } else {
-                        Style::default().fg(C_BORDER)
-                    }),
-            )
-            .gauge_style(Style::default().fg(C_ACCENT).bg(C_SURFACE).add_modifier(
-                if gain_focused {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                },
-            ))
-            .ratio(gain as f64 / app.device_model.max_gain_db() as f64)
-            .label(format!("{gain} / {} dB", app.device_model.max_gain_db()));
-    f.render_widget(gauge, rows[2]);
+    draw_gain_gauge(f, app, rows[2]);
 
     draw_main_shared(f, app, &rows[3..]);
 }
@@ -617,7 +497,7 @@ fn draw_main_left_auto(f: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(3), // mode          (1 line + 2 borders)
             Constraint::Length(3), // mute          (1 line + 2 borders)
-            Constraint::Length(7), // auto controls (3 rows + 2 borders + header)
+            Constraint::Length(5), // auto controls (3 rows + 2 borders)
             Constraint::Length(4), // level meter   (bar + ruler + 2 borders)
             Constraint::Length(3), // monitor mix   (1 bar + 2 borders)
             Constraint::Length(3), // phantom       (1 line + 2 borders)
@@ -629,48 +509,50 @@ fn draw_main_left_auto(f: &mut Frame, app: &App, area: Rect) {
 
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
-    draw_auto_controls(f, app, rows[2]);
+    draw_auto_controls(f, app, rows[2], true);
     draw_main_shared(f, app, &rows[3..]);
 }
 
-/// Renders the three Auto Level sub-controls: Position, Tone, Gain.
+/// Renders the Auto Level sub-controls: Position, Tone, and (when
+/// `show_auto_gain`) Gain. The MV7 has no Auto Gain setting.
 ///
 /// Each row shows all options for that setting as a horizontal "segmented
 /// button" strip, with the active value highlighted in the accent colour
 /// and focused rows highlighted with the focus border/colour.
-fn draw_auto_controls(f: &mut Frame, app: &App, area: Rect) {
+fn draw_auto_controls(f: &mut Frame, app: &App, area: Rect, show_auto_gain: bool) {
     let pos_focused = app.focus == Focus::AutoPosition;
     let tone_focused = app.focus == Focus::AutoTone;
     let gain_focused = app.focus == Focus::AutoGain;
     let any_focused = pos_focused || tone_focused || gain_focused;
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if any_focused {
+            Style::default().fg(C_FOCUS)
+        } else {
+            Style::default().fg(C_BORDER)
+        })
+        .title(Span::styled(
+            "  Auto Level Controls  ",
+            if any_focused {
+                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(C_TEXT)
+            },
+        ));
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    // Mic Position, Tone, and (when shown) Auto Gain: one line each.
+    let row_count = if show_auto_gain { 3 } else { 2 };
+    // Horizontal padding only: vertical padding cost two rows and squeezed the
+    // Tone row out of 30-row terminals.
     let inner_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Mic Position
-            Constraint::Length(1), // Tone
-            Constraint::Length(1), // Auto Gain
-        ])
-        .margin(1)
-        .split(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if any_focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                })
-                .title(Span::styled(
-                    "  Auto Level Controls  ",
-                    if any_focused {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_TEXT)
-                    },
-                ))
-                .inner(area),
-        );
+        .constraints(vec![Constraint::Length(1); row_count])
+        .horizontal_margin(1)
+        .split(inner_area);
 
     // ── Mic Position row ──────────────────────────────────────────────────────
     let pos = &app.device_state.auto_position;
@@ -713,6 +595,9 @@ fn draw_auto_controls(f: &mut Frame, app: &App, area: Rect) {
     );
 
     // ── Auto Gain row ─────────────────────────────────────────────────────────
+    if !show_auto_gain {
+        return;
+    }
     let gain = &app.device_state.auto_gain;
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -746,6 +631,58 @@ fn segmented_span(label: &'static str, active: bool, focused: bool) -> Span<'sta
     } else {
         Span::styled(label, Style::default().fg(C_DISABLED))
     }
+}
+
+/// Renders the manual Gain gauge, shared by every model. The locked styling
+/// follows `mv6_gain_locked`, the same flag that makes adjust_focused() ignore ←/→.
+fn draw_gain_gauge(f: &mut Frame, app: &App, area: Rect) {
+    let gain_focused = app.focus == Focus::Gain;
+    let gain = app.device_state.gain_tenths;
+    let max = app.device_model.max_gain_tenths();
+    let gain_locked = app.device_state.mv6_gain_locked;
+    let gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title(Line::from(vec![
+                    Span::styled("  GAIN  ", focused_style(gain_focused)),
+                    Span::styled(
+                        format!(" {} ", format_gain(gain)),
+                        Style::default()
+                            .fg(if gain_locked { C_DIM } else { C_ACCENT })
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if gain_focused && !gain_locked {
+                            "  ◄ ► or ←→ to adjust"
+                        } else if gain_focused && gain_locked {
+                            "  🔒 locked"
+                        } else {
+                            ""
+                        },
+                        Style::default().fg(C_DIM),
+                    ),
+                ]))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if gain_focused {
+                    Style::default().fg(C_FOCUS)
+                } else {
+                    Style::default().fg(C_BORDER)
+                }),
+        )
+        .gauge_style(
+            Style::default()
+                .fg(if gain_locked { C_DISABLED } else { C_ACCENT })
+                .bg(C_SURFACE)
+                .add_modifier(if gain_focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
+        .ratio((f64::from(gain) / f64::from(max)).clamp(0.0, 1.0))
+        .label(format!("{} / {}", format_gain(gain), format_gain(max)));
+    f.render_widget(gauge, area);
 }
 
 /// Renders the Input Mode block (Manual / Auto toggle only).
@@ -971,6 +908,11 @@ fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
     draw_phantom_block(f, app, rows[2]);
 
     // ── Config Lock ───────────────────────────────────────────────────────────
+    draw_config_lock_block(f, app, rows[3]);
+}
+
+/// Renders the Config Lock block. Used by MVX2U Gen 1 (via draw_main_shared) and MV7.
+fn draw_config_lock_block(f: &mut Frame, app: &App, area: Rect) {
     let lock_focused = app.focus == Focus::Lock;
     let locked = app.device_state.locked;
     let lock_icon = if locked { "🔒" } else { "🔓" };
@@ -1022,7 +964,7 @@ fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
                 },
             )),
     );
-    f.render_widget(lock_p, rows[3]);
+    f.render_widget(lock_p, area);
 }
 
 fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
@@ -1033,7 +975,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             let mode_specific_lines: Vec<Line> = match ds.mode {
                 InputMode::Manual => vec![Line::from(vec![
                     Span::styled("Gain        : ", Style::default().fg(C_DIM)),
-                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                    Span::styled(format_gain(ds.gain_tenths), Style::default().fg(C_TEXT)),
                 ])],
                 InputMode::Auto => vec![
                     Line::from(vec![
@@ -1147,7 +1089,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.mode == InputMode::Manual {
                 l.push(Line::from(vec![
                     Span::styled("Gain        : ", Style::default().fg(C_DIM)),
-                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                    Span::styled(format_gain(ds.gain_tenths), Style::default().fg(C_TEXT)),
                 ]));
                 l.push(Line::from(vec![
                     Span::styled("Gain Lock   : ", Style::default().fg(C_DIM)),
@@ -1199,6 +1141,83 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             ]);
             l
         }
+        DeviceModel::Mv7 => {
+            // Auto Level manages compressor and EQ itself, as on Gen 1.
+            let auto_managed = |value: String| {
+                if ds.mode == InputMode::Auto {
+                    Span::styled("auto", Style::default().fg(C_DISABLED))
+                } else {
+                    Span::styled(value, Style::default().fg(C_TEXT))
+                }
+            };
+            let on_off = |on: bool| {
+                if on {
+                    Span::styled("ON", Style::default().fg(C_SUCCESS))
+                } else {
+                    Span::styled("OFF", Style::default().fg(C_DIM))
+                }
+            };
+            let mut l = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Mode        : ", Style::default().fg(C_DIM)),
+                    Span::styled(ds.mode.to_string(), Style::default().fg(C_ACCENT)),
+                ]),
+            ];
+            match ds.mode {
+                InputMode::Manual => l.push(Line::from(vec![
+                    Span::styled("Gain        : ", Style::default().fg(C_DIM)),
+                    Span::styled(format_gain(ds.gain_tenths), Style::default().fg(C_TEXT)),
+                ])),
+                InputMode::Auto => l.extend([
+                    Line::from(vec![
+                        Span::styled("Position    : ", Style::default().fg(C_DIM)),
+                        Span::styled(ds.auto_position.to_string(), Style::default().fg(C_TEXT)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Tone        : ", Style::default().fg(C_DIM)),
+                        Span::styled(ds.auto_tone.to_string(), Style::default().fg(C_TEXT)),
+                    ]),
+                ]),
+            }
+            l.extend([
+                Line::from(vec![
+                    Span::styled("Muted       : ", Style::default().fg(C_DIM)),
+                    if ds.muted {
+                        Span::styled("YES", Style::default().fg(C_ERROR))
+                    } else {
+                        Span::styled("NO", Style::default().fg(C_SUCCESS))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Locked      : ", Style::default().fg(C_DIM)),
+                    if ds.locked {
+                        Span::styled("YES", Style::default().fg(C_ERROR))
+                    } else {
+                        Span::styled("NO", Style::default().fg(C_DIM))
+                    },
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("EQ          : ", Style::default().fg(C_DIM)),
+                    auto_managed(ds.eq_preset.to_string()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Compressor  : ", Style::default().fg(C_DIM)),
+                    auto_managed(ds.compressor.to_string()),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Live Meter  : ", Style::default().fg(C_DIM)),
+                    on_off(ds.led_live_meter),
+                ]),
+                Line::from(vec![
+                    Span::styled("Night Mode  : ", Style::default().fg(C_DIM)),
+                    on_off(ds.led_night_mode),
+                ]),
+            ]);
+            l
+        }
         DeviceModel::Mv7Plus => {
             let pct = ds.tone as i32 * 10;
             let tone_str = if pct < 0 {
@@ -1221,7 +1240,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
                 ]),
                 Line::from(vec![
                     Span::styled("Gain        : ", Style::default().fg(C_DIM)),
-                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                    Span::styled(format_gain(ds.gain_tenths), Style::default().fg(C_TEXT)),
                 ]),
                 Line::from(vec![
                     Span::styled("Tone        : ", Style::default().fg(C_DIM)),
@@ -1317,7 +1336,7 @@ fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
             if ds.mode == InputMode::Manual {
                 l.push(Line::from(vec![
                     Span::styled("Gain        : ", Style::default().fg(C_DIM)),
-                    Span::styled(format!("{} dB", ds.gain_db), Style::default().fg(C_TEXT)),
+                    Span::styled(format_gain(ds.gain_tenths), Style::default().fg(C_TEXT)),
                 ]));
                 l.push(Line::from(vec![
                     Span::styled("Gain Lock   : ", Style::default().fg(C_DIM)),
@@ -2130,6 +2149,10 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
         draw_tab_locked_notice(f, area, "EQ");
         return;
     }
+    if app.device_model == DeviceModel::Mv7 {
+        draw_mv7_eq_tab(f, app, area);
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2488,6 +2511,10 @@ fn draw_led_cycle_row(f: &mut Frame, focused: bool, label: &str, value: &str, ar
 }
 
 fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
+    if app.device_model == DeviceModel::Mv7 {
+        draw_mv7_led_tab(f, app, area);
+        return;
+    }
     let ds = &app.device_state;
 
     let custom_color_zones: usize = match ds.led_behavior {
@@ -2706,6 +2733,36 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// MV7 LED panel: two switches, drawn with the same rows as the MV7+ LED tab.
+fn draw_mv7_led_tab(f: &mut Frame, app: &App, area: Rect) {
+    let ds = &app.device_state;
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Live Meter
+            Constraint::Length(3), // Night Mode
+            Constraint::Min(0),    // padding
+        ])
+        .margin(1)
+        .split(area);
+    let on_off = |on: bool| if on { "ON" } else { "OFF" };
+
+    draw_led_cycle_row(
+        f,
+        app.focus == Focus::LedLiveMeter,
+        "Live Meter",
+        on_off(ds.led_live_meter),
+        sections[0],
+    );
+    draw_led_cycle_row(
+        f,
+        app.focus == Focus::LedNightMode,
+        "Night Mode",
+        on_off(ds.led_night_mode),
+        sections[1],
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dynamics Tab
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2732,9 +2789,37 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
         .margin(1)
         .split(area);
 
+    if app.device_model == DeviceModel::Mv7 {
+        // The limiter MOTIV shows for the MV7 runs in the app, not on the mic,
+        // and the MV7 has no HPF; the compressor is its only dynamics control.
+        draw_compressor_card(f, app, cols[0]);
+        return;
+    }
     draw_limiter_card(f, app, cols[0]);
     draw_compressor_card(f, app, cols[1]);
     draw_hpf_card(f, app, cols[2]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MV7 EQ Tab — one four-way preset (High Pass and Presence Boost switches)
+// ─────────────────────────────────────────────────────────────────────────────
+fn draw_mv7_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, 3); 3])
+        .margin(1)
+        .split(area);
+
+    let options = enum_options(
+        &[
+            EqPreset::Flat,
+            EqPreset::HighPass,
+            EqPreset::PresenceBoost,
+            EqPreset::HighPassPresenceBoost,
+        ],
+        app.device_state.eq_preset,
+    );
+    draw_enum_card(f, app.focus == Focus::EqPreset, "EQ", &options, cols[0]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2931,6 +3016,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
         DeviceModel::Mvx2uGen2 => ("14ED:1033", "0–60 dB"),
         DeviceModel::Mv6 => ("14ED:1026", "0–36 dB"),
+        DeviceModel::Mv7 => ("14ED:1012", "0–36 dB (1.5 dB steps)"),
         DeviceModel::Mv7Plus => ("14ED:1019", "0–36 dB"),
     };
 
@@ -3032,6 +3118,17 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
             ("  Mute Button  : ", "Enable / Disable"),
+        ],
+        DeviceModel::Mv7 => &[
+            (
+                "  EQ           : ",
+                "Flat / High Pass / Presence Boost / both",
+            ),
+            ("  Compressor   : ", "Off / Light / Medium / Heavy"),
+            ("  Monitor Mix  : ", "0–100%"),
+            ("  Auto Level   : ", "On / Off"),
+            ("  Config Lock  : ", "On / Off"),
+            ("  LED Panel    : ", "Live Meter / Night Mode"),
         ],
         DeviceModel::Mv7Plus => &[
             ("  Denoiser     : ", "On / Off"),
@@ -3250,6 +3347,40 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Rendering smoke test ──────────────────────────────────────────────────
+
+    #[test]
+    fn every_tab_renders_for_every_model_and_mode() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let models = [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv7,
+            DeviceModel::Mv7Plus,
+        ];
+        for model in models {
+            for mode in [InputMode::Manual, InputMode::Auto] {
+                for tab in Tab::ALL {
+                    let mut app = App {
+                        device_model: model,
+                        active_tab: tab,
+                        help_visible: tab == Tab::Info,
+                        ..App::default()
+                    };
+                    app.device_state.mode = mode;
+                    // Off-grid and out-of-range gain must still render.
+                    app.device_state.gain_tenths = 9999;
+                    let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+                    terminal
+                        .draw(|f| draw(f, &app))
+                        .unwrap_or_else(|e| panic!("{model:?} {mode:?} {tab:?}: {e}"));
+                }
+            }
+        }
+    }
 
     // ── enum_options ──────────────────────────────────────────────────────────
     //

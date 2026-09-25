@@ -1,5 +1,8 @@
 //! MVX2U / MVX2U Gen 2 / MV6 / MV7+ HID Feature Address Probe
 //!
+//! Not for the original MV7 (PID 0x1012): it speaks an ASCII command shell, not
+//! the binary protocol swept here. See `protocol::mv7_text`.
+//!
 //! Systematically sweeps unknown feature address ranges, sending CMD_GET_FEAT
 //! for each address and logging every valid response. Helps discover undocumented
 //! features such as native preset slots and monitor mix addresses.

@@ -1,13 +1,16 @@
 //! Shure USB HID Protocol Implementation
 //!
-//! Covers four devices:
+//! Covers five devices:
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2, new DSP)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone
 //!
-//! All devices use the same packet framing, CRC algorithm, and command
-//! class structure. Feature addresses and encodings differ between models.
+//! All devices except the original MV7 use the same packet framing, CRC
+//! algorithm, and command class structure. Feature addresses and encodings
+//! differ between models. The MV7 speaks an ASCII command shell instead; see
+//! the [`mv7_text`] module.
 //!
 //! Packet structure (64 bytes total, written via hidapi):
 //!
@@ -32,6 +35,7 @@
 //!   Product ID: 0x1013  (MVX2U Gen 1)
 //!   Product ID: 0x1033  (MVX2U Gen 2)
 //!   Product ID: 0x1026  (MV6)
+//!   Product ID: 0x1012  (MV7)
 //!   Product ID: 0x1019  (MV7+)
 //!
 //! Every SET command must be followed by a CONFIRM packet (CMD_CONFIRM).
@@ -184,6 +188,8 @@ pub const PID: u16 = 0x1013;
 pub const MVX2U_GEN2_PID: u16 = 0x1033;
 /// MV6: USB gaming microphone.
 pub const MV6_PID: u16 = 0x1026;
+/// MV7 (original): USB/XLR dynamic microphone. Text command shell, not the binary protocol.
+pub const MV7_PID: u16 = 0x1012;
 /// MV7+: USB/XLR dynamic microphone.
 pub const MV7_PLUS_PID: u16 = 0x1019;
 
@@ -194,16 +200,42 @@ pub enum DeviceModel {
     Mvx2u,
     Mvx2uGen2,
     Mv6,
+    /// Original MV7. Uses the ASCII command shell in [`mv7_text`], not binary packets.
+    Mv7,
     /// USB/XLR dynamic microphone. All SET commands use HDR_CONSTANT=0x00.
     Mv7Plus,
 }
 
 impl DeviceModel {
-    /// Maximum manual gain in dB for this device.
-    pub fn max_gain_db(&self) -> u8 {
+    /// The model for a Shure USB product ID, or `None` if it is not supported.
+    pub fn from_pid(pid: u16) -> Option<Self> {
+        match pid {
+            PID => Some(DeviceModel::Mvx2u),
+            MVX2U_GEN2_PID => Some(DeviceModel::Mvx2uGen2),
+            MV6_PID => Some(DeviceModel::Mv6),
+            MV7_PID => Some(DeviceModel::Mv7),
+            MV7_PLUS_PID => Some(DeviceModel::Mv7Plus),
+            _ => None,
+        }
+    }
+
+    /// Maximum manual gain in tenths of a dB for this device.
+    pub fn max_gain_tenths(&self) -> u16 {
         match self {
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => 60,
-            DeviceModel::Mv6 | DeviceModel::Mv7Plus => 36,
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => 600,
+            DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => 360,
+        }
+    }
+
+    /// Manual gain step in tenths of a dB. The MV7 hardware only has 1.5 dB
+    /// steps (it rounds other values down); every other model takes 0.5 dB.
+    pub fn gain_step_tenths(&self) -> u16 {
+        match self {
+            DeviceModel::Mv7 => mv7_text::GAIN_STEP_TENTHS,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => 5,
         }
     }
 
@@ -213,9 +245,16 @@ impl DeviceModel {
             DeviceModel::Mvx2u => "Shure MVX2U",
             DeviceModel::Mvx2uGen2 => "Shure MVX2U Gen 2",
             DeviceModel::Mv6 => "Shure MV6",
+            DeviceModel::Mv7 => "Shure MV7",
             DeviceModel::Mv7Plus => "Shure MV7+",
         }
     }
+}
+
+/// Format a gain in tenths of a dB for display, e.g. `285` → `"28.5 dB"`.
+/// Every model's gain renders through this so the units read the same everywhere.
+pub fn format_gain(gain_tenths: u16) -> String {
+    format!("{}.{} dB", gain_tenths / 10, gain_tenths % 10)
 }
 pub const PACKET_SIZE: usize = 64;
 
@@ -382,9 +421,9 @@ const PHANTOM_OFF: u8 = 0x00;
 // model remain at their default values and are not sent to the device.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceState {
-    /// Manual gain in dB. MVX2U range: 0–60. MV6 range: 0–36.
+    /// Manual gain in tenths of a dB. MVX2U range: 0–600. MV6/MV7/MV7+ range: 0–360.
     /// Defaults to 36 dB (MVX2U factory default; also MV6 maximum).
-    pub gain_db: u8,
+    pub gain_tenths: u16,
     pub mode: InputMode,
     /// Mic position for Auto Level mode. MVX2U only.
     pub auto_position: MicPosition,
@@ -458,6 +497,14 @@ pub struct DeviceState {
     /// Live Custom interior zone color [R, G, B].
     pub led_live_interior_rgb: [u8; 3],
 
+    // ── MV7 (original) exclusive fields ──────────────────────────────────────
+    /// EQ preset (High Pass and Presence Boost switches).
+    pub eq_preset: EqPreset,
+    /// LEDs show the live input level.
+    pub led_live_meter: bool,
+    /// LEDs are dimmed.
+    pub led_night_mode: bool,
+
     /// Device serial number string, populated after connection.
     pub serial_number: String,
     /// User-set device name read from the adapter (lock-class feature 0x0012).
@@ -476,7 +523,7 @@ pub struct DeviceState {
 impl Default for DeviceState {
     fn default() -> Self {
         Self {
-            gain_db: 36,
+            gain_tenths: 360,
             mode: InputMode::Auto,
             auto_position: MicPosition::Near,
             auto_tone: AutoTone::Natural,
@@ -514,6 +561,10 @@ impl Default for DeviceState {
             led_live_edge_rgb: [0xFF, 0xFF, 0xFF],
             led_live_middle_rgb: [0x1F, 0x1F, 0x1F],
             led_live_interior_rgb: [0x00, 0x00, 0x00],
+            // MV7 defaults as observed on firmware 0.0.52.0.
+            eq_preset: EqPreset::Flat,
+            led_live_meter: true,
+            led_night_mode: false,
             serial_number: String::from("Unknown"),
             device_name: String::from("Unknown"),
             firmware_version: String::from("Unknown"),
@@ -779,6 +830,38 @@ impl std::fmt::Display for HpfFrequency {
             HpfFrequency::Off => write!(f, "Off"),
             HpfFrequency::Hz75 => write!(f, "75 Hz"),
             HpfFrequency::Hz150 => write!(f, "150 Hz"),
+        }
+    }
+}
+
+/// MV7 EQ preset: two independent switches (High Pass, Presence Boost) that
+/// MOTIV presents as one four-way choice.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EqPreset {
+    Flat,
+    HighPass,
+    PresenceBoost,
+    HighPassPresenceBoost,
+}
+
+impl EqPreset {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            EqPreset::Flat => EqPreset::HighPass,
+            EqPreset::HighPass => EqPreset::PresenceBoost,
+            EqPreset::PresenceBoost => EqPreset::HighPassPresenceBoost,
+            EqPreset::HighPassPresenceBoost => EqPreset::Flat,
+        }
+    }
+}
+
+impl std::fmt::Display for EqPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EqPreset::Flat => write!(f, "Flat"),
+            EqPreset::HighPass => write!(f, "High Pass"),
+            EqPreset::PresenceBoost => write!(f, "Presence Boost"),
+            EqPreset::HighPassPresenceBoost => write!(f, "High Pass + Presence Boost"),
         }
     }
 }
@@ -1516,11 +1599,16 @@ pub fn cmd_get_eq_band_gain(seq: u8, band: usize) -> Vec<u8> {
 
 // ── Public SET constructors ───────────────────────────────────────────────────
 
-/// Set manual gain. Encoded as `gain_db * 100` in 16-bit big-endian.
+/// Set manual gain. Encoded as `gain_db * 100` (tenths × 10) in 16-bit big-endian.
 /// Clamping to the model-specific ceiling is the caller's responsibility.
-pub fn cmd_set_gain(seq: u8, gain_db: u8) -> Vec<u8> {
-    let raw = gain_db as u16 * 100;
-    cmd_set(seq, &FEAT_GAIN, &raw.to_be_bytes())
+pub fn cmd_set_gain(seq: u8, gain_tenths: u16) -> Vec<u8> {
+    cmd_set(seq, &FEAT_GAIN, &gain_tenths_to_wire(gain_tenths))
+}
+
+/// Wire encoding shared by every binary model: gain in hundredths of a dB.
+/// Saturates rather than overflowing for out-of-range input.
+fn gain_tenths_to_wire(gain_tenths: u16) -> [u8; 2] {
+    gain_tenths.saturating_mul(10).to_be_bytes()
 }
 
 pub fn cmd_set_mute(seq: u8, muted: bool) -> Vec<u8> {
@@ -1753,9 +1841,8 @@ pub fn cmd_set_mv7_reverb_monitor(seq: u8, enabled: bool) -> Vec<u8> {
 }
 
 /// Set gain on MV7+. Encoded as `gain_db * 100` in 16-bit big-endian, HDR_CONSTANT=0x00.
-pub fn cmd_set_mv7_gain(seq: u8, gain_db: u8) -> Vec<u8> {
-    let raw = gain_db as u16 * 100;
-    cmd_set_mv7(seq, &FEAT_GAIN, &raw.to_be_bytes())
+pub fn cmd_set_mv7_gain(seq: u8, gain_tenths: u16) -> Vec<u8> {
+    cmd_set_mv7(seq, &FEAT_GAIN, &gain_tenths_to_wire(gain_tenths))
 }
 
 // ── Response decoder ──────────────────────────────────────────────────────────
@@ -1806,8 +1893,8 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             }
             let raw = u16::from_be_bytes([value[0], value[1]]);
             // No model-specific clamp here — apply_response is model-agnostic.
-            // The adjustment layer (adjust_focused) enforces device_model.max_gain_db().
-            state.gain_db = (raw / 100) as u8;
+            // The adjustment layer (adjust_focused) enforces device_model.max_gain_tenths().
+            state.gain_tenths = raw / 10;
             true
         }
         f if f == FEAT_MUTE => {
@@ -2084,6 +2171,806 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
     }
 }
 
+// ── MV7 (original) text command shell ─────────────────────────────────────────
+
+/// Configuration protocol of the original MV7 (PID 0x1012).
+///
+/// Unlike every other supported model, the MV7 does not speak the binary
+/// `0x11 0x22` framing. Its vendor HID interface (usage page 0xFF00, 64-byte
+/// reports, no report IDs) runs an ASCII command shell:
+///
+/// - Output report: report ID `0x00`, one command line ending in `\n`, zero padded.
+/// - Input reports: the reply text, NUL padded, one or more `\n`-terminated lines.
+/// - GET is the bare command (`micMute`), answered with `micMute=off`.
+/// - SET appends the value (`micMute on`), answered with the applied value. No
+///   CONFIRM packet is needed.
+/// - `[Failed]` means the command was rejected or changed nothing (for example a
+///   gain that rounds to the current value). `Locked` means the setting is not
+///   adjustable right now (gain in Auto Level).
+/// - A mode change answers after ~200 ms and first reports the new gain on a
+///   line of its own.
+/// - DSP settings live in blocks addressed by hex ID: `getBlock 19` answers
+///   `block 19 00000000`; `setBlock 19 00000001` writes it. The firmware mirrors
+///   each block into pages 0x1xx and 0x2xx by itself, so only the base ID is written.
+///
+/// Confirmed against firmware 0.0.52.0 (package 1.2.19) by probing the shell and
+/// against the command strings MOTIV Mix sends. The limiter MOTIV shows is host-side
+/// software, not a device setting. `bootDSP` and firmware commands are intentionally
+/// absent.
+pub mod mv7_text {
+    use super::{AutoTone, CompressorPreset, DeviceState, EqPreset, InputMode, MicPosition};
+
+    /// Output report size: report ID byte + 64 bytes of text.
+    pub const REPORT_SIZE: usize = 65;
+    const REPORT_ID: u8 = 0x00;
+    /// Reply to a rejected command, or to a SET that changed nothing.
+    pub const FAILED_REPLY: &str = "[Failed]";
+    /// Reply to a SET the device will not take right now, e.g. gain in Auto Level.
+    pub const LOCKED_REPLY: &str = "Locked";
+
+    /// Hardware gain step. The MV7 rounds any other value down to a multiple of 1.5 dB.
+    pub const GAIN_STEP_TENTHS: u16 = 15;
+    const MAX_GAIN_TENTHS: u16 = 360;
+
+    const MIC_MUTE: &str = "micMute";
+    const INPUT_GAIN: &str = "inputGain";
+    const DSP_MODE: &str = "dspMode";
+    const LOCK: &str = "lock";
+    const DIM_MODE: &str = "dimMode";
+    const METER_MODE: &str = "meterMode";
+    const FW_VERSION: &str = "fwVersion";
+    const SERIAL_NUM: &str = "serialNum";
+    const GET_BLOCK: &str = "getBlock";
+    const SET_BLOCK: &str = "setBlock";
+    const BLOCK_REPLY: &str = "block";
+    const ON: &str = "on";
+    const OFF: &str = "off";
+    const GAIN_UNIT: &str = "dB";
+
+    /// Compressor block: 0=Off, 1=Light, 2=Medium, 3=Heavy.
+    const BLOCK_COMPRESSOR: &str = "19";
+    /// Monitor mix block: two 32-bit linear gains, playback then mic.
+    const BLOCK_MONITOR_MIX: &str = "22";
+    /// EQ block: bit 0 = High Pass, bit 1 = Presence Boost.
+    const BLOCK_EQ: &str = "31";
+    const EQ_BIT_HIGH_PASS: u32 = 0x01;
+    const EQ_BIT_PRESENCE_BOOST: u32 = 0x02;
+    /// Hex digits in one 32-bit block word.
+    const WORD_HEX_LEN: usize = 8;
+
+    // dspMode folds Manual/Auto, mic position and tone into one number:
+    // 1 = Manual; Auto is Near 2–4 or Far 5–7, offset by tone Natural/Dark/Bright.
+    // Near+Natural (2) and Far 5/6/7 are confirmed against MOTIV. Near+Dark (3) and
+    // Near+Bright (4) follow the same layout but have not been checked in MOTIV.
+    const DSP_MODE_MANUAL: u8 = 1;
+    const DSP_MODE_NEAR: u8 = 2;
+    const DSP_MODE_FAR: u8 = 5;
+    const DSP_MODE_MAX: u8 = 7;
+
+    /// 0 dB in a monitor-mix gain word: `word = MIX_UNITY × 10^(dB / 20)` (0x004026E7).
+    const MIX_UNITY: f64 = 4_204_263.0;
+    /// Level of the fully attenuated side of the mix, in dB.
+    const MIX_FLOOR_DB: f64 = -54.0;
+    /// A mic level this far below 0 dB means the slider is past the centre.
+    const MIX_CENTRE_TOLERANCE_DB: f64 = 0.05;
+    /// Word rounding puts the floor a hair either side of -54 dB; anything this
+    /// close counts as the end of the slider.
+    const MIX_FLOOR_TOLERANCE_DB: f64 = 0.01;
+    /// MOTIV computes the mix curve on the host. These are the levels it wrote at
+    /// the slider positions measured on the device: (percent, playback dB, mic dB).
+    /// Positions in between are interpolated linearly in dB.
+    const MIX_CURVE: [(u8, f64, f64); 11] = [
+        (0, -54.0, 0.0),
+        (2, -54.0, 0.0),
+        (10, -39.0, 0.0),
+        (26, -19.5, 0.0),
+        (40, -10.0, 0.0),
+        (50, -6.0, 0.0),
+        (60, -6.0, -6.0),
+        (74, -6.0, -16.5),
+        (90, -6.0, -39.0),
+        (98, -6.0, -51.0),
+        (100, -6.0, -54.0),
+    ];
+
+    /// One command line and the prefix that identifies its reply.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TextCommand {
+        /// The command without its trailing newline, e.g. `"micMute on"`.
+        pub line: String,
+        /// Every reply to this command starts with this, e.g. `"micMute="`.
+        pub reply_prefix: String,
+    }
+
+    impl TextCommand {
+        fn named(name: &str, value: Option<&str>) -> Self {
+            let line = match value {
+                Some(value) => format!("{name} {value}"),
+                None => name.to_string(),
+            };
+            Self {
+                line,
+                reply_prefix: format!("{name}="),
+            }
+        }
+
+        fn block(id: &str, data: Option<&str>) -> Self {
+            let line = match data {
+                Some(data) => format!("{SET_BLOCK} {id} {data}"),
+                None => format!("{GET_BLOCK} {id}"),
+            };
+            Self {
+                line,
+                reply_prefix: format!("{BLOCK_REPLY} {id} "),
+            }
+        }
+
+        /// The HID Output report: report ID, the line, `\n`, zero padding.
+        pub fn packet(&self) -> Vec<u8> {
+            let mut pkt = Vec::with_capacity(REPORT_SIZE);
+            pkt.push(REPORT_ID);
+            pkt.extend_from_slice(self.line.as_bytes());
+            pkt.push(b'\n');
+            // Lines are built from the constants above and are far shorter than a
+            // report; resize() only pads (it would truncate, never panic).
+            pkt.resize(REPORT_SIZE, 0x00);
+            pkt
+        }
+    }
+
+    fn on_off(enabled: bool) -> &'static str {
+        if enabled { ON } else { OFF }
+    }
+
+    // ── GET ───────────────────────────────────────────────────────────────────
+
+    pub fn get_gain() -> TextCommand {
+        TextCommand::named(INPUT_GAIN, None)
+    }
+
+    pub fn get_serial() -> TextCommand {
+        TextCommand::named(SERIAL_NUM, None)
+    }
+
+    /// Every query needed for a full state readback.
+    pub fn state_queries() -> Vec<TextCommand> {
+        vec![
+            TextCommand::named(MIC_MUTE, None),
+            get_gain(),
+            TextCommand::named(DSP_MODE, None),
+            TextCommand::named(LOCK, None),
+            TextCommand::named(METER_MODE, None),
+            TextCommand::named(DIM_MODE, None),
+            TextCommand::block(BLOCK_MONITOR_MIX, None),
+            TextCommand::block(BLOCK_COMPRESSOR, None),
+            TextCommand::block(BLOCK_EQ, None),
+            TextCommand::named(FW_VERSION, None),
+            get_serial(),
+        ]
+    }
+
+    // ── SET ───────────────────────────────────────────────────────────────────
+
+    pub fn set_mute(muted: bool) -> TextCommand {
+        TextCommand::named(MIC_MUTE, Some(on_off(muted)))
+    }
+
+    /// Clamp a gain to 0–36 dB and round it down to the 1.5 dB hardware grid,
+    /// which is what the device itself does with any other value.
+    pub fn snap_gain(gain_tenths: u16) -> u16 {
+        let clamped = gain_tenths.min(MAX_GAIN_TENTHS);
+        clamped - clamped % GAIN_STEP_TENTHS
+    }
+
+    pub fn set_gain(gain_tenths: u16) -> TextCommand {
+        let snapped = snap_gain(gain_tenths);
+        let value = match snapped % 10 {
+            0 => (snapped / 10).to_string(),
+            tenths => format!("{}.{tenths}", snapped / 10),
+        };
+        TextCommand::named(INPUT_GAIN, Some(&value))
+    }
+
+    /// Mode, mic position and tone are one setting on the MV7, so every change to
+    /// any of them sends all three.
+    pub fn set_dsp_mode(mode: InputMode, position: MicPosition, tone: AutoTone) -> TextCommand {
+        // MOTIV zero-pads the mode number; the shell accepts it either way.
+        let number = dsp_mode_number(mode, position, tone);
+        TextCommand::named(DSP_MODE, Some(&format!("{number:02}")))
+    }
+
+    pub fn set_lock(locked: bool) -> TextCommand {
+        TextCommand::named(LOCK, Some(on_off(locked)))
+    }
+
+    pub fn set_live_meter(enabled: bool) -> TextCommand {
+        TextCommand::named(METER_MODE, Some(on_off(enabled)))
+    }
+
+    pub fn set_night_mode(enabled: bool) -> TextCommand {
+        TextCommand::named(DIM_MODE, Some(on_off(enabled)))
+    }
+
+    pub fn set_compressor(preset: CompressorPreset) -> TextCommand {
+        let value = u32::from(preset.as_byte());
+        TextCommand::block(BLOCK_COMPRESSOR, Some(&format!("{value:08X}")))
+    }
+
+    pub fn set_eq(preset: EqPreset) -> TextCommand {
+        TextCommand::block(BLOCK_EQ, Some(&format!("{:08X}", eq_value(preset))))
+    }
+
+    /// Monitor mix: 0 = full mic, 100 = full playback. Values above 100 are clamped.
+    pub fn set_monitor_mix(mix: u8) -> TextCommand {
+        let (playback, mic) = mix_words(mix);
+        TextCommand::block(BLOCK_MONITOR_MIX, Some(&format!("{playback:08X}{mic:08X}")))
+    }
+
+    // ── Encoding helpers ──────────────────────────────────────────────────────
+
+    fn dsp_mode_number(mode: InputMode, position: MicPosition, tone: AutoTone) -> u8 {
+        match mode {
+            InputMode::Manual => DSP_MODE_MANUAL,
+            InputMode::Auto => {
+                let base = match position {
+                    MicPosition::Near => DSP_MODE_NEAR,
+                    MicPosition::Far => DSP_MODE_FAR,
+                };
+                let offset = match tone {
+                    AutoTone::Natural => 0,
+                    AutoTone::Dark => 1,
+                    AutoTone::Bright => 2,
+                };
+                base + offset
+            }
+        }
+    }
+
+    fn apply_dsp_mode(number: u8, state: &mut DeviceState) -> bool {
+        if number == DSP_MODE_MANUAL {
+            state.mode = InputMode::Manual;
+            return true;
+        }
+        if !(DSP_MODE_NEAR..=DSP_MODE_MAX).contains(&number) {
+            return false;
+        }
+        let (position, offset) = if number >= DSP_MODE_FAR {
+            (MicPosition::Far, number - DSP_MODE_FAR)
+        } else {
+            (MicPosition::Near, number - DSP_MODE_NEAR)
+        };
+        let tone = match offset {
+            0 => AutoTone::Natural,
+            1 => AutoTone::Dark,
+            2 => AutoTone::Bright,
+            _ => return false,
+        };
+        state.mode = InputMode::Auto;
+        state.auto_position = position;
+        state.auto_tone = tone;
+        true
+    }
+
+    fn eq_value(preset: EqPreset) -> u32 {
+        match preset {
+            EqPreset::Flat => 0,
+            EqPreset::HighPass => EQ_BIT_HIGH_PASS,
+            EqPreset::PresenceBoost => EQ_BIT_PRESENCE_BOOST,
+            EqPreset::HighPassPresenceBoost => EQ_BIT_HIGH_PASS | EQ_BIT_PRESENCE_BOOST,
+        }
+    }
+
+    fn eq_from_value(value: u32) -> EqPreset {
+        match (
+            value & EQ_BIT_HIGH_PASS != 0,
+            value & EQ_BIT_PRESENCE_BOOST != 0,
+        ) {
+            (false, false) => EqPreset::Flat,
+            (true, false) => EqPreset::HighPass,
+            (false, true) => EqPreset::PresenceBoost,
+            (true, true) => EqPreset::HighPassPresenceBoost,
+        }
+    }
+
+    fn db_to_word(db: f64) -> u32 {
+        (MIX_UNITY * 10f64.powf(db / 20.0)).round() as u32
+    }
+
+    fn word_to_db(word: u32) -> f64 {
+        if word == 0 {
+            f64::NEG_INFINITY
+        } else {
+            20.0 * (f64::from(word) / MIX_UNITY).log10()
+        }
+    }
+
+    /// Interpolated (playback dB, mic dB) for a mix percentage.
+    fn mix_levels_db(mix: u8) -> (f64, f64) {
+        let mix = mix.min(100);
+        for pair in MIX_CURVE.windows(2) {
+            let (p0, playback0, mic0) = pair[0];
+            let (p1, playback1, mic1) = pair[1];
+            if mix <= p1 {
+                let t = f64::from(mix - p0) / f64::from(p1 - p0);
+                return (
+                    playback0 + t * (playback1 - playback0),
+                    mic0 + t * (mic1 - mic0),
+                );
+            }
+        }
+        let (_, playback, mic) = MIX_CURVE[MIX_CURVE.len() - 1];
+        (playback, mic)
+    }
+
+    fn mix_words(mix: u8) -> (u32, u32) {
+        let (playback_db, mic_db) = mix_levels_db(mix);
+        (db_to_word(playback_db), db_to_word(mic_db))
+    }
+
+    /// The slider position at which `level` (one channel of the curve) equals
+    /// `level_db`, or `None` if the curve never reaches it.
+    fn invert_curve(level_db: f64, level: fn(&(u8, f64, f64)) -> f64) -> Option<u8> {
+        MIX_CURVE.windows(2).find_map(|pair| {
+            let (y0, y1) = (level(&pair[0]), level(&pair[1]));
+            let (low, high) = if y0 <= y1 { (y0, y1) } else { (y1, y0) };
+            if y0 == y1 || level_db < low || level_db > high {
+                return None;
+            }
+            let t = (level_db - y0) / (y1 - y0);
+            let position = f64::from(pair[0].0) + t * f64::from(pair[1].0 - pair[0].0);
+            Some(position.round() as u8)
+        })
+    }
+
+    /// Decode a monitor-mix block back to the nearest slider percentage.
+    fn mix_from_words(playback: u32, mic: u32) -> u8 {
+        let at_floor = |db: f64| db <= MIX_FLOOR_DB + MIX_FLOOR_TOLERANCE_DB;
+        let mic_db = word_to_db(mic);
+        if mic_db < -MIX_CENTRE_TOLERANCE_DB {
+            // Mic is attenuated: the slider is between the centre and Playback.
+            if at_floor(mic_db) {
+                return 100;
+            }
+            return invert_curve(mic_db, |point| point.2).unwrap_or(50);
+        }
+        let playback_db = word_to_db(playback);
+        if at_floor(playback_db) {
+            return 0;
+        }
+        invert_curve(playback_db, |point| point.1).unwrap_or(50)
+    }
+
+    // ── Reply decoding ────────────────────────────────────────────────────────
+
+    /// Find the reply to a command in the text read so far: the first complete
+    /// line that starts with `reply_prefix` or is [`FAILED_REPLY`] or
+    /// [`LOCKED_REPLY`]. Other lines (help text, the gain line a mode change
+    /// sends first) are skipped. Returns `None` until it arrives.
+    pub fn find_reply<'a>(text: &'a str, reply_prefix: &str) -> Option<&'a str> {
+        let complete = &text[..text.rfind('\n')?];
+        complete
+            .split('\n')
+            .map(|line| line.trim_end_matches('\r'))
+            .find(|line| {
+                line.starts_with(reply_prefix) || *line == FAILED_REPLY || *line == LOCKED_REPLY
+            })
+    }
+
+    /// Decode one reply line into `state`. Returns `false` if the line is not a
+    /// recognised reply or its value does not parse.
+    #[must_use]
+    pub fn apply_reply(line: &str, state: &mut DeviceState) -> bool {
+        if let Some(block) = line
+            .strip_prefix(BLOCK_REPLY)
+            .and_then(|rest| rest.strip_prefix(' '))
+        {
+            return match block.split_once(' ') {
+                Some((id, data)) => apply_block(id, data, state),
+                None => false,
+            };
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return false;
+        };
+        if value.is_empty() {
+            return false;
+        }
+        match key {
+            MIC_MUTE => apply_on_off(value, &mut state.muted),
+            INPUT_GAIN => match parse_gain(value) {
+                Some(gain_tenths) => {
+                    state.gain_tenths = gain_tenths;
+                    true
+                }
+                None => false,
+            },
+            DSP_MODE => value
+                .parse::<u8>()
+                .is_ok_and(|number| apply_dsp_mode(number, state)),
+            LOCK => apply_on_off(value, &mut state.locked),
+            METER_MODE => apply_on_off(value, &mut state.led_live_meter),
+            DIM_MODE => apply_on_off(value, &mut state.led_night_mode),
+            FW_VERSION => {
+                state.firmware_version = value.to_string();
+                true
+            }
+            SERIAL_NUM => {
+                state.factory_serial = value.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn apply_on_off(value: &str, field: &mut bool) -> bool {
+        match value {
+            ON => *field = true,
+            OFF => *field = false,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Parse `"19.50dB"` or `"36dB"` into tenths of a dB.
+    fn parse_gain(value: &str) -> Option<u16> {
+        let number = value.strip_suffix(GAIN_UNIT)?;
+        let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+        let tenths = match fraction.chars().next() {
+            Some(digit) => u16::try_from(digit.to_digit(10)?).ok()?,
+            None => 0,
+        };
+        whole
+            .parse::<u16>()
+            .ok()?
+            .checked_mul(10)?
+            .checked_add(tenths)
+    }
+
+    fn parse_word(hex: &str) -> Option<u32> {
+        if hex.len() != WORD_HEX_LEN {
+            return None;
+        }
+        u32::from_str_radix(hex, 16).ok()
+    }
+
+    fn apply_block(id: &str, data: &str, state: &mut DeviceState) -> bool {
+        match id {
+            BLOCK_COMPRESSOR => match parse_word(data).and_then(|v| u8::try_from(v).ok()) {
+                Some(value) if value <= CompressorPreset::Heavy.as_byte() => {
+                    state.compressor = CompressorPreset::from_byte(value);
+                    true
+                }
+                _ => false,
+            },
+            BLOCK_EQ => match parse_word(data) {
+                Some(value) => {
+                    state.eq_preset = eq_from_value(value);
+                    true
+                }
+                None => false,
+            },
+            BLOCK_MONITOR_MIX => {
+                let words = (
+                    data.get(..WORD_HEX_LEN).and_then(parse_word),
+                    data.get(WORD_HEX_LEN..).and_then(parse_word),
+                );
+                match words {
+                    (Some(playback), Some(mic)) => {
+                        state.monitor_mix = mix_from_words(playback, mic);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Every (mode, position, tone) combination the UI can produce.
+        fn all_dsp_modes() -> Vec<(InputMode, MicPosition, AutoTone)> {
+            let mut modes = vec![(InputMode::Manual, MicPosition::Near, AutoTone::Natural)];
+            for position in [MicPosition::Near, MicPosition::Far] {
+                for tone in [AutoTone::Dark, AutoTone::Natural, AutoTone::Bright] {
+                    modes.push((InputMode::Auto, position, tone));
+                }
+            }
+            modes
+        }
+
+        #[test]
+        fn packet_is_report_id_zero_then_line_then_newline_padded_to_65() {
+            let pkt = set_mute(true).packet();
+            assert_eq!(pkt.len(), REPORT_SIZE);
+            assert_eq!(pkt[0], 0x00);
+            assert_eq!(&pkt[1..12], b"micMute on\n");
+            assert!(pkt[12..].iter().all(|&b| b == 0));
+        }
+
+        #[test]
+        fn every_command_fits_in_one_report() {
+            let mut commands = state_queries();
+            commands.extend([
+                set_monitor_mix(37),
+                set_gain(360),
+                set_eq(EqPreset::HighPassPresenceBoost),
+            ]);
+            for command in commands {
+                assert!(
+                    command.line.len() + 2 <= REPORT_SIZE,
+                    "{} is too long",
+                    command.line
+                );
+            }
+        }
+
+        #[test]
+        fn set_lines_match_what_motiv_sends() {
+            assert_eq!(set_mute(false).line, "micMute off");
+            assert_eq!(set_lock(true).line, "lock on");
+            assert_eq!(set_live_meter(false).line, "meterMode off");
+            assert_eq!(set_night_mode(true).line, "dimMode on");
+            assert_eq!(
+                set_compressor(CompressorPreset::Light).line,
+                "setBlock 19 00000001"
+            );
+            assert_eq!(
+                set_compressor(CompressorPreset::Heavy).line,
+                "setBlock 19 00000003"
+            );
+            assert_eq!(set_eq(EqPreset::Flat).line, "setBlock 31 00000000");
+            assert_eq!(set_eq(EqPreset::PresenceBoost).line, "setBlock 31 00000002");
+            assert_eq!(
+                set_dsp_mode(InputMode::Manual, MicPosition::Far, AutoTone::Bright).line,
+                "dspMode 01"
+            );
+            assert_eq!(
+                set_dsp_mode(InputMode::Auto, MicPosition::Far, AutoTone::Dark).line,
+                "dspMode 06"
+            );
+        }
+
+        #[test]
+        fn reply_prefixes_identify_named_and_block_replies() {
+            assert_eq!(set_mute(true).reply_prefix, "micMute=");
+            assert_eq!(set_eq(EqPreset::Flat).reply_prefix, "block 31 ");
+            assert_eq!(get_gain().reply_prefix, "inputGain=");
+        }
+
+        #[test]
+        fn set_gain_snaps_down_to_the_hardware_grid() {
+            // Observed on the device: 25 → 24, 20 → 19.5, 10 → 9, 35.5 → 34.5.
+            assert_eq!(set_gain(250).line, "inputGain 24");
+            assert_eq!(set_gain(200).line, "inputGain 19.5");
+            assert_eq!(set_gain(100).line, "inputGain 9");
+            assert_eq!(set_gain(355).line, "inputGain 34.5");
+            assert_eq!(set_gain(285).line, "inputGain 28.5");
+            assert_eq!(set_gain(0).line, "inputGain 0");
+        }
+
+        #[test]
+        fn set_gain_clamps_to_36_db() {
+            assert_eq!(set_gain(600).line, "inputGain 36");
+            assert_eq!(snap_gain(u16::MAX), 360);
+        }
+
+        #[test]
+        fn monitor_mix_encodes_to_the_words_motiv_wrote() {
+            // Captured with getBlock 22 after moving MOTIV's slider.
+            let captured = [
+                (0, "000020C5004026E7"),
+                (10, "0000B845004026E7"),
+                (26, "0006CB9A004026E7"),
+                (40, "00144961004026E7"),
+                (50, "002026F3004026E7"),
+                (60, "002026F3002026F3"),
+                (74, "002026F300099941"),
+                (90, "002026F30000B845"),
+                (98, "002026F300002E49"),
+                (100, "002026F3000020C5"),
+            ];
+            for (mix, data) in captured {
+                assert_eq!(
+                    set_monitor_mix(mix).line,
+                    format!("setBlock 22 {data}"),
+                    "mix {mix}%"
+                );
+            }
+        }
+
+        #[test]
+        fn monitor_mix_clamps_above_100() {
+            assert_eq!(set_monitor_mix(250), set_monitor_mix(100));
+        }
+
+        #[test]
+        fn monitor_mix_decodes_motiv_captures() {
+            // Includes MOTIV's 2% value, which it writes one count below the floor.
+            let captured = [
+                ("000020C5004026E7", 0),
+                ("000020C4004026E7", 0),
+                ("0000B845004026E7", 10),
+                ("0006CB9A004026E7", 26),
+                ("00144961004026E7", 40),
+                ("002026F3004026E7", 50),
+                ("002026F3002026F3", 60),
+                ("002026F300099941", 74),
+                ("002026F30000B845", 90),
+                ("002026F300002E49", 98),
+                ("002026F3000020C5", 100),
+            ];
+            for (data, mix) in captured {
+                let mut state = DeviceState::default();
+                assert!(apply_reply(&format!("block 22 {data}"), &mut state));
+                assert_eq!(state.monitor_mix, mix, "block 22 {data}");
+            }
+        }
+
+        #[test]
+        fn monitor_mix_roundtrips_outside_the_floor_plateau() {
+            // 0–2% all sit on the floor, so 1% and 2% read back as 0%.
+            for mix in (0..=100u8).filter(|mix| !(1..=2).contains(mix)) {
+                let (playback, mic) = mix_words(mix);
+                assert_eq!(mix_from_words(playback, mic), mix, "mix {mix}%");
+            }
+        }
+
+        #[test]
+        fn dsp_mode_roundtrips_for_every_combination() {
+            for (mode, position, tone) in all_dsp_modes() {
+                let command = set_dsp_mode(mode, position, tone);
+                let number = command.line.trim_start_matches("dspMode ");
+                let mut state = DeviceState::default();
+                assert!(apply_reply(
+                    &format!("dspMode={}", number.trim_start_matches('0')),
+                    &mut state
+                ));
+                assert_eq!(state.mode, mode, "{}", command.line);
+                if mode == InputMode::Auto {
+                    assert_eq!(state.auto_position, position, "{}", command.line);
+                    assert_eq!(state.auto_tone, tone, "{}", command.line);
+                }
+            }
+        }
+
+        #[test]
+        fn dsp_mode_decodes_values_confirmed_in_motiv() {
+            let confirmed = [
+                (2, MicPosition::Near, AutoTone::Natural),
+                (5, MicPosition::Far, AutoTone::Natural),
+                (6, MicPosition::Far, AutoTone::Dark),
+                (7, MicPosition::Far, AutoTone::Bright),
+            ];
+            for (number, position, tone) in confirmed {
+                let mut state = DeviceState::default();
+                assert!(apply_reply(&format!("dspMode={number}"), &mut state));
+                assert_eq!(state.mode, InputMode::Auto);
+                assert_eq!((state.auto_position, state.auto_tone), (position, tone));
+            }
+            let mut state = DeviceState::default();
+            assert!(apply_reply("dspMode=1", &mut state));
+            assert_eq!(state.mode, InputMode::Manual);
+        }
+
+        #[test]
+        fn dsp_mode_rejects_out_of_range_values() {
+            let mut state = DeviceState::default();
+            for reply in ["dspMode=0", "dspMode=8", "dspMode=x"] {
+                assert!(!apply_reply(reply, &mut state), "{reply}");
+            }
+            assert_eq!(state, DeviceState::default());
+        }
+
+        #[test]
+        fn apply_reply_decodes_named_values() {
+            let mut state = DeviceState::default();
+            assert!(apply_reply("micMute=on", &mut state));
+            assert!(state.muted);
+            assert!(apply_reply("inputGain=19.50dB", &mut state));
+            assert_eq!(state.gain_tenths, 195);
+            assert!(apply_reply("inputGain=36dB", &mut state));
+            assert_eq!(state.gain_tenths, 360);
+            assert!(apply_reply("lock=on", &mut state));
+            assert!(state.locked);
+            assert!(apply_reply("meterMode=off", &mut state));
+            assert!(!state.led_live_meter);
+            assert!(apply_reply("dimMode=on", &mut state));
+            assert!(state.led_night_mode);
+            assert!(apply_reply("fwVersion=0.0.52.0", &mut state));
+            assert_eq!(state.firmware_version, "0.0.52.0");
+            assert!(apply_reply("serialNum=2DDC3002222E2B00", &mut state));
+            assert_eq!(state.factory_serial, "2DDC3002222E2B00");
+        }
+
+        #[test]
+        fn apply_reply_decodes_blocks() {
+            let mut state = DeviceState::default();
+            assert!(apply_reply("block 19 00000002", &mut state));
+            assert_eq!(state.compressor, CompressorPreset::Medium);
+            assert!(apply_reply("block 31 00000003", &mut state));
+            assert_eq!(state.eq_preset, EqPreset::HighPassPresenceBoost);
+            assert!(apply_reply("block 31 00000001", &mut state));
+            assert_eq!(state.eq_preset, EqPreset::HighPass);
+        }
+
+        #[test]
+        fn eq_and_compressor_roundtrip() {
+            for preset in [
+                EqPreset::Flat,
+                EqPreset::HighPass,
+                EqPreset::PresenceBoost,
+                EqPreset::HighPassPresenceBoost,
+            ] {
+                let reply = set_eq(preset).line.replacen("setBlock", "block", 1);
+                let mut state = DeviceState::default();
+                assert!(apply_reply(&reply, &mut state));
+                assert_eq!(state.eq_preset, preset);
+            }
+            for preset in [
+                CompressorPreset::Off,
+                CompressorPreset::Light,
+                CompressorPreset::Medium,
+                CompressorPreset::Heavy,
+            ] {
+                let reply = set_compressor(preset).line.replacen("setBlock", "block", 1);
+                let mut state = DeviceState::default();
+                assert!(apply_reply(&reply, &mut state));
+                assert_eq!(state.compressor, preset);
+            }
+        }
+
+        #[test]
+        fn apply_reply_rejects_malformed_lines_without_mutating() {
+            let mut state = DeviceState::default();
+            for reply in [
+                "",
+                "[Failed]",
+                "micMute=maybe",
+                "micMute=",
+                "inputGain=loud",
+                "inputGain=12",
+                "block 19 00000004",
+                "block 19 1",
+                "block 22 002026F3",
+                "block 22 002026F3004026E7FF",
+                "block 22 ééééééééééééééé",
+                "block 99 00000000",
+                "unknownKey=on",
+                "No such command: x",
+            ] {
+                assert!(!apply_reply(reply, &mut state), "{reply:?}");
+            }
+            assert_eq!(state, DeviceState::default());
+        }
+
+        #[test]
+        fn find_reply_skips_unrelated_lines_and_waits_for_a_full_line() {
+            assert_eq!(find_reply("micMute=o", "micMute="), None);
+            assert_eq!(find_reply("micMute=on\n", "micMute="), Some("micMute=on"));
+            assert_eq!(
+                find_reply("dimMode=on\nblock 22 00\nmicMute=off\n", "micMute="),
+                Some("micMute=off")
+            );
+            assert_eq!(
+                find_reply(
+                    "No such command: x\nEnter 'help' or '?' for help.\n[Failed]\n",
+                    "x="
+                ),
+                Some(FAILED_REPLY)
+            );
+            assert_eq!(find_reply("Locked\n", "inputGain="), Some(LOCKED_REPLY));
+            // A mode change reports the gain first, then the mode.
+            assert_eq!(
+                find_reply("inputGain=31.50dB\ndspMode=1\n", "dspMode="),
+                Some("dspMode=1")
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2149,7 +3036,7 @@ mod tests {
     #[test]
     fn packet_is_exactly_64_bytes() {
         assert_eq!(cmd_get_gain(0).len(), PACKET_SIZE);
-        assert_eq!(cmd_set_gain(0, 36).len(), PACKET_SIZE);
+        assert_eq!(cmd_set_gain(0, 360).len(), PACKET_SIZE);
         assert_eq!(cmd_confirm(0).len(), PACKET_SIZE);
     }
 
@@ -2186,7 +3073,7 @@ mod tests {
     #[test]
     fn packet_crc_is_valid() {
         // Verify the CRC in a built packet matches recomputing it
-        let pkt = cmd_set_gain(5, 36);
+        let pkt = cmd_set_gain(5, 360);
         let total_len = pkt[1] as usize;
         let crc_hi = pkt[total_len] as u16;
         let crc_lo = pkt[total_len + 1] as u16;
@@ -2219,7 +3106,7 @@ mod tests {
     #[test]
     fn set_gain_encodes_db_correctly() {
         // 36 dB → raw = 36 * 100 = 3600 = 0x0E10
-        let pkt = cmd_set_gain(0, 36);
+        let pkt = cmd_set_gain(0, 360);
         assert_eq!(&pkt[10..13], &CMD_SET_FEAT);
         assert_eq!(&pkt[14..16], &FEAT_GAIN);
         // value at pkt[16..18]
@@ -2232,6 +3119,20 @@ mod tests {
         let pkt = cmd_set_gain(0, 0);
         let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
         assert_eq!(raw, 0, "0 dB must encode as 0");
+    }
+
+    #[test]
+    fn set_gain_encodes_half_db() {
+        let pkt = cmd_set_gain(0, 285);
+        let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
+        assert_eq!(raw, 2850, "28.5 dB must encode as 2850");
+    }
+
+    #[test]
+    fn format_gain_always_shows_one_decimal() {
+        assert_eq!(format_gain(0), "0.0 dB");
+        assert_eq!(format_gain(285), "28.5 dB");
+        assert_eq!(format_gain(600), "60.0 dB");
     }
 
     #[test]
@@ -2471,7 +3372,7 @@ mod tests {
     /// Standard framing, HDR_CONSTANT=0x03: SET gain to 30 dB, seq 0x05.
     #[test]
     fn golden_packet_set_gain() {
-        let pkt = cmd_set_gain(0x05, 30);
+        let pkt = cmd_set_gain(0x05, 300);
         assert_eq!(
             &pkt[..20],
             &[
@@ -2661,23 +3562,31 @@ mod tests {
         let mut state = DeviceState::default();
         // 36 dB = raw 3600 = 0x0E10
         let _ = apply_response(FEAT_GAIN, &[0x0E, 0x10], &mut state);
-        assert_eq!(state.gain_db, 36);
+        assert_eq!(state.gain_tenths, 360);
+    }
+
+    #[test]
+    fn apply_response_gain_keeps_half_db() {
+        let mut state = DeviceState::default();
+        // 28.5 dB = raw 2850 = 0x0B22
+        assert!(apply_response(FEAT_GAIN, &[0x0B, 0x22], &mut state));
+        assert_eq!(state.gain_tenths, 285);
     }
 
     #[test]
     fn apply_response_gain_no_clamp() {
         let mut state = DeviceState::default();
         // apply_response is model-agnostic — it does not clamp to any model's max.
-        // raw 9000 / 100 = 90; the model-specific ceiling is enforced in adjust_focused.
+        // raw 9000 = 90 dB; the model-specific ceiling is enforced in adjust_focused.
         let _ = apply_response(FEAT_GAIN, &[0x23, 0x28], &mut state);
-        assert_eq!(state.gain_db, 90);
+        assert_eq!(state.gain_tenths, 900);
     }
 
     #[test]
     fn apply_response_gain_rejects_short_values() {
         // FEAT_GAIN needs 2 bytes (big-endian u16). Empty or 1-byte values must be rejected.
         let mut state = DeviceState::default();
-        let original = state.gain_db;
+        let original = state.gain_tenths;
         assert!(
             !apply_response(FEAT_GAIN, &[], &mut state),
             "empty must return false"
@@ -2687,7 +3596,7 @@ mod tests {
             "1-byte must return false"
         );
         assert_eq!(
-            state.gain_db, original,
+            state.gain_tenths, original,
             "state must not change on rejection"
         );
     }
@@ -2851,10 +3760,13 @@ mod tests {
     #[test]
     fn apply_response_unknown_feat_returns_false() {
         let mut state = DeviceState::default();
-        let original_gain = state.gain_db;
+        let original_gain = state.gain_tenths;
         let applied = apply_response([0xFF, 0xFF], &[0x01], &mut state);
         assert!(!applied, "unknown feature must return false");
-        assert_eq!(state.gain_db, original_gain, "state must not be mutated");
+        assert_eq!(
+            state.gain_tenths, original_gain,
+            "state must not be mutated"
+        );
     }
 
     #[test]
@@ -3426,10 +4338,34 @@ mod tests {
     }
 
     #[test]
-    fn device_model_max_gain_db() {
-        assert_eq!(DeviceModel::Mvx2u.max_gain_db(), 60);
-        assert_eq!(DeviceModel::Mvx2uGen2.max_gain_db(), 60);
-        assert_eq!(DeviceModel::Mv6.max_gain_db(), 36);
+    fn device_model_max_gain_tenths() {
+        assert_eq!(DeviceModel::Mvx2u.max_gain_tenths(), 600);
+        assert_eq!(DeviceModel::Mvx2uGen2.max_gain_tenths(), 600);
+        assert_eq!(DeviceModel::Mv6.max_gain_tenths(), 360);
+        assert_eq!(DeviceModel::Mv7.max_gain_tenths(), 360);
+    }
+
+    #[test]
+    fn device_model_gain_step_is_half_db_except_mv7() {
+        assert_eq!(DeviceModel::Mv7.gain_step_tenths(), 15);
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv7Plus,
+        ] {
+            assert_eq!(model.gain_step_tenths(), 5, "{model:?}");
+        }
+    }
+
+    #[test]
+    fn device_model_from_pid_maps_every_supported_pid() {
+        assert_eq!(DeviceModel::from_pid(0x1013), Some(DeviceModel::Mvx2u));
+        assert_eq!(DeviceModel::from_pid(0x1033), Some(DeviceModel::Mvx2uGen2));
+        assert_eq!(DeviceModel::from_pid(0x1026), Some(DeviceModel::Mv6));
+        assert_eq!(DeviceModel::from_pid(0x1012), Some(DeviceModel::Mv7));
+        assert_eq!(DeviceModel::from_pid(0x1019), Some(DeviceModel::Mv7Plus));
+        assert_eq!(DeviceModel::from_pid(0x0000), None);
     }
 
     // ── MV6 gain lock ─────────────────────────────────────────────────────────
@@ -3982,8 +4918,8 @@ mod tests {
     // ── Missing MV7+ tests ────────────────────────────────────────────────────
 
     #[test]
-    fn device_model_max_gain_db_mv7_plus() {
-        assert_eq!(DeviceModel::Mv7Plus.max_gain_db(), 36);
+    fn device_model_max_gain_tenths_mv7_plus() {
+        assert_eq!(DeviceModel::Mv7Plus.max_gain_tenths(), 360);
     }
 
     // ── MV7+ apply_response: LED themes ──────────────────────────────────────
@@ -4129,7 +5065,7 @@ mod tests {
 
     #[test]
     fn mv7_gain_packet_uses_hdr0_and_encodes_correctly() {
-        let pkt = cmd_set_mv7_gain(0, 36);
+        let pkt = cmd_set_mv7_gain(0, 360);
         assert_eq!(pkt.len(), PACKET_SIZE);
         assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
         assert_eq!(&pkt[14..16], &FEAT_GAIN, "feature address mismatch");

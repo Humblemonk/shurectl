@@ -1,12 +1,13 @@
 //! Device I/O: wraps hidapi for Shure USB microphones.
 //!
-//! Supports four devices:
+//! Supports five devices:
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
 //!
-//! All four devices expose a USB HID configuration interface alongside their
+//! All five devices expose a USB HID configuration interface alongside their
 //! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
 //! and \\.\HID#VID_... paths on Windows, bypassing the audio driver entirely.
 //!
@@ -19,6 +20,10 @@
 //! Every SET command must be followed immediately by a CONFIRM packet; the device
 //! will not apply the change otherwise. GET commands receive one response packet
 //! on the next read.
+//!
+//! The original MV7 is the exception: it takes one ASCII command line per report
+//! and answers with a line of text (see `protocol::mv7_text`). Its commands go
+//! through `send_text()`; the binary `send_set()`/`send_get()` refuse to run on it.
 //!
 //! # Sequence numbers
 //!
@@ -33,16 +38,18 @@
 //! the user to specify one with `--device`. Use `list_devices()` to enumerate.
 
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use hidapi::{HidApi, HidDevice};
 
 use crate::protocol::{
-    self, DeviceModel, DeviceState, MV6_PID, MV7_PLUS_PID, MVX2U_GEN2_PID, PACKET_SIZE, PID, VID,
-    apply_response, cmd_confirm, cmd_factory_reset, cmd_get_auto_gain, cmd_get_auto_position,
-    cmd_get_auto_tone, cmd_get_compressor, cmd_get_device_name, cmd_get_eq_band_enable,
-    cmd_get_eq_band_gain, cmd_get_eq_enable, cmd_get_firmware_version, cmd_get_gain, cmd_get_hpf,
-    cmd_get_limiter, cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
+    self, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, MV6_PID, MV7_PID,
+    MV7_PLUS_PID, MVX2U_GEN2_PID, MicPosition, PACKET_SIZE, PID, VID, apply_response, cmd_confirm,
+    cmd_factory_reset, cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone,
+    cmd_get_compressor, cmd_get_device_name, cmd_get_eq_band_enable, cmd_get_eq_band_gain,
+    cmd_get_eq_enable, cmd_get_firmware_version, cmd_get_gain, cmd_get_hpf, cmd_get_limiter,
+    cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
     cmd_get_mv6_gain_lock, cmd_get_mv6_mix, cmd_get_mv6_mute_btn_disable,
     cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_mv7_led_behavior,
     cmd_get_mv7_led_brightness, cmd_get_mv7_led_live_edge, cmd_get_mv7_led_live_interior,
@@ -53,7 +60,7 @@ use crate::protocol::{
     cmd_set_mv7_led_behavior, cmd_set_mv7_led_brightness, cmd_set_mv7_led_live_edge,
     cmd_set_mv7_led_live_interior, cmd_set_mv7_led_live_middle, cmd_set_mv7_led_live_theme,
     cmd_set_mv7_led_pulsing_color, cmd_set_mv7_led_pulsing_theme, cmd_set_mv7_led_solid_color,
-    cmd_set_mv7_led_solid_theme, parse_response, parse_response_with_prefix,
+    cmd_set_mv7_led_solid_theme, mv7_text, parse_response, parse_response_with_prefix,
 };
 
 #[cfg(target_os = "linux")]
@@ -67,7 +74,11 @@ const ACCESS_HINT: &str = "ensure the device is plugged in and accessible";
 /// How long to wait for a read response, in milliseconds.
 const READ_TIMEOUT_MS: i32 = 200;
 
-/// A connected Shure USB microphone (MVX2U or MV6).
+/// How long to wait for an MV7 reply. A mode change takes ~200 ms to answer,
+/// longer than a single read timeout, so waiting is bounded by time, not reads.
+const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// A connected Shure USB microphone or interface.
 pub struct ShureDevice {
     device: HidDevice,
     /// Which device model this is — drives protocol and UI decisions.
@@ -79,19 +90,13 @@ pub struct ShureDevice {
 }
 
 impl ShureDevice {
-    fn from_hid_device(device: HidDevice, pid: u16) -> Self {
+    fn from_hid_device(device: HidDevice, model: DeviceModel) -> Self {
         device.set_blocking_mode(false).ok();
         let serial_number = device
             .get_serial_number_string()
             .ok()
             .flatten()
             .unwrap_or_else(|| "(unknown)".to_string());
-        let model = match pid {
-            MV6_PID => DeviceModel::Mv6,
-            MVX2U_GEN2_PID => DeviceModel::Mvx2uGen2,
-            MV7_PLUS_PID => DeviceModel::Mv7Plus,
-            _ => DeviceModel::Mvx2u,
-        };
         Self {
             device,
             model,
@@ -110,17 +115,16 @@ impl ShureDevice {
 
         match found.len() {
             0 => Err(anyhow!(
-                "No Shure MVX2U, MVX2U Gen 2, MV6, or MV7+ device found.\nHint: {ACCESS_HINT}."
+                "No Shure MVX2U, MVX2U Gen 2, MV6, MV7, or MV7+ device found.\nHint: {ACCESS_HINT}."
             )),
             1 => {
-                let info = found[0];
-                let pid = info.product_id();
+                let (info, model) = found[0];
                 let c_path = std::ffi::CString::new(info.path().to_string_lossy().as_ref())
                     .map_err(|_| anyhow!("Device path contains a null byte"))?;
                 let device = api
                     .open_path(c_path.as_c_str())
                     .map_err(|e| anyhow!("Cannot open device: {e}\nHint: {ACCESS_HINT}."))?;
-                Ok(Self::from_hid_device(device, pid))
+                Ok(Self::from_hid_device(device, model))
             }
             n => Err(anyhow!(
                 "{n} Shure devices found. Use --device to specify one.\n\
@@ -140,26 +144,27 @@ impl ShureDevice {
             })?;
 
         let pid = info.product_id();
-        if info.vendor_id() != VID || !is_supported_pid(pid) {
+        let Some(model) = supported_model(info) else {
             return Err(anyhow!(
                 "{path} is not a supported Shure device \
-                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, {:#06x}, or {:#06x}.",
+                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, {:#06x}, {:#06x}, or {:#06x}.",
                 info.vendor_id(),
                 pid,
                 VID,
                 PID,
                 MVX2U_GEN2_PID,
                 MV6_PID,
+                MV7_PID,
                 MV7_PLUS_PID,
             ));
-        }
+        };
 
         let c_path = std::ffi::CString::new(path)
             .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
         let device = api
             .open_path(c_path.as_c_str())
             .map_err(|e| anyhow!("Cannot open {path}: {e}\nHint: {ACCESS_HINT}."))?;
-        Ok(Self::from_hid_device(device, pid))
+        Ok(Self::from_hid_device(device, model))
     }
 
     fn next_seq(&self) -> u8 {
@@ -183,7 +188,20 @@ impl ShureDevice {
         }
     }
 
+    /// The MV7 would read a binary packet as a garbage command line, so every
+    /// binary path refuses it. Reaching this is a bug in the per-model dispatch.
+    fn ensure_binary_protocol(&self) -> Result<()> {
+        match self.model {
+            DeviceModel::Mv7 => Err(anyhow!("This setting is not available on the MV7")),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => Ok(()),
+        }
+    }
+
     fn send_set(&self, set_packet: &[u8]) -> Result<()> {
+        self.ensure_binary_protocol()?;
         self.write(set_packet)?;
         let confirm = cmd_confirm(self.next_seq());
         self.write(&confirm)?;
@@ -201,6 +219,7 @@ impl ShureDevice {
     }
 
     fn send_get(&self, get_packet: &[u8]) -> Result<Option<([u8; 2], Vec<u8>)>> {
+        self.ensure_binary_protocol()?;
         self.write(get_packet)?;
         let buf = self.read()?;
         Ok(parse_response(&buf))
@@ -210,9 +229,70 @@ impl ShureDevice {
     /// Used for MV7+ playback mix which shares a feature address with mic mix.
     #[allow(clippy::type_complexity)]
     fn send_get_with_prefix(&self, get_packet: &[u8]) -> Result<Option<(u8, [u8; 2], Vec<u8>)>> {
+        self.ensure_binary_protocol()?;
         self.write(get_packet)?;
         let buf = self.read()?;
         Ok(parse_response_with_prefix(&buf))
+    }
+
+    /// Send one MV7 command line and return its reply line (which may be
+    /// [`mv7_text::FAILED_REPLY`]). Unrelated lines in between are skipped.
+    fn send_text(&self, command: &mv7_text::TextCommand) -> Result<String> {
+        self.write(&command.packet())?;
+        let mut received = String::new();
+        let mut buf = vec![0u8; PACKET_SIZE];
+        let deadline = Instant::now() + MV7_REPLY_TIMEOUT;
+        while Instant::now() < deadline {
+            let n = self
+                .device
+                .read_timeout(&mut buf, READ_TIMEOUT_MS)
+                .map_err(|e| anyhow!("HID read failed (device disconnected?): {e}"))?;
+            if n == 0 {
+                continue;
+            }
+            let text: Vec<u8> = buf[..n].iter().copied().filter(|&b| b != 0).collect();
+            received.push_str(&String::from_utf8_lossy(&text));
+            if let Some(reply) = mv7_text::find_reply(&received, &command.reply_prefix) {
+                return Ok(reply.to_string());
+            }
+        }
+        Err(anyhow!("No reply from the MV7 to \"{}\"", command.line))
+    }
+
+    /// Send an MV7 SET and fail if the device rejected it.
+    fn send_text_set(&self, command: &mv7_text::TextCommand) -> Result<()> {
+        let reply = self.send_text(command)?;
+        Self::check_text_reply(command, &reply)
+    }
+
+    fn check_text_reply(command: &mv7_text::TextCommand, reply: &str) -> Result<()> {
+        match reply {
+            mv7_text::FAILED_REPLY => Err(anyhow!("The MV7 rejected \"{}\"", command.line)),
+            mv7_text::LOCKED_REPLY => Err(anyhow!(
+                "The MV7 refused \"{}\": the setting is locked",
+                command.line
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The MV7 answers `[Failed]` when a gain rounds to the value it already
+    /// has, so a rejected gain SET is only an error if the gain is still wrong.
+    fn send_text_set_gain(&self, gain_tenths: u16) -> Result<()> {
+        let command = mv7_text::set_gain(gain_tenths);
+        let reply = self.send_text(&command)?;
+        if reply != mv7_text::FAILED_REPLY {
+            return Self::check_text_reply(&command, &reply);
+        }
+        let mut state = DeviceState::default();
+        let reply = self.send_text(&mv7_text::get_gain())?;
+        if mv7_text::apply_reply(&reply, &mut state)
+            && state.gain_tenths == mv7_text::snap_gain(gain_tenths)
+        {
+            Ok(())
+        } else {
+            Err(anyhow!("The MV7 rejected \"{}\"", command.line))
+        }
     }
 
     /// Fetch all 5 EQ band gain values and apply them to `state`.
@@ -248,8 +328,23 @@ impl ShureDevice {
             DeviceModel::Mvx2u => self.get_state_mvx2u(),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(),
             DeviceModel::Mv6 => self.get_state_mv6(),
+            DeviceModel::Mv7 => self.get_state_mv7(),
             DeviceModel::Mv7Plus => self.get_state_mv7_plus(),
         }
+    }
+
+    fn get_state_mv7(&self) -> Result<DeviceState> {
+        let mut state = DeviceState::default();
+        for command in mv7_text::state_queries() {
+            let reply = self.send_text(&command)?;
+            if !mv7_text::apply_reply(&reply, &mut state) {
+                eprintln!(
+                    "get_state(mv7): unrecognised reply {reply:?} to {:?}",
+                    command.line
+                );
+            }
+        }
+        Ok(state)
     }
 
     fn get_state_mvx2u(&self) -> Result<DeviceState> {
@@ -406,6 +501,11 @@ impl ShureDevice {
     /// can't be queried or doesn't report one. Used by `--list` to upgrade the
     /// displayed serial from the USB descriptor value to the printed serial.
     pub fn read_factory_serial(&self) -> Option<String> {
+        if self.model == DeviceModel::Mv7 {
+            let reply = self.send_text(&mv7_text::get_serial()).ok()?;
+            let mut state = DeviceState::default();
+            return mv7_text::apply_reply(&reply, &mut state).then_some(state.factory_serial);
+        }
         let pkt = cmd_get_serial(self.next_seq());
         let (feat, value) = self.send_get(&pkt).ok()??;
         let mut state = DeviceState::default();
@@ -414,28 +514,46 @@ impl ShureDevice {
 
     // ── Shared SET commands ───────────────────────────────────────────────────
 
-    /// Set manual gain. Clamped to the model's maximum.
-    pub fn set_gain(&self, gain_db: u8) -> Result<()> {
-        let clamped = gain_db.min(self.model.max_gain_db());
+    /// Set manual gain in tenths of a dB. Clamped to the model's maximum.
+    pub fn set_gain(&self, gain_tenths: u16) -> Result<()> {
+        let clamped = gain_tenths.min(self.model.max_gain_tenths());
         let pkt = match self.model {
+            DeviceModel::Mv7 => return self.send_text_set_gain(clamped),
             DeviceModel::Mv7Plus => cmd_set_mv7_gain(self.next_seq(), clamped),
-            _ => protocol::cmd_set_gain(self.next_seq(), clamped),
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
+                protocol::cmd_set_gain(self.next_seq(), clamped)
+            }
         };
         self.send_set(&pkt)
     }
 
-    pub fn set_mode(&self, auto: bool) -> Result<()> {
+    /// Switch between Auto Level and Manual. The MV7 stores mode, mic position
+    /// and tone as one setting, so they are passed along; other models ignore them.
+    pub fn set_mode(&self, auto: bool, position: MicPosition, tone: AutoTone) -> Result<()> {
         let pkt = match self.model {
+            DeviceModel::Mv7 => {
+                let mode = if auto {
+                    protocol::InputMode::Auto
+                } else {
+                    protocol::InputMode::Manual
+                };
+                return self.send_text_set(&mv7_text::set_dsp_mode(mode, position, tone));
+            }
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mode(self.next_seq(), auto),
-            _ => protocol::cmd_set_mode(self.next_seq(), auto),
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
+                protocol::cmd_set_mode(self.next_seq(), auto)
+            }
         };
         self.send_set(&pkt)
     }
 
     pub fn set_mute(&self, muted: bool) -> Result<()> {
         let pkt = match self.model {
+            DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_mute(muted)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mute(self.next_seq(), muted),
-            _ => protocol::cmd_set_mute(self.next_seq(), muted),
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
+                protocol::cmd_set_mute(self.next_seq(), muted)
+            }
         };
         self.send_set(&pkt)
     }
@@ -450,12 +568,37 @@ impl ShureDevice {
 
     // ── MVX2U Gen 1 and Gen 2 SET commands ───────────────────────────────────
 
-    pub fn set_auto_position(&self, position: &protocol::MicPosition) -> Result<()> {
-        self.send_set(&protocol::cmd_set_auto_position(self.next_seq(), position))
+    /// Set the Auto Level mic position. `tone` is only used by the MV7, which
+    /// stores both in one setting.
+    pub fn set_auto_position(&self, position: MicPosition, tone: AutoTone) -> Result<()> {
+        match self.model {
+            DeviceModel::Mv7 => self.set_mv7_auto_level(position, tone),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => {
+                self.send_set(&protocol::cmd_set_auto_position(self.next_seq(), &position))
+            }
+        }
     }
 
-    pub fn set_auto_tone(&self, tone: &protocol::AutoTone) -> Result<()> {
-        self.send_set(&protocol::cmd_set_auto_tone(self.next_seq(), tone))
+    /// Set the Auto Level tone. `position` is only used by the MV7, which
+    /// stores both in one setting.
+    pub fn set_auto_tone(&self, position: MicPosition, tone: AutoTone) -> Result<()> {
+        match self.model {
+            DeviceModel::Mv7 => self.set_mv7_auto_level(position, tone),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => {
+                self.send_set(&protocol::cmd_set_auto_tone(self.next_seq(), &tone))
+            }
+        }
+    }
+
+    fn set_mv7_auto_level(&self, position: MicPosition, tone: AutoTone) -> Result<()> {
+        let command = mv7_text::set_dsp_mode(protocol::InputMode::Auto, position, tone);
+        self.send_text_set(&command)
     }
 
     pub fn set_auto_gain(&self, gain: &protocol::AutoGain) -> Result<()> {
@@ -478,10 +621,13 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
-    pub fn set_compressor(&self, preset: &protocol::CompressorPreset) -> Result<()> {
+    pub fn set_compressor(&self, preset: &CompressorPreset) -> Result<()> {
         let pkt = match self.model {
+            DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_compressor(*preset)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_compressor(self.next_seq(), preset),
-            _ => protocol::cmd_set_compressor(self.next_seq(), preset),
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
+                protocol::cmd_set_compressor(self.next_seq(), preset)
+            }
         };
         self.send_set(&pkt)
     }
@@ -508,7 +654,13 @@ impl ShureDevice {
     }
 
     pub fn set_lock(&self, locked: bool) -> Result<()> {
-        self.send_set(&cmd_set_lock(self.next_seq(), locked))
+        match self.model {
+            DeviceModel::Mv7 => self.send_text_set(&mv7_text::set_lock(locked)),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => self.send_set(&cmd_set_lock(self.next_seq(), locked)),
+        }
     }
 
     // ── MV6 and MV7+ shared SET commands ─────────────────────────────────────
@@ -552,10 +704,44 @@ impl ShureDevice {
     /// Set monitor mic mix. MV7+ uses cmd_set_mv7_mic_mix (HDR_CONST=0x00 with prefix=0x00).
     pub fn set_mv6_monitor_mix(&self, mix: u8) -> Result<()> {
         let pkt = match self.model {
+            DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mic_mix(self.next_seq(), mix),
-            _ => protocol::cmd_set_mv6_mix(self.next_seq(), mix),
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
+                protocol::cmd_set_mv6_mix(self.next_seq(), mix)
+            }
         };
         self.send_set(&pkt)
+    }
+
+    // ── MV7 exclusive SET commands ────────────────────────────────────────────
+
+    pub fn set_eq_preset(&self, preset: EqPreset) -> Result<()> {
+        self.ensure_text_protocol()?;
+        self.send_text_set(&mv7_text::set_eq(preset))
+    }
+
+    pub fn set_led_live_meter(&self, enabled: bool) -> Result<()> {
+        self.ensure_text_protocol()?;
+        self.send_text_set(&mv7_text::set_live_meter(enabled))
+    }
+
+    pub fn set_led_night_mode(&self, enabled: bool) -> Result<()> {
+        self.ensure_text_protocol()?;
+        self.send_text_set(&mv7_text::set_night_mode(enabled))
+    }
+
+    /// Counterpart of `ensure_binary_protocol()` for the MV7-only setters.
+    fn ensure_text_protocol(&self) -> Result<()> {
+        match self.model {
+            DeviceModel::Mv7 => Ok(()),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => Err(anyhow!(
+                "This setting is only available on the MV7, not the {}",
+                self.model.display_name()
+            )),
+        }
     }
 
     // ── MV7+ exclusive SET commands ───────────────────────────────────────────
@@ -670,9 +856,12 @@ pub struct DeviceInfo {
     pub model: DeviceModel,
 }
 
-/// Returns `true` if `pid` is one of the four supported Shure device PIDs.
-fn is_supported_pid(pid: u16) -> bool {
-    pid == PID || pid == MVX2U_GEN2_PID || pid == MV6_PID || pid == MV7_PLUS_PID
+/// The model of a HID device if it is a supported Shure device.
+fn supported_model(info: &hidapi::DeviceInfo) -> Option<DeviceModel> {
+    if info.vendor_id() != VID {
+        return None;
+    }
+    DeviceModel::from_pid(info.product_id())
 }
 
 /// Enumerate supported Shure devices, one entry per physical device.
@@ -688,21 +877,21 @@ fn is_supported_pid(pid: u16) -> bool {
 /// 3. Deduplicate by path — on Linux all collections share one /dev/hidrawN path.
 const VENDOR_USAGE_PAGE_MIN: u16 = 0xFF00;
 
-fn shure_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
-    let candidates: Vec<&hidapi::DeviceInfo> = api
+fn shure_devices(api: &HidApi) -> Vec<(&hidapi::DeviceInfo, DeviceModel)> {
+    let candidates: Vec<(&hidapi::DeviceInfo, DeviceModel)> = api
         .device_list()
-        .filter(|d| d.vendor_id() == VID && is_supported_pid(d.product_id()))
+        .filter_map(|d| supported_model(d).map(|model| (d, model)))
         .collect();
 
     let has_vendor = candidates
         .iter()
-        .any(|d| d.usage_page() >= VENDOR_USAGE_PAGE_MIN);
+        .any(|(d, _)| d.usage_page() >= VENDOR_USAGE_PAGE_MIN);
 
     let mut seen_paths = std::collections::HashSet::new();
     candidates
         .into_iter()
-        .filter(|d| !has_vendor || d.usage_page() >= VENDOR_USAGE_PAGE_MIN)
-        .filter(|d| seen_paths.insert(d.path().to_string_lossy().into_owned()))
+        .filter(|(d, _)| !has_vendor || d.usage_page() >= VENDOR_USAGE_PAGE_MIN)
+        .filter(|(d, _)| seen_paths.insert(d.path().to_string_lossy().into_owned()))
         .collect()
 }
 
@@ -713,15 +902,10 @@ pub fn list_devices() -> Vec<DeviceInfo> {
     };
     shure_devices(&api)
         .into_iter()
-        .map(|d| DeviceInfo {
+        .map(|(d, model)| DeviceInfo {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or("(unknown)").to_owned(),
-            model: match d.product_id() {
-                MV6_PID => DeviceModel::Mv6,
-                MVX2U_GEN2_PID => DeviceModel::Mvx2uGen2,
-                MV7_PLUS_PID => DeviceModel::Mv7Plus,
-                _ => DeviceModel::Mvx2u,
-            },
+            model,
         })
         .collect()
 }
