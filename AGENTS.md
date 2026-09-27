@@ -13,7 +13,7 @@ loads these automatically.
 ## Commands
 
 ```
-cargo run -- --demo mv7plus     # no hardware; also mvx2u, mvx2u-gen2, mv6
+cargo run -- --demo mv7plus     # no hardware; also mvx2u, mvx2u-gen2, mv6, mv7
 cargo run -- --list             # list connected devices
 ```
 
@@ -111,14 +111,16 @@ Shared across all models unless the hardware makes it impossible:
   they lack; they don't reshuffle
 - **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
   everywhere. dB values, percentages, and enum names render through the same code path
-- **Drawing helpers**: `draw_mode_block()`, `draw_mute_block()`, `draw_monitor_mix_gauge()`,
-  `draw_gain_lock_block()`, `draw_phantom_block()`, `segmented_span()`, `draw_main_shared()`.
+- **Drawing helpers**: `draw_mode_block()`, `draw_mute_block()`, `draw_gain_gauge()`,
+  `draw_monitor_mix_gauge()`, `draw_gain_lock_block()`, `draw_config_lock_block()`,
+  `draw_phantom_block()`, `draw_auto_controls()`, `segmented_span()`, `draw_main_shared()`.
   Extend a helper with a parameter rather than forking a near-copy
 - **Status and error wording**: same phrasing for the same condition on every model
 
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
 
-- Permanently unsupported on this hardware → hide it (Reverb/LED on non-MV7+)
+- Permanently unsupported on this hardware → hide it (Reverb on non-MV7+, LED on models
+  without LED settings, Factory Reset on non-MV7+)
 - Supported but currently unavailable → show it with 🔒 and a notice (EQ/Dynamics on Gen 1
   in Auto mode, via `draw_tab_locked_notice()`)
 - Never leave a control visible and focusable but inert. It reads as a bug
