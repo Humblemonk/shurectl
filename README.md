@@ -255,7 +255,6 @@ repository.
 ## Legal
 
 Protocol implementation is based on publicly documented USB HID packet captures
-by PennRobotics (shux project, Apache 2.0) as well as author's own usbmon captures. No Shure software was used, decompiled,
-or examined in the creation of this tool.
+by PennRobotics (shux project, Apache 2.0) as well as author's own usbmon captures.
 
 shurectl is not affiliated with or endorsed by Shure Incorporated.
