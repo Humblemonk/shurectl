@@ -211,13 +211,12 @@ impl ShureDevice {
         let confirm = cmd_confirm(self.next_seq());
         self.write(&confirm)?;
         // Drain the acks sent after every CONFIRM so they don't offset
-        // subsequent GET reads in get_state(). A timeout means no more are
-        // coming, so stop rather than wait again.
+        // subsequent GET reads in get_state(). Every read is attempted even after
+        // a timeout, exactly as the MV7+ path always has, so a late first ack is
+        // still caught by the second read.
         let mut buf = vec![0u8; PACKET_SIZE];
         for _ in 0..self.model.reports_after_confirm() {
-            if !matches!(self.device.read_timeout(&mut buf, 50), Ok(n) if n > 0) {
-                break;
-            }
+            let _ = self.device.read_timeout(&mut buf, 50);
         }
         Ok(())
     }
