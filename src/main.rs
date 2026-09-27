@@ -775,10 +775,15 @@ fn apply_preset_to_device(
             state.auto_position,
             state.auto_tone,
         )?;
-        d.set_mute(state.muted)?;
-        // The MV7 has no HPF, and manages gain itself in Auto Level.
+        // The MV7 manages gain itself in Auto Level, so its gain is sent below,
+        // in Manual only. Every other model keeps the original order:
+        // mode → gain → mute → HPF.
         if model != DeviceModel::Mv7 {
             d.set_gain(state.gain_tenths)?;
+        }
+        d.set_mute(state.muted)?;
+        // The MV7 has no HPF.
+        if model != DeviceModel::Mv7 {
             d.set_hpf(&state.hpf)?;
         }
         match model {
