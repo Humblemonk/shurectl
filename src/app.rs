@@ -238,6 +238,16 @@ impl App {
         }
     }
 
+    /// Returns true when the EQ tab has the 5 parametric bands that `f` (Flatten
+    /// EQ) zeroes. The MV6 and MV7+ have a tone slider and the MV7 a four-way
+    /// preset instead, so `f` does nothing on them.
+    pub fn has_eq_bands(&self) -> bool {
+        match self.device_model {
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
+        }
+    }
+
     /// Returns true when a tab should be inaccessible given the current device state.
     ///
     /// MVX2U Gen 1 and MV7: EQ and Dynamics are locked in Auto Level mode — the
@@ -2332,6 +2342,23 @@ mod tests {
             Tab::Info,
         ] {
             assert!(!app.is_tab_locked(tab), "{tab:?} must be open in Manual");
+        }
+    }
+
+    #[test]
+    fn eq_bands_are_mvx2u_only() {
+        for (model, bands) in [
+            (DeviceModel::Mvx2u, true),
+            (DeviceModel::Mvx2uGen2, true),
+            (DeviceModel::Mv6, false),
+            (DeviceModel::Mv7, false),
+            (DeviceModel::Mv7Plus, false),
+        ] {
+            let app = App {
+                device_model: model,
+                ..App::default()
+            };
+            assert_eq!(app.has_eq_bands(), bands, "{model:?}");
         }
     }
 
