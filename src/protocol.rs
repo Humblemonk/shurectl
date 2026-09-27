@@ -258,8 +258,8 @@ impl DeviceModel {
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`) and a CONFIRM
     ///   ack (`09 00 00`).
     /// - MVX2U Gen 1 and MV6: assumed to match (same binary protocol), not yet
-    ///   checked on hardware. If one sends fewer, each missing ack costs a 50 ms
-    ///   read timeout per SET, not a wrong readback.
+    ///   checked on hardware. If one sends fewer, each missing ack costs one
+    ///   ack timeout per SET, not a wrong readback.
     /// - MV7: never sends binary SETs.
     pub fn reports_after_confirm(&self) -> usize {
         match self {

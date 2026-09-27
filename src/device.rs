@@ -74,6 +74,12 @@ const ACCESS_HINT: &str = "ensure the device is plugged in and accessible";
 /// How long to wait for a read response, in milliseconds.
 const READ_TIMEOUT_MS: i32 = 200;
 
+/// How long to wait for each ack after a CONFIRM, in milliseconds. The MVX2U Gen 2
+/// answers within 3 ms; a setting that sends fewer acks than
+/// `reports_after_confirm()` costs this much per missing ack. If a model's acks
+/// turn out slower than this, they are left queued and refresh shows stale values.
+const ACK_TIMEOUT_MS: i32 = 15;
+
 /// How long to wait for an MV7 reply. A mode change takes ~200 ms to answer,
 /// longer than a single read timeout, so waiting is bounded by time, not reads.
 const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -212,11 +218,10 @@ impl ShureDevice {
         self.write(&confirm)?;
         // Drain the acks sent after every CONFIRM so they don't offset
         // subsequent GET reads in get_state(). Every read is attempted even after
-        // a timeout, exactly as the MV7+ path always has, so a late first ack is
-        // still caught by the second read.
+        // a timeout, so a late first ack is still caught by the second read.
         let mut buf = vec![0u8; PACKET_SIZE];
         for _ in 0..self.model.reports_after_confirm() {
-            let _ = self.device.read_timeout(&mut buf, 50);
+            let _ = self.device.read_timeout(&mut buf, ACK_TIMEOUT_MS);
         }
         Ok(())
     }

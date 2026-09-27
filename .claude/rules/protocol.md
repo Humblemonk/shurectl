@@ -23,9 +23,11 @@ Every packet is exactly 64 bytes (65 with hidapi's report-ID byte 0), sent via `
 - **Acks after CONFIRM:** the MV7+ and MVX2U Gen 2 each send two unsolicited input reports
   after a CONFIRM. Unread, they shift every later GET by one packet and refresh shows stale or
   default values. `DeviceModel::reports_after_confirm()` sets how many `send_set()` discards.
-  Gen 1 and MV6 are assumed to send two as well but are unchecked on hardware. If a user
-  reports stale values after a preset load or refresh on one of them, write the current gain
-  back with SET + CONFIRM and count the reports that arrive
+  Gen 1 and MV6 are assumed to send two as well but are unchecked on hardware. Some settings
+  send only one (Gen 2 mute), which costs one `ACK_TIMEOUT_MS` wait. That timeout is 15 ms on
+  every model, measured only on the Gen 2 (acks in ≤3 ms). If a user reports stale values
+  after a preset load or refresh, write the current value back with SET + CONFIRM and time and
+  count the reports that arrive: too few acks is harmless, too slow or too many is the bug
 - **State readback:** there is no monolithic GET_STATE. `device.rs::get_state()` issues
   individual `cmd_get_*` packets; `apply_response()` dispatches on the 2-byte feature address
   and writes into `DeviceState`. The address → field mapping is documented inline in
