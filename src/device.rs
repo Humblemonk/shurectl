@@ -78,6 +78,11 @@ const READ_TIMEOUT_MS: i32 = 200;
 /// longer than a single read timeout, so waiting is bounded by time, not reads.
 const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// Upper bound on stale MV7 input reports discarded before a command. Far more
+/// than any reply needs (`help`, the longest, is a few dozen lines); it only
+/// keeps the drain loop finite if the device never stops sending.
+const MV7_DRAIN_MAX_REPORTS: usize = 256;
+
 /// A connected Shure USB microphone or interface.
 pub struct ShureDevice {
     device: HidDevice,
@@ -238,9 +243,10 @@ impl ShureDevice {
     /// Send one MV7 command line and return its reply line (which may be
     /// [`mv7_text::FAILED_REPLY`]). Unrelated lines in between are skipped.
     fn send_text(&self, command: &mv7_text::TextCommand) -> Result<String> {
+        let mut buf = vec![0u8; PACKET_SIZE];
+        self.drain_text_input(&mut buf)?;
         self.write(&command.packet())?;
         let mut received = String::new();
-        let mut buf = vec![0u8; PACKET_SIZE];
         let deadline = Instant::now() + MV7_REPLY_TIMEOUT;
         while Instant::now() < deadline {
             let n = self
@@ -257,6 +263,23 @@ impl ShureDevice {
             }
         }
         Err(anyhow!("No reply from the MV7 to \"{}\"", command.line))
+    }
+
+    /// Discard any MV7 input still queued from before this command: a reply
+    /// that arrived after its command timed out, or output from a command MOTIV
+    /// sent. `[Failed]` and `Locked` carry no command name, so a stale one would
+    /// otherwise be read as the answer to the next command.
+    fn drain_text_input(&self, buf: &mut [u8]) -> Result<()> {
+        for _ in 0..MV7_DRAIN_MAX_REPORTS {
+            let n = self
+                .device
+                .read_timeout(buf, 0)
+                .map_err(|e| anyhow!("HID read failed (device disconnected?): {e}"))?;
+            if n == 0 {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     /// Send an MV7 SET and fail if the device rejected it.
