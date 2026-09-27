@@ -193,10 +193,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(C_ACCENT),
         )
     } else if app.active_tab == Tab::Eq
-        && matches!(
-            app.device_model,
-            crate::protocol::DeviceModel::Mvx2u | crate::protocol::DeviceModel::Mvx2uGen2
-        )
+        && app.has_eq_bands()
         && app.device_state.mode == crate::protocol::InputMode::Manual
     {
         Span::styled(

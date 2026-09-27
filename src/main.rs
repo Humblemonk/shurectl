@@ -413,7 +413,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 None
             }
         }
-        KeyCode::Char('f') if app.active_tab == app::Tab::Eq => Some(DeviceAction::FlattenEq),
+        KeyCode::Char('f') if app.active_tab == app::Tab::Eq && app.has_eq_bands() => {
+            Some(DeviceAction::FlattenEq)
+        }
         KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetActions(i) = app.focus {
                 if app.presets[i].is_some() {
