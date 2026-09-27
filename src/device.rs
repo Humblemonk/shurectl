@@ -536,9 +536,9 @@ impl ShureDevice {
 
     // ── Shared SET commands ───────────────────────────────────────────────────
 
-    /// Set manual gain in tenths of a dB. Clamped to the model's maximum.
+    /// Set manual gain in tenths of a dB, clamped and snapped to the model's grid.
     pub fn set_gain(&self, gain_tenths: u16) -> Result<()> {
-        let clamped = gain_tenths.min(self.model.max_gain_tenths());
+        let clamped = self.model.snap_gain_tenths(gain_tenths);
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set_gain(clamped),
             DeviceModel::Mv7Plus => cmd_set_mv7_gain(self.next_seq(), clamped),

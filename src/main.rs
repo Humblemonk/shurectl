@@ -689,6 +689,12 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
         DeviceAction::LoadPreset(i) => {
             if let Some(slot) = &app.presets[*i].clone() {
                 slot.apply_to_device_state(&mut app.device_state);
+                // Show the gain the device will actually get: presets are shared
+                // across models, so one saved elsewhere may be out of range or
+                // off this model's step grid.
+                app.device_state.gain_tenths = app
+                    .device_model
+                    .snap_gain_tenths(app.device_state.gain_tenths);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
                 apply_preset_to_device(device, &app.device_state, app.device_model)
                     .and_then(|()| resync_mv7_state(app, device))

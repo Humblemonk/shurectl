@@ -767,11 +767,11 @@ impl App {
                     return None;
                 }
                 let step = i32::from(self.device_model.gain_step_tenths());
-                let max = i32::from(self.device_model.max_gain_tenths());
-                let moved = (i32::from(self.device_state.gain_tenths) + delta * step).clamp(0, max);
+                let moved = (i32::from(self.device_state.gain_tenths) + delta * step).max(0);
                 // Land on the step grid even if the device reported an off-grid value.
-                let snapped = moved - moved % step;
-                self.device_state.gain_tenths = u16::try_from(snapped).unwrap_or(0);
+                self.device_state.gain_tenths = self
+                    .device_model
+                    .snap_gain_tenths(u16::try_from(moved).unwrap_or(u16::MAX));
                 Some(DeviceAction::SetGain(self.device_state.gain_tenths))
             }
             Focus::MonitorMix => {
