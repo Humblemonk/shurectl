@@ -37,6 +37,11 @@ DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives 
 - `help` and `help <cmd>` on the device list commands and their syntax. They are safe to
   send; `bootDSP` and `setBlock` with unmapped data are not
 - `[Failed]` also means "value unchanged" (a gain that rounds to the current one)
+- `[Failed]` and `Locked` carry no command name, so `send_text()` drains queued input before
+  every write. Without that, a stale one is read as the reply to the next command
+- `dspMode` holds mode, mic position and tone together, and changing it also resets EQ and
+  compressor (entering Auto) or reports a new gain (leaving it). `main.rs` re-reads the full
+  state after any such change
 - Map a new block by snapshotting `getBlock` before and after one change in MOTIV. MOTIV's
   exact command strings are in its bundled `ndl-addon.node` (`strings -a`), but that addon
   is shared with other Shure devices
