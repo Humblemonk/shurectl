@@ -210,14 +210,13 @@ impl ShureDevice {
         self.write(set_packet)?;
         let confirm = cmd_confirm(self.next_seq());
         self.write(&confirm)?;
-        // The MV7+ sends two unsolicited IN responses after every CONFIRM:
-        // 1. a CONFIRM ACK (cmd=[09 00 00])
-        // 2. a SET echo (RES_SET_FEAT or RES_SET_LOCK with the applied value)
-        // Drain both so they don't offset subsequent GET reads in get_state().
-        if self.model == DeviceModel::Mv7Plus {
-            let mut buf = vec![0u8; PACKET_SIZE];
-            for _ in 0..2 {
-                let _ = self.device.read_timeout(&mut buf, 50);
+        // Drain the acks sent after every CONFIRM so they don't offset
+        // subsequent GET reads in get_state(). A timeout means no more are
+        // coming, so stop rather than wait again.
+        let mut buf = vec![0u8; PACKET_SIZE];
+        for _ in 0..self.model.reports_after_confirm() {
+            if !matches!(self.device.read_timeout(&mut buf, 50), Ok(n) if n > 0) {
+                break;
             }
         }
         Ok(())

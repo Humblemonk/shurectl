@@ -241,6 +241,27 @@ impl DeviceModel {
         }
     }
 
+    /// Unsolicited input reports the device sends after each SET + CONFIRM. They
+    /// must be read and discarded, or every later GET reads one of them instead
+    /// of its own reply and the state readback lags behind by that many packets.
+    ///
+    /// - MV7+: a CONFIRM ack (`09 00 00`) and a SET echo (`04 02 02`).
+    /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`) and a CONFIRM
+    ///   ack (`09 00 00`).
+    /// - MVX2U Gen 1 and MV6: assumed to match (same binary protocol), not yet
+    ///   checked on hardware. If one sends fewer, `send_set()` stops at the first
+    ///   read that times out, so the cost is one short wait per SET.
+    /// - MV7: never sends binary SETs.
+    pub fn reports_after_confirm(&self) -> usize {
+        match self {
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => 2,
+            DeviceModel::Mv7 => 0,
+        }
+    }
+
     /// Human-readable model name for display.
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -4362,6 +4383,19 @@ mod tests {
         ] {
             assert_eq!(model.gain_step_tenths(), 10, "{model:?}");
         }
+    }
+
+    #[test]
+    fn reports_after_confirm_is_two_on_every_binary_model() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv7Plus,
+        ] {
+            assert_eq!(model.reports_after_confirm(), 2, "{model:?}");
+        }
+        assert_eq!(DeviceModel::Mv7.reports_after_confirm(), 0);
     }
 
     #[test]
