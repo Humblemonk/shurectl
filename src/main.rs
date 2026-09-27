@@ -394,10 +394,14 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 return None;
             }
             if app.focus == app::Focus::FactoryReset {
-                app.confirming_factory_reset = true;
-                app.set_err(
-                    "! This will erase all device settings. Press Enter to confirm, any other key to cancel.",
-                );
+                // The button is only drawn where a reset exists; on other models
+                // Enter on the Info tab does nothing.
+                if app.supports_factory_reset() {
+                    app.confirming_factory_reset = true;
+                    app.set_err(
+                        "! This will erase all device settings. Press Enter to confirm, any other key to cancel.",
+                    );
+                }
                 return None;
             }
             app.toggle_focused()

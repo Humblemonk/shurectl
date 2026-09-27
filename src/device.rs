@@ -844,8 +844,18 @@ impl ShureDevice {
     ///
     /// The device disconnects and re-enumerates immediately; no CONFIRM is sent.
     /// After this call succeeds the device handle is stale — do not use it again.
+    /// Refuses every other model: the packet is MV7+-specific, and the original
+    /// MV7 has no factory reset.
     pub fn factory_reset(&self) -> Result<()> {
-        self.write(&cmd_factory_reset(self.next_seq()))
+        match self.model {
+            DeviceModel::Mv7Plus => self.write(&cmd_factory_reset(self.next_seq())),
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
+                Err(anyhow!(
+                    "Factory reset is not available on the {}",
+                    self.model.display_name()
+                ))
+            }
+        }
     }
 }
 
