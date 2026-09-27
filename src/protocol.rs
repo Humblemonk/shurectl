@@ -228,14 +228,16 @@ impl DeviceModel {
     }
 
     /// Manual gain step in tenths of a dB. The MV7 hardware only has 1.5 dB
-    /// steps (it rounds other values down); every other model takes 0.5 dB.
+    /// steps (it rounds other values down). The binary models step 1 dB: the
+    /// wire format carries hundredths, but nobody has confirmed on hardware
+    /// that they honour a half-dB SET.
     pub fn gain_step_tenths(&self) -> u16 {
         match self {
             DeviceModel::Mv7 => mv7_text::GAIN_STEP_TENTHS,
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
-            | DeviceModel::Mv7Plus => 5,
+            | DeviceModel::Mv7Plus => 10,
         }
     }
 
@@ -251,10 +253,14 @@ impl DeviceModel {
     }
 }
 
-/// Format a gain in tenths of a dB for display, e.g. `285` → `"28.5 dB"`.
-/// Every model's gain renders through this so the units read the same everywhere.
+/// Format a gain in tenths of a dB for display: `360` → `"36 dB"`, `285` →
+/// `"28.5 dB"`. Every model's gain renders through this so the units read the
+/// same everywhere; the decimal only appears when there is one.
 pub fn format_gain(gain_tenths: u16) -> String {
-    format!("{}.{} dB", gain_tenths / 10, gain_tenths % 10)
+    match gain_tenths % 10 {
+        0 => format!("{} dB", gain_tenths / 10),
+        tenths => format!("{}.{tenths} dB", gain_tenths / 10),
+    }
 }
 pub const PACKET_SIZE: usize = 64;
 
@@ -3129,10 +3135,10 @@ mod tests {
     }
 
     #[test]
-    fn format_gain_always_shows_one_decimal() {
-        assert_eq!(format_gain(0), "0.0 dB");
+    fn format_gain_shows_a_decimal_only_when_there_is_one() {
+        assert_eq!(format_gain(0), "0 dB");
         assert_eq!(format_gain(285), "28.5 dB");
-        assert_eq!(format_gain(600), "60.0 dB");
+        assert_eq!(format_gain(600), "60 dB");
     }
 
     #[test]
@@ -4346,7 +4352,7 @@ mod tests {
     }
 
     #[test]
-    fn device_model_gain_step_is_half_db_except_mv7() {
+    fn device_model_gain_step_is_one_db_except_mv7() {
         assert_eq!(DeviceModel::Mv7.gain_step_tenths(), 15);
         for model in [
             DeviceModel::Mvx2u,
@@ -4354,7 +4360,7 @@ mod tests {
             DeviceModel::Mv6,
             DeviceModel::Mv7Plus,
         ] {
-            assert_eq!(model.gain_step_tenths(), 5, "{model:?}");
+            assert_eq!(model.gain_step_tenths(), 10, "{model:?}");
         }
     }
 

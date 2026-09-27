@@ -33,8 +33,8 @@ pub struct PresetSlot {
     pub name: String,
 
     // ── Shared ───────────────────────────────────────────────────────────────
-    /// Manual gain in dB, e.g. `28.5`. Presets saved before half-dB gain stored a
-    /// whole number here, which still loads.
+    /// Manual gain in dB, e.g. `19.5` (the MV7 steps 1.5 dB). Presets saved
+    /// before fractional gain stored a whole number here, which still loads.
     pub gain_db: f32,
     pub mode: SerInputMode,
     pub muted: bool,
@@ -1021,7 +1021,7 @@ mod tests {
         let slot = PresetSlot::from_device_state("S", &state);
         let s = slot.summary(DeviceModel::Mvx2u);
         assert!(s.contains("Manual"), "summary: {s}");
-        assert!(s.contains("36.0 dB"), "summary: {s}");
+        assert!(s.contains("36 dB"), "summary: {s}");
         assert!(s.contains("EQ"), "summary: {s}");
         assert!(s.contains("Comp:"), "summary: {s}");
         assert!(s.contains("48V on"), "summary: {s}");
@@ -1153,7 +1153,7 @@ mod tests {
         state.hpf = HpfFrequency::Hz75;
         let slot = PresetSlot::from_device_state("S", &state);
         let s = slot.summary(DeviceModel::Mv6);
-        assert!(s.contains("24.0 dB"), "summary: {s}");
+        assert!(s.contains("24 dB"), "summary: {s}");
         assert!(s.contains("Denoiser on"), "summary: {s}");
         assert!(s.contains("Popper off"), "summary: {s}");
         assert!(s.contains("HPF 75 Hz"), "summary: {s}");
@@ -1190,18 +1190,19 @@ mod tests {
     }
 
     #[test]
-    fn half_db_gain_roundtrips_through_toml() {
+    fn fractional_gain_roundtrips_through_toml() {
+        // The MV7's 1.5 dB grid produces gains like 19.5 dB.
         let state = DeviceState {
-            gain_tenths: 285,
+            gain_tenths: 195,
             ..DeviceState::default()
         };
-        let slot = PresetSlot::from_device_state("Half", &state);
+        let slot = PresetSlot::from_device_state("MV7", &state);
         let decoded = toml_roundtrip(&slot);
-        assert_eq!(decoded.gain_db, 28.5);
+        assert_eq!(decoded.gain_db, 19.5);
 
         let mut target = DeviceState::default();
         decoded.apply_to_device_state(&mut target);
-        assert_eq!(target.gain_tenths, 285);
+        assert_eq!(target.gain_tenths, 195);
     }
 
     #[test]

@@ -1548,7 +1548,7 @@ mod tests {
     fn adjust_gain_increments_and_clamps_at_max() {
         let mut app = App::default();
         app.focus = Focus::Gain;
-        app.device_state.gain_tenths = 595;
+        app.device_state.gain_tenths = 590;
 
         app.adjust_focused(1);
         assert_eq!(app.device_state.gain_tenths, 600);
@@ -1564,7 +1564,7 @@ mod tests {
     fn adjust_gain_decrements_and_clamps_at_zero() {
         let mut app = App::default();
         app.focus = Focus::Gain;
-        app.device_state.gain_tenths = 5;
+        app.device_state.gain_tenths = 10;
 
         app.adjust_focused(-1);
         assert_eq!(app.device_state.gain_tenths, 0);
@@ -1574,22 +1574,23 @@ mod tests {
     }
 
     #[test]
-    fn adjust_gain_steps_half_a_db_and_snaps_off_grid_values() {
+    fn adjust_gain_steps_one_db_and_snaps_off_grid_values() {
         let mut app = App::default();
         app.focus = Focus::Gain;
+        // A device that reports a fractional gain lands back on the 1 dB grid.
         app.device_state.gain_tenths = 283;
 
-        assert!(matches!(
-            app.adjust_focused(1),
-            Some(DeviceAction::SetGain(285))
-        ));
         assert!(matches!(
             app.adjust_focused(1),
             Some(DeviceAction::SetGain(290))
         ));
         assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetGain(300))
+        ));
+        assert!(matches!(
             app.adjust_focused(-1),
-            Some(DeviceAction::SetGain(285))
+            Some(DeviceAction::SetGain(290))
         ));
     }
 
@@ -1807,8 +1808,8 @@ mod tests {
         app.device_state.mv6_gain_locked = false;
 
         let action = app.adjust_focused(1);
-        assert!(matches!(action, Some(DeviceAction::SetGain(205))));
-        assert_eq!(app.device_state.gain_tenths, 205);
+        assert!(matches!(action, Some(DeviceAction::SetGain(210))));
+        assert_eq!(app.device_state.gain_tenths, 210);
     }
 
     // ── toggle_focused ────────────────────────────────────────────────────────

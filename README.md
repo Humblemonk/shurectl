@@ -18,7 +18,7 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 ## Features
 
 ### All Devices
-- **Gain Control** — Auto Level / Manual toggle; manual gain in 0.5 dB steps (1.5 dB on the MV7)
+- **Gain Control** — Auto Level / Manual toggle; manual gain in 1 dB steps (1.5 dB on the MV7)
 - **Mic Mute** — toggle mute
 - **Monitor Mix** — mic vs. playback blend slider
 - **Compressor** — Off / Light / Medium / Heavy
