@@ -225,6 +225,19 @@ impl App {
         )
     }
 
+    /// Returns true when the Info tab offers Factory Reset. Only the MV7+ reset
+    /// packet is known; the original MV7 has no factory reset at all (MOTIV
+    /// doesn't offer one either). The UI hides the button and the Enter handler
+    /// ignores it on every other model.
+    pub fn supports_factory_reset(&self) -> bool {
+        match self.device_model {
+            DeviceModel::Mv7Plus => true,
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
+                false
+            }
+        }
+    }
+
     /// Returns true when a tab should be inaccessible given the current device state.
     ///
     /// MVX2U Gen 1 and MV7: EQ and Dynamics are locked in Auto Level mode — the
@@ -2318,6 +2331,23 @@ mod tests {
             Tab::Info,
         ] {
             assert!(!app.is_tab_locked(tab), "{tab:?} must be open in Manual");
+        }
+    }
+
+    #[test]
+    fn factory_reset_is_mv7_plus_only() {
+        for (model, supported) in [
+            (DeviceModel::Mvx2u, false),
+            (DeviceModel::Mvx2uGen2, false),
+            (DeviceModel::Mv6, false),
+            (DeviceModel::Mv7, false),
+            (DeviceModel::Mv7Plus, true),
+        ] {
+            let app = App {
+                device_model: model,
+                ..App::default()
+            };
+            assert_eq!(app.supports_factory_reset(), supported, "{model:?}");
         }
     }
 

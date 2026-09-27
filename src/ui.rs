@@ -3162,7 +3162,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    if model == DeviceModel::Mv7Plus {
+    if app.supports_factory_reset() {
         let reset_focused = app.focus == Focus::FactoryReset;
         let (reset_label, reset_style) = if app.confirming_factory_reset {
             (
