@@ -433,15 +433,7 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
     let result = match &action {
         DeviceAction::Refresh => {
             if let Some(dev) = device {
-                match dev.get_state() {
-                    Ok(mut state) => {
-                        state.serial_number = dev.serial_number.clone();
-                        app.device_state = state;
-                        app.set_ok("State refreshed from device.");
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+                reload_state(app, dev).map(|()| app.set_ok("State refreshed from device."))
             } else {
                 app.set_ok("Demo mode — no device to refresh.");
                 Ok(())
@@ -461,16 +453,19 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
                     state.auto_tone,
                 )
             })
+            .and_then(|()| resync_mv7_state(app, device))
         }
         DeviceAction::SetAutoPosition(pos) => {
             app.set_ok(format!("Mic Position → {}", pos));
             let tone = app.device_state.auto_tone;
             send_if_connected(device, |d| d.set_auto_position(*pos, tone))
+                .and_then(|()| resync_mv7_state(app, device))
         }
         DeviceAction::SetAutoTone(tone) => {
             app.set_ok(format!("Tone → {}", tone));
             let position = app.device_state.auto_position;
             send_if_connected(device, |d| d.set_auto_tone(position, *tone))
+                .and_then(|()| resync_mv7_state(app, device))
         }
         DeviceAction::SetAutoGain(gain) => {
             app.set_ok(format!("Auto Gain → {}", gain));
@@ -696,6 +691,7 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
                 slot.apply_to_device_state(&mut app.device_state);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
                 apply_preset_to_device(device, &app.device_state, app.device_model)
+                    .and_then(|()| resync_mv7_state(app, device))
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
                 Ok(())
@@ -734,6 +730,25 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
 
     if let Err(e) = result {
         app.set_err(format!("Device error: {e}"));
+    }
+}
+
+/// Replace the app's state with a full readback from the device.
+fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<()> {
+    let mut state = dev.get_state()?;
+    state.serial_number = dev.serial_number.clone();
+    app.device_state = state;
+    Ok(())
+}
+
+/// The MV7 stores mode, mic position and tone as one setting, and changing it
+/// changes other state too: entering Auto Level resets EQ and compressor, and
+/// leaving it reports a new gain. Re-read the whole state afterwards so the UI
+/// shows what the mic actually has. No-op for other models and in demo mode.
+fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
+    match device {
+        Some(dev) if dev.model == DeviceModel::Mv7 => reload_state(app, dev),
+        Some(_) | None => Ok(()),
     }
 }
 
