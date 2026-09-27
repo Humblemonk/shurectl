@@ -241,6 +241,15 @@ impl DeviceModel {
         }
     }
 
+    /// Clamp a manual gain to this model's range and round it down onto its step
+    /// grid. Every gain the device is sent passes through this, so a fractional
+    /// value (from a preset saved on an MV7, a hand-edited preset, or a device
+    /// that reported one) never reaches a model that steps in whole dB.
+    pub fn snap_gain_tenths(&self, gain_tenths: u16) -> u16 {
+        let clamped = gain_tenths.min(self.max_gain_tenths());
+        clamped - clamped % self.gain_step_tenths()
+    }
+
     /// Unsolicited input reports the device sends after each SET + CONFIRM. They
     /// must be read and discarded, or every later GET reads one of them instead
     /// of its own reply and the state readback lags behind by that many packets.
@@ -2237,8 +2246,6 @@ pub mod mv7_text {
 
     /// Hardware gain step. The MV7 rounds any other value down to a multiple of 1.5 dB.
     pub const GAIN_STEP_TENTHS: u16 = 15;
-    const MAX_GAIN_TENTHS: u16 = 360;
-
     const MIC_MUTE: &str = "micMute";
     const INPUT_GAIN: &str = "inputGain";
     const DSP_MODE: &str = "dspMode";
@@ -2385,8 +2392,7 @@ pub mod mv7_text {
     /// Clamp a gain to 0–36 dB and round it down to the 1.5 dB hardware grid,
     /// which is what the device itself does with any other value.
     pub fn snap_gain(gain_tenths: u16) -> u16 {
-        let clamped = gain_tenths.min(MAX_GAIN_TENTHS);
-        clamped - clamped % GAIN_STEP_TENTHS
+        super::DeviceModel::Mv7.snap_gain_tenths(gain_tenths)
     }
 
     pub fn set_gain(gain_tenths: u16) -> TextCommand {
@@ -4383,6 +4389,19 @@ mod tests {
         ] {
             assert_eq!(model.gain_step_tenths(), 10, "{model:?}");
         }
+    }
+
+    #[test]
+    fn snap_gain_clamps_and_floors_to_each_models_grid() {
+        // Binary models step whole dB: half-dB values are floored, never sent.
+        assert_eq!(DeviceModel::Mvx2uGen2.snap_gain_tenths(195), 190);
+        assert_eq!(DeviceModel::Mvx2uGen2.snap_gain_tenths(300), 300);
+        assert_eq!(DeviceModel::Mvx2u.snap_gain_tenths(900), 600);
+        assert_eq!(DeviceModel::Mv6.snap_gain_tenths(600), 360);
+        assert_eq!(DeviceModel::Mv7Plus.snap_gain_tenths(365), 360);
+        // MV7 steps 1.5 dB.
+        assert_eq!(DeviceModel::Mv7.snap_gain_tenths(200), 195);
+        assert_eq!(DeviceModel::Mv7.snap_gain_tenths(u16::MAX), 360);
     }
 
     #[test]
