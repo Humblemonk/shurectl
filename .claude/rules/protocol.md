@@ -20,6 +20,12 @@ Every packet is exactly 64 bytes (65 with hidapi's report-ID byte 0), sent via `
 - **CRC:** CRC-16/ANSI: poly `0x8005`, init `0x0000`, reflected in/out (NOT CCITT-FALSE)
 - **SET + CONFIRM:** every SET must be followed immediately by a `CMD_CONFIRM` packet, or the
   device won't apply the change
+- **Acks after CONFIRM:** the MV7+ and MVX2U Gen 2 each send two unsolicited input reports
+  after a CONFIRM. Unread, they shift every later GET by one packet and refresh shows stale or
+  default values. `DeviceModel::reports_after_confirm()` sets how many `send_set()` discards.
+  Gen 1 and MV6 are assumed to send two as well but are unchecked on hardware. If a user
+  reports stale values after a preset load or refresh on one of them, write the current gain
+  back with SET + CONFIRM and count the reports that arrive
 - **State readback:** there is no monolithic GET_STATE. `device.rs::get_state()` issues
   individual `cmd_get_*` packets; `apply_response()` dispatches on the 2-byte feature address
   and writes into `DeviceState`. The address → field mapping is documented inline in
