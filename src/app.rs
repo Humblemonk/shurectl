@@ -3,6 +3,8 @@
 use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
+use crossterm::event::KeyCode;
+
 use crate::meter::{METER_SILENT, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
@@ -167,6 +169,9 @@ pub struct App {
     /// Set to `true` after the user first presses Enter on the factory reset button.
     /// A second Enter fires the action; any other key cancels.
     pub confirming_factory_reset: bool,
+    /// The preset slot and action a first click selected; only a second click on
+    /// that same button fires it. Cleared by any other click or any key.
+    pub armed_preset_action: Option<(usize, KeyCode)>,
     /// Instantaneous peak level shared with the cpal capture thread.
     /// Stores `peak_dbfs * 10` as i32, or `METER_SILENT` when unavailable.
     pub meter_level: Arc<AtomicI32>,
@@ -194,6 +199,7 @@ impl Default for App {
             editing_preset_index: 0,
             preset_name_draft: String::new(),
             confirming_factory_reset: false,
+            armed_preset_action: None,
             meter_level: Arc::new(AtomicI32::new(METER_SILENT)),
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
         }

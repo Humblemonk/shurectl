@@ -37,6 +37,7 @@ use crossterm::{
     cursor::Show,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -283,6 +284,11 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
     }
 }
 
+/// Longest a wheel adjustment waits for more wheel events before it is sent.
+/// A trackpad flick sends dozens of events, each of which would otherwise be a
+/// blocking HID write that makes the device lag behind the gesture.
+const SCROLL_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Restore the terminal on normal exit, startup errors, and unwinding.
 struct TerminalCleanup;
 
@@ -307,18 +313,35 @@ fn run_event_loop(
     let mut last_tick = Instant::now();
     let mut last_presence_poll = Instant::now();
     let mut seen_back = false;
+    // The newest wheel adjustment, its control, and when the burst began. Wheel
+    // adjustments carry absolute values, so the newest one supersedes the rest.
+    let mut pending_scroll: Option<(app::Focus, DeviceAction, Instant)> = None;
 
     loop {
         let mut hits = mouse::HitMap::default();
         terminal.draw(|f| hits = ui::draw(f, app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_default();
+        let timeout = if pending_scroll.is_some() {
+            Duration::ZERO
+        } else {
+            tick_rate
+                .checked_sub(last_tick.elapsed())
+                .unwrap_or_default()
+        };
 
-        if event::poll(timeout)? {
-            let action = match event::read()? {
+        let queued = event::poll(timeout)?;
+        if queued {
+            let event = event::read()?;
+            let is_scroll = matches!(
+                event,
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollUp | MouseEventKind::ScrollDown,
+                    ..
+                })
+            );
+            let action = match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.armed_preset_action = None;
                     handle_key(app, key.code, key.modifiers)
                 }
                 Event::Mouse(event) => mouse::handle_mouse(app, event, &hits)
@@ -329,9 +352,33 @@ fn run_event_loop(
                 | Event::FocusLost
                 | Event::Paste(_) => None,
             };
-            if let Some(action) = action {
-                apply_action(app, device, action);
+            match action {
+                Some(action) if is_scroll => {
+                    let started = match pending_scroll.take() {
+                        Some((focus, _, started)) if focus == app.focus => started,
+                        Some((_, earlier, _)) => {
+                            apply_action(app, device, earlier);
+                            Instant::now()
+                        }
+                        None => Instant::now(),
+                    };
+                    pending_scroll = Some((app.focus, action, started));
+                }
+                Some(action) => {
+                    // Keep device writes in input order.
+                    if let Some((_, earlier, _)) = pending_scroll.take() {
+                        apply_action(app, device, earlier);
+                    }
+                    apply_action(app, device, action);
+                }
+                None => {}
             }
+        }
+
+        if let Some((_, action, _)) = pending_scroll.take_if(|(_, _, started)| {
+            !queued || app.should_quit || started.elapsed() >= SCROLL_FLUSH_INTERVAL
+        }) {
+            apply_action(app, device, action);
         }
 
         if last_presence_poll.elapsed() >= PRESENCE_POLL_INTERVAL {

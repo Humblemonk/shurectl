@@ -45,19 +45,25 @@ impl HitMap {
 /// Returns a key to dispatch through handle_key after updating UI-only state.
 /// A click focuses an unselected control without activating it. Clicking an
 /// already-focused control activates it, including focus set by the keyboard.
+/// Preset actions share one row focus, so each button fires only on a second
+/// click on that same button; a first click on Delete never follows Load.
 /// Wheel events still focus and adjust immediately.
 /// Clicking outside an edited name cancels via Esc, consuming that click.
-/// Other modal interactions stay keyboard-only, preventing click-through and
-/// an accidental double-click from confirming a factory reset.
+/// Any click cancels a pending factory reset the same way, so confirming stays
+/// keyboard-only and a double-click on the button can never erase the device.
+/// Help stays keyboard-only, preventing click-through.
 pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<KeyCode> {
-    if app.help_visible || app.confirming_factory_reset {
+    let left_click = event.kind == MouseEventKind::Down(MouseButton::Left);
+    if app.confirming_factory_reset {
+        return left_click.then_some(KeyCode::Esc);
+    }
+    if app.help_visible {
         return None;
     }
     if app.editing_preset_name {
         let outside_name = hits.target_at(event.column, event.row)
             != Some(Target::Control(Focus::PresetName(app.editing_preset_index)));
-        return (event.kind == MouseEventKind::Down(MouseButton::Left) && outside_name)
-            .then_some(KeyCode::Esc);
+        return (left_click && outside_name).then_some(KeyCode::Esc);
     }
     let key = match event.kind {
         MouseEventKind::Down(MouseButton::Left) => KeyCode::Enter,
@@ -70,6 +76,7 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
         | MouseEventKind::ScrollLeft
         | MouseEventKind::ScrollRight => return None,
     };
+    let armed_preset_action = app.armed_preset_action.take();
     match hits.target_at(event.column, event.row)? {
         Target::Tab(tab) => {
             if key == KeyCode::Enter {
@@ -92,9 +99,13 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
             if key != KeyCode::Enter || app.active_tab != Tab::Presets {
                 return None;
             }
-            let already_focused = app.focus == Focus::PresetActions(index);
+            let armed = app.focus == Focus::PresetActions(index)
+                && armed_preset_action == Some((index, action));
             app.focus = Focus::PresetActions(index);
-            already_focused.then_some(action)
+            if !armed {
+                app.armed_preset_action = Some((index, action));
+            }
+            armed.then_some(action)
         }
     }
 }
@@ -594,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn help_and_reset_confirmation_block_mouse_actions() {
+    fn help_blocks_clicks_and_any_click_cancels_reset_confirmation() {
         let mut app = App {
             device_model: DeviceModel::Mv7Plus,
             active_tab: Tab::Info,
@@ -608,15 +619,75 @@ mod tests {
         assert!(click(&mut app, &hits, Target::Control(Focus::FactoryReset)).is_none());
         assert_eq!(app.focus, Focus::FactoryReset);
         assert!(!app.confirming_factory_reset);
+        let arm = |app: &mut App| {
+            assert!(click(app, &hits, Target::Control(Focus::FactoryReset)).is_none());
+            assert!(app.confirming_factory_reset);
+        };
+
+        // A double-click on the button cancels rather than confirms.
+        arm(&mut app);
         assert!(click(&mut app, &hits, Target::Control(Focus::FactoryReset)).is_none());
-        assert!(app.confirming_factory_reset);
-        assert!(click(&mut app, &hits, Target::Control(Focus::FactoryReset)).is_none());
-        click(&mut app, &hits, Target::Tab(Tab::Main));
+        assert!(!app.confirming_factory_reset);
+
+        // Clicking elsewhere cancels and consumes the click, like any other key.
+        arm(&mut app);
+        assert!(click(&mut app, &hits, Target::Tab(Tab::Main)).is_none());
+        assert!(!app.confirming_factory_reset);
         assert_eq!(app.active_tab, Tab::Info);
+
+        // Non-click events leave it pending; only Enter confirms.
+        arm(&mut app);
+        let scroll = event_at(
+            &hits,
+            Target::Control(Focus::FactoryReset),
+            MouseEventKind::ScrollUp,
+        );
+        assert!(handle_mouse(&mut app, scroll, &hits).is_none());
+        assert!(app.confirming_factory_reset);
         assert!(matches!(
             crate::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
             Some(DeviceAction::FactoryReset)
         ));
+    }
+
+    #[test]
+    fn preset_buttons_fire_only_on_a_second_click_on_the_same_button() {
+        let mut app = App {
+            active_tab: Tab::Presets,
+            focus: Focus::PresetActions(0),
+            ..App::default()
+        };
+        app.presets[0] = Some(PresetSlot::from_device_state("Test", &app.device_state));
+        let hits = render(&app, 120, 40);
+        let delete = Target::PresetAction(0, KeyCode::Char('d'));
+        let save = Target::PresetAction(0, KeyCode::Char('s'));
+        let load = Target::PresetAction(0, KeyCode::Enter);
+
+        // Keyboard focus selects the row, not a button.
+        assert!(click(&mut app, &hits, delete).is_none());
+        // A click on a neighbouring button re-arms instead of firing.
+        assert!(click(&mut app, &hits, load).is_none());
+        assert!(click(&mut app, &hits, save).is_none());
+        assert!(click(&mut app, &hits, delete).is_none());
+        assert_eq!(app.focus, Focus::PresetActions(0));
+
+        // A click on blank space disarms.
+        let blank = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(hits.target_at(blank.column, blank.row), None);
+        assert!(handle_mouse(&mut app, blank, &hits).is_none());
+        assert!(click(&mut app, &hits, delete).is_none());
+
+        assert!(matches!(
+            click(&mut app, &hits, delete),
+            Some(DeviceAction::DeletePreset(0))
+        ));
+        // Firing disarms, so a triple-click doesn't repeat the action.
+        assert!(click(&mut app, &hits, delete).is_none());
     }
 
     #[test]

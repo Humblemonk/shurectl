@@ -208,27 +208,9 @@ shurectl --mute off              # Unmute
 | `?` | Toggle help overlay |
 | `q` / `Ctrl+C` | Quit |
 
-### Mouse
-
-In terminals that support mouse reporting, all five models support:
-
-- **Left-click** a tab to switch sections.
-- **Click an unselected control** to focus and highlight it without changing its value.
-  **Click an already-selected control** to toggle/cycle it. Keyboard focus counts too.
-- **Click a slider** to focus it; **scroll up/down over it** to increase/decrease by one
-  keyboard step. Dragging is not supported yet.
-- **Click an EQ band** to select it; scroll over it to adjust its gain.
-- **Preset names and action rows** follow the same select-first rule: once the name or
-  row is selected, click the name to rename, or **Load / Save / Delete** to run that action.
-- **Click the selected Factory Reset control** (MV7+ only) to request a reset;
-  **Enter** is still required to confirm.
-
-While renaming a preset, **Enter** saves; **Esc** or a **left-click outside its name field**
-cancels and discards unconfirmed changes. The outside click only cancels—it does not activate
-another control. Clicking inside the name field keeps editing active.
-Mouse input is otherwise ignored during editing, help, or reset confirmation.
-Other keyboard controls remain unchanged. Mouse capture may take over normal terminal text
-selection; many terminals let you hold **Shift** to select text instead.
+The mouse works too: click a tab to switch to it, click a control to select it and click
+it again to toggle it, or scroll over a slider to adjust it. Factory Reset still needs `Enter`
+to confirm. Most terminals let you hold `Shift` to select text while the mouse is captured.
 
 ---
 
