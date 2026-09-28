@@ -36,8 +36,8 @@ use clap::Parser;
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEvent, MouseEventKind,
+        self, DisableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent,
+        MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -215,7 +215,7 @@ fn main() -> Result<()> {
     enable_raw_mode()?;
     let cleanup = TerminalCleanup;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableClickCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -281,6 +281,30 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
                 "unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus"
             )
         }
+    }
+}
+
+/// Mouse reporting for clicks and the wheel only. crossterm's `EnableMouseCapture`
+/// also turns on any-motion tracking (`?1003h`), so every pointer move woke the
+/// event loop for a full redraw. Nothing here uses motion or dragging.
+/// `DisableMouseCapture` still turns everything off on exit.
+struct EnableClickCapture;
+
+impl crossterm::Command for EnableClickCapture {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        // Normal tracking (press, release, wheel), with SGR coordinates so
+        // columns past 223 still report correctly.
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        crossterm::Command::execute_winapi(&crossterm::event::EnableMouseCapture)
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        crossterm::Command::is_ansi_code_supported(&crossterm::event::EnableMouseCapture)
     }
 }
 
