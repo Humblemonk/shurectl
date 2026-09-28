@@ -78,14 +78,16 @@ The package installs the udev rules to `/usr/lib/udev/rules.d/62-shure.rules` fo
 the [Linux setup step](#linux--udev-rules-required-for-non-root-access) below can be
 skipped — **replug the device after installing** so udev applies the new rules to it.
 
-### Via Homebrew (macOS)
+### Via Homebrew (macOS / Linux)
 
 ```bash
 brew install humblemonk/shurectl/shurectl
 ```
 
 Updates arrive through `brew upgrade` like any other formula. The formula builds from
-source, so the first install pulls in a Rust toolchain and takes a minute or two.
+source, so the first install pulls in a Rust toolchain and takes a minute or two. On Linux,
+Homebrew can't install system udev rules, so you still need the
+[Linux setup step](#linux--udev-rules-required-for-non-root-access) below.
 
 ### Via cargo install
 
