@@ -438,6 +438,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
 }
 
 fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceAction) {
+    let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
         DeviceAction::Reconnect => reconnect(app, device),
@@ -691,12 +692,14 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
         DeviceAction::LoadPreset(i) => {
             if let Some(slot) = &app.presets[*i].clone() {
                 slot.apply_to_device_state(&mut app.device_state);
-                // Show the gain the device will actually get: presets are shared
-                // across models, so one saved elsewhere may be out of range or
-                // off this model's step grid.
-                app.device_state.gain_tenths = app
-                    .device_model
-                    .snap_gain_tenths(app.device_state.gain_tenths);
+                // Show the gain and EQ the device will actually get: presets are
+                // shared across models, so one saved elsewhere may be out of
+                // range or off this model's step grid.
+                let model = app.device_model;
+                app.device_state.gain_tenths = model.snap_gain_tenths(app.device_state.gain_tenths);
+                for band in &mut app.device_state.eq_bands {
+                    band.gain_db = model.snap_eq_gain_tenths(band.gain_db);
+                }
                 // A lock flag from a model with Gain Lock would sit hidden here
                 // and be saved into this model's presets, then lock the gain
                 // wherever one of those is loaded.
@@ -750,6 +753,9 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
             app.set_err(format!("Device error: {e}"));
         }
     }
+
+    // A readback or preset may have changed the mode under the current tab.
+    app.settle_focus(mode_before);
 }
 
 /// Whether `e` means the device is gone (a HID read or write failed), as
@@ -1229,5 +1235,54 @@ mod tests {
             unrecognised_note(&["feature 0x01 0x99".into(), "feature 0x02 0x77".into()]),
             " Ignored 2 unrecognised replies, first: feature 0x01 0x99."
         );
+    }
+
+    fn app_with_preset(model: DeviceModel, saved: protocol::DeviceState) -> App {
+        let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
+        presets[0] = Some(PresetSlot::from_device_state("saved", &saved));
+        App {
+            device_model: model,
+            presets,
+            ..App::default()
+        }
+    }
+
+    fn gen2_eq_state() -> protocol::DeviceState {
+        let mut state = protocol::DeviceState::default();
+        state.eq_bands[0].gain_db = 15;
+        state.eq_bands[1].gain_db = -25;
+        state
+    }
+
+    #[test]
+    fn gen2_eq_preset_is_snapped_to_the_gen1_grid_on_load() {
+        let mut app = app_with_preset(DeviceModel::Mvx2u, gen2_eq_state());
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        assert_eq!(app.device_state.eq_bands[0].gain_db, 20);
+        assert_eq!(app.device_state.eq_bands[1].gain_db, -20);
+
+        let mut app = app_with_preset(DeviceModel::Mvx2uGen2, gen2_eq_state());
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        assert_eq!(app.device_state.eq_bands[0].gain_db, 15);
+        assert_eq!(app.device_state.eq_bands[1].gain_db, -25);
+    }
+
+    /// Loading a preset that switches the mode keeps the cursor on its slot.
+    #[test]
+    fn loading_a_preset_that_changes_mode_keeps_presets_focus() {
+        let saved = protocol::DeviceState {
+            mode: InputMode::Manual,
+            ..protocol::DeviceState::default()
+        };
+        let mut app = App {
+            active_tab: app::Tab::Presets,
+            focus: app::Focus::PresetActions(0),
+            ..app_with_preset(DeviceModel::Mvx2u, saved)
+        };
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        assert_eq!(app.device_state.mode, InputMode::Manual);
+        assert_eq!(app.active_tab, app::Tab::Presets);
+        assert_eq!(app.focus, app::Focus::PresetActions(0));
     }
 }

@@ -260,6 +260,25 @@ impl DeviceModel {
         clamped - clamped % self.gain_step_tenths()
     }
 
+    /// EQ band gain step in tenths of a dB: 2 dB on the MVX2U Gen 1, 0.5 dB on
+    /// the Gen 2. The other models have no EQ bands and never use it.
+    pub fn eq_step_tenths(&self) -> i16 {
+        match self {
+            DeviceModel::Mvx2uGen2 => 5,
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => 20,
+        }
+    }
+
+    /// Clamp an EQ band gain to −8..+6 dB and round it to the nearest step
+    /// (halves round up), so a preset saved on the Gen 2 sends the Gen 1 a value
+    /// on its 2 dB grid. Both range ends are multiples of every step, so the
+    /// result stays in range.
+    pub fn snap_eq_gain_tenths(&self, gain_tenths: i16) -> i16 {
+        let step = self.eq_step_tenths();
+        let clamped = gain_tenths.clamp(-80, 60);
+        (clamped + step / 2).div_euclid(step) * step
+    }
+
     /// Unsolicited input reports the device sends after each SET + CONFIRM. They
     /// must be read and discarded, or every later GET reads one of them instead
     /// of its own reply and the state readback lags behind by that many packets.
@@ -5167,5 +5186,30 @@ mod tests {
         assert!(!DeviceModel::Mvx2u.has_gain_lock());
         assert!(!DeviceModel::Mv7.has_gain_lock());
         assert!(!DeviceModel::Mv7Plus.has_gain_lock());
+    }
+
+    #[test]
+    fn eq_gain_snaps_to_the_nearest_step_for_each_model() {
+        // Gen 1: 2 dB grid. Values from Gen 2 presets land on the nearest step.
+        for (input, expected) in [(15, 20), (-25, -20), (10, 20), (-15, -20), (5, 0), (40, 40)] {
+            assert_eq!(
+                DeviceModel::Mvx2u.snap_eq_gain_tenths(input),
+                expected,
+                "{input}"
+            );
+        }
+        // Gen 2: 0.5 dB grid keeps its own steps.
+        for (input, expected) in [(15, 15), (-25, -25), (12, 10), (13, 15)] {
+            assert_eq!(
+                DeviceModel::Mvx2uGen2.snap_eq_gain_tenths(input),
+                expected,
+                "{input}"
+            );
+        }
+        // Out of range clamps to the ends, which are on every grid.
+        for model in [DeviceModel::Mvx2u, DeviceModel::Mvx2uGen2] {
+            assert_eq!(model.snap_eq_gain_tenths(1000), 60, "{model:?}");
+            assert_eq!(model.snap_eq_gain_tenths(-1000), -80, "{model:?}");
+        }
     }
 }
