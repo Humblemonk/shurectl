@@ -1,6 +1,7 @@
 # shurectl
 
-An open-source terminal UI configurator for Shure USB audio interfaces and microphones on Linux, macOS, and Windows. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+An open-source terminal UI for configuring Shure USB microphones and audio interfaces on Linux,
+macOS, and Windows. A lightweight, scriptable alternative to the ShurePlus MOTIV desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
@@ -220,16 +221,9 @@ platform's config directory:
 | macOS | `~/Library/Application Support/shurectl/presets/` |
 | Windows | `%APPDATA%\shurectl\presets\` |
 
-```
-~/.config/shurectl/presets/
-├── preset_1.toml
-├── preset_2.toml
-├── preset_3.toml
-└── preset_4.toml
-```
-
-Each file captures all configurable DSP settings (gain, mode, EQ, dynamics, monitor mix, etc.)
-but not hardware-identity fields like serial number or firmware version. Files are hand-editable.
+Each slot is its own file, `preset_1.toml` through `preset_4.toml`. A file captures all
+configurable DSP settings (gain, mode, EQ, dynamics, monitor mix, etc.) but not
+hardware-identity fields like serial number or firmware version. Files are hand-editable.
 
 On the **Presets tab**:
 - Navigate to a slot with `↑`/`↓`
@@ -272,5 +266,9 @@ repository.
 
 Protocol implementation is based on publicly documented USB HID packet captures
 by PennRobotics (shux project, Apache 2.0) as well as author's own usbmon captures.
+
+shurectl does not update device firmware. The firmware-update commands are intentionally
+left out of its protocol implementation, and it never sends them. To update firmware, use
+ShurePlus MOTIV; the Info tab shows the firmware version your device is running.
 
 shurectl is not affiliated with or endorsed by Shure Incorporated.
