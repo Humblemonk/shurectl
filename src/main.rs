@@ -368,11 +368,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         }
         KeyCode::Char('r') => Some(DeviceAction::Refresh),
         KeyCode::Tab => {
-            if mods.contains(KeyModifiers::SHIFT) {
-                app.prev_tab();
-            } else {
-                app.next_tab();
-            }
+            app.next_tab();
+            None
+        }
+        // Terminals send Shift+Tab as its own back-tab key, not Tab with SHIFT set.
+        KeyCode::BackTab => {
+            app.prev_tab();
             None
         }
         KeyCode::Up | KeyCode::Char('k') => {
@@ -867,4 +868,29 @@ fn apply_preset_to_device(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_key_moves_to_next_tab() {
+        let mut app = App::default();
+        // Manual mode, so the MVX2U Gen 1's EQ tab isn't locked and skipped.
+        app.device_state.mode = InputMode::Manual;
+        app.active_tab = app::Tab::Main;
+        handle_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.active_tab, app::Tab::Eq);
+    }
+
+    #[test]
+    fn shift_tab_moves_to_previous_tab() {
+        // Terminals report Shift+Tab as BackTab (usually with SHIFT set), never
+        // as Tab with SHIFT, so this is the key the handler has to react to.
+        let mut app = App::default();
+        app.active_tab = app::Tab::Main;
+        handle_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.active_tab, app::Tab::Info);
+    }
 }
