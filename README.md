@@ -1,7 +1,7 @@
 # shurectl
 
 An open-source terminal UI for configuring Shure USB microphones and audio interfaces on Linux,
-macOS, and Windows. A lightweight, scriptable alternative to the ShurePlus MOTIV desktop app.
+macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
