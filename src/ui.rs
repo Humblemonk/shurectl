@@ -1,19 +1,38 @@
 //! TUI rendering using ratatui.
 
+use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Gauge, Padding, Paragraph, Tabs},
 };
 
 use crate::app::{App, Focus, Tab};
+use crate::mouse::{HitMap, Target};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
     InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, ReverbType,
     format_gain,
 };
+
+/// Keep hit regions beside the layout that draws them, not in a second layout.
+struct UiFrame<'a, 'b> {
+    frame: &'a mut Frame<'b>,
+    hits: HitMap,
+}
+
+impl UiFrame<'_, '_> {
+    fn control(&mut self, area: Rect, focus: Focus) {
+        self.hits
+            .control(area.intersection(self.frame.area()), focus);
+    }
+
+    fn render_widget(&mut self, widget: impl ratatui::widgets::Widget, area: Rect) {
+        self.frame.render_widget(widget, area);
+    }
+}
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C_ACCENT: Color = Color::Rgb(255, 95, 0); // Shure orange
@@ -27,6 +46,11 @@ const C_ERROR: Color = Color::Rgb(230, 70, 70);
 const C_WARN: Color = Color::Rgb(230, 200, 50);
 const C_FOCUS: Color = Color::Rgb(255, 140, 40);
 const C_DISABLED: Color = Color::Rgb(70, 70, 70);
+
+/// A text row clipped to its widget's inner area, including tiny terminals.
+fn text_row(inner: Rect, offset: u16) -> Rect {
+    Rect::new(inner.x, inner.y.saturating_add(offset), inner.width, 1).intersection(inner)
+}
 
 fn focused_style(focused: bool) -> Style {
     if focused {
@@ -48,8 +72,13 @@ fn bool_span(val: bool) -> Span<'static> {
 }
 
 /// Entry point called once per frame from main.
-pub fn draw(f: &mut Frame, app: &App) {
-    let size = f.area();
+pub fn draw(frame: &mut Frame, app: &App) -> HitMap {
+    let size = frame.area();
+    let mut context = UiFrame {
+        frame,
+        hits: HitMap::default(),
+    };
+    let f = &mut context;
 
     // Background
     f.render_widget(Block::default().style(Style::default().bg(C_BG)), size);
@@ -83,9 +112,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help_visible {
         draw_help_overlay(f, size);
     }
+    context.hits
 }
 
-fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+fn draw_header(f: &mut UiFrame, app: &App, area: Rect) {
     let demo_tag = if app.demo_mode {
         Span::styled(
             " [DEMO — no device] ",
@@ -131,7 +161,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+fn draw_tabs(f: &mut UiFrame, app: &App, area: Rect) {
     // Tabs the model has no settings for (Reverb and LED on most devices) are
     // hidden entirely. Temporarily locked tabs (EQ, Dynamics on MVX2U Gen 1 and
     // MV7 in Auto mode) remain visible with a lock icon since they're meaningful
@@ -155,6 +185,18 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
+
+    // Tabs adds one space on either side and a one-cell divider. Use Line's
+    // display width so the lock icon doesn't shift subsequent click targets.
+    let mut x = area.x;
+    for (tab, title) in visible.iter().zip(&titles) {
+        let width = title.width() as u16 + 2;
+        f.hits.add(
+            Rect::new(x, area.y, width, 1).intersection(area),
+            Target::Tab(*tab),
+        );
+        x = x.saturating_add(width + 1);
+    }
 
     let selected = visible
         .iter()
@@ -180,7 +222,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, area);
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
     let (msg, color) = if app.status_is_error {
         (format!("✗ {}", app.status_message), C_ERROR)
     } else {
@@ -189,7 +231,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
     let hint = if app.editing_preset_name {
         Span::styled(
-            " Editing name — type to change  [Enter/Esc] confirm  [Backspace] delete",
+            " Editing name — [Enter] save  [Esc/click outside] cancel  [Backspace] delete",
             Style::default().fg(C_ACCENT),
         )
     } else if app.active_tab == Tab::Eq
@@ -222,7 +264,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Tab
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_main_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -232,7 +274,7 @@ fn draw_main_tab(f: &mut Frame, app: &App, area: Rect) {
     draw_main_right(f, app, cols[1]);
 }
 
-fn draw_main_left(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left(f: &mut UiFrame, app: &App, area: Rect) {
     match (app.device_model, app.device_state.mode) {
         (DeviceModel::Mv7Plus, InputMode::Manual) => draw_main_left_mv7plus(f, app, area),
         (DeviceModel::Mv7Plus, InputMode::Auto) => draw_main_left_mv7plus_auto(f, app, area),
@@ -247,7 +289,7 @@ fn draw_main_left(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_main_left_mv7plus(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_mv7plus(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -272,7 +314,7 @@ fn draw_main_left_mv7plus(f: &mut Frame, app: &App, area: Rect) {
     draw_mv7plus_playback_mix_gauge(f, app, rows[5]);
 }
 
-fn draw_main_left_mv7plus_auto(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -293,7 +335,8 @@ fn draw_main_left_mv7plus_auto(f: &mut Frame, app: &App, area: Rect) {
     draw_mv7plus_playback_mix_gauge(f, app, rows[4]);
 }
 
-fn draw_mv7plus_playback_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mv7plus_playback_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::PlaybackMix);
     let focused = app.focus == Focus::PlaybackMix;
     let mix = app.device_state.playback_mix;
     let gauge = Gauge::default()
@@ -322,7 +365,7 @@ fn draw_mv7plus_playback_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // MV7 Manual: Mode → Mute → Gain → Meter → MonitorMix → Lock
-fn draw_main_left_mv7_manual(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_mv7_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -346,7 +389,7 @@ fn draw_main_left_mv7_manual(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // MV7 Auto: Mode → Mute → Auto Level (Position, Tone) → Meter → MonitorMix → Lock
-fn draw_main_left_mv7_auto(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_mv7_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -369,7 +412,7 @@ fn draw_main_left_mv7_auto(f: &mut Frame, app: &App, area: Rect) {
     draw_config_lock_block(f, app, rows[5]);
 }
 
-fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -395,7 +438,7 @@ fn draw_main_left_mv6_manual(f: &mut Frame, app: &App, area: Rect) {
     draw_monitor_mix_gauge(f, app, rows[5]);
 }
 
-fn draw_main_left_mv6_auto(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -415,7 +458,7 @@ fn draw_main_left_mv6_auto(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // Gen 2 Manual: Mode → Mute → Gain → GainLock → Meter → MonitorMix → Phantom
-fn draw_main_left_gen2_manual(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_gen2_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -443,7 +486,7 @@ fn draw_main_left_gen2_manual(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // Gen 2 Auto: Mode → Mute → Meter → MonitorMix → Phantom
-fn draw_main_left_gen2_auto(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -464,7 +507,7 @@ fn draw_main_left_gen2_auto(f: &mut Frame, app: &App, area: Rect) {
     draw_phantom_block(f, app, rows[4]);
 }
 
-fn draw_main_left_manual(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -488,7 +531,7 @@ fn draw_main_left_manual(f: &mut Frame, app: &App, area: Rect) {
     draw_main_shared(f, app, &rows[3..]);
 }
 
-fn draw_main_left_auto(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_left_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -516,7 +559,7 @@ fn draw_main_left_auto(f: &mut Frame, app: &App, area: Rect) {
 /// Each row shows all options for that setting as a horizontal "segmented
 /// button" strip, with the active value highlighted in the accent colour
 /// and focused rows highlighted with the focus border/colour.
-fn draw_auto_controls(f: &mut Frame, app: &App, area: Rect, show_auto_gain: bool) {
+fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, show_auto_gain: bool) {
     let pos_focused = app.focus == Focus::AutoPosition;
     let tone_focused = app.focus == Focus::AutoTone;
     let gain_focused = app.focus == Focus::AutoGain;
@@ -550,6 +593,12 @@ fn draw_auto_controls(f: &mut Frame, app: &App, area: Rect, show_auto_gain: bool
         .constraints(vec![Constraint::Length(1); row_count])
         .horizontal_margin(1)
         .split(inner_area);
+
+    f.control(inner_rows[0], Focus::AutoPosition);
+    f.control(inner_rows[1], Focus::AutoTone);
+    if show_auto_gain {
+        f.control(inner_rows[2], Focus::AutoGain);
+    }
 
     // ── Mic Position row ──────────────────────────────────────────────────────
     let pos = &app.device_state.auto_position;
@@ -632,7 +681,8 @@ fn segmented_span(label: &'static str, active: bool, focused: bool) -> Span<'sta
 
 /// Renders the manual Gain gauge, shared by every model. The locked styling
 /// follows `mv6_gain_locked`, the same flag that makes adjust_focused() ignore ←/→.
-fn draw_gain_gauge(f: &mut Frame, app: &App, area: Rect) {
+fn draw_gain_gauge(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Gain);
     let gain_focused = app.focus == Focus::Gain;
     let gain = app.device_state.gain_tenths;
     let max = app.device_model.max_gain_tenths();
@@ -683,7 +733,8 @@ fn draw_gain_gauge(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Renders the Input Mode block (Manual / Auto toggle only).
-fn draw_mode_block(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Mode);
     let focused = app.focus == Focus::Mode;
 
     let mode_span = match app.device_state.mode {
@@ -728,7 +779,8 @@ fn draw_mode_block(f: &mut Frame, app: &App, area: Rect) {
 
 /// Renders the Mute block as a standalone control. Mute is independent of
 /// input mode — it silences output regardless of Manual or Auto state.
-fn draw_mute_block(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Mute);
     let focused = app.focus == Focus::Mute;
     let muted = app.device_state.muted;
 
@@ -767,7 +819,8 @@ fn draw_mute_block(f: &mut Frame, app: &App, area: Rect) {
 
 /// Renders the monitor mix gauge. Used by both MVX2U (via draw_main_shared)
 /// and MV6 (directly in draw_main_left_mv6_manual / draw_main_left_mv6_auto).
-fn draw_monitor_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
+fn draw_monitor_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::MonitorMix);
     let mm_focused = app.focus == Focus::MonitorMix;
     let mix = app.device_state.monitor_mix;
     let mix_gauge = Gauge::default()
@@ -797,7 +850,8 @@ fn draw_monitor_mix_gauge(f: &mut Frame, app: &App, area: Rect) {
 
 /// Renders the Phantom Power block as a standalone control.
 /// Used by Gen 2 main tab and MVX2U via draw_main_shared.
-fn draw_phantom_block(f: &mut Frame, app: &App, area: Rect) {
+fn draw_phantom_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Phantom);
     let ph_focused = app.focus == Focus::Phantom;
     let phantom_p = Paragraph::new(Line::from(vec![
         Span::styled("48V Phantom Power:  ", Style::default().fg(C_DIM)),
@@ -833,7 +887,8 @@ fn draw_phantom_block(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Renders the Gain Lock block. Used by MV6 and Gen 2.
-fn draw_gain_lock_block(f: &mut Frame, app: &App, area: Rect) {
+fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::GainLock);
     let lock_focused = app.focus == Focus::GainLock;
     let gain_locked = app.device_state.mv6_gain_locked;
     let lock_icon = if gain_locked { "🔒" } else { "🔓" };
@@ -889,7 +944,7 @@ fn draw_gain_lock_block(f: &mut Frame, app: &App, area: Rect) {
 /// controls (phantom, lock) at the bottom.
 ///
 /// `rows` must have at least 4 elements (indices 0–3).
-fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
+fn draw_main_shared(f: &mut UiFrame, app: &App, rows: &[Rect]) {
     assert!(
         rows.len() >= 4,
         "draw_main_shared requires at least 4 row slots, got {}",
@@ -909,7 +964,8 @@ fn draw_main_shared(f: &mut Frame, app: &App, rows: &[Rect]) {
 }
 
 /// Renders the Config Lock block. Used by MVX2U Gen 1 (via draw_main_shared) and MV7.
-fn draw_config_lock_block(f: &mut Frame, app: &App, area: Rect) {
+fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Lock);
     let lock_focused = app.focus == Focus::Lock;
     let locked = app.device_state.locked;
     let lock_icon = if locked { "🔒" } else { "🔓" };
@@ -964,7 +1020,7 @@ fn draw_config_lock_block(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(lock_p, area);
 }
 
-fn draw_main_right(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
 
     let lines = match app.device_model {
@@ -1495,7 +1551,7 @@ fn build_ruler(inner_width: usize) -> String {
     chars.into_iter().collect()
 }
 
-fn draw_meter(f: &mut Frame, app: &App, area: Rect) {
+fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     use crate::meter::{METER_FLOOR_DB, METER_SILENT};
 
     // ── Read from rolling windows ─────────────────────────────────────────────
@@ -1615,7 +1671,7 @@ fn draw_meter(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MV6 EQ Tab — Tone control
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_mv6_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mv6_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
     let tone_foc = app.focus == Focus::Tone;
     let tone = ds.tone;
@@ -1669,6 +1725,7 @@ fn draw_mv6_eq_tab(f: &mut Frame, app: &App, area: Rect) {
         )
         .ratio(tone_ratio)
         .label(format!("Dark ◄─{:+}─► Bright", pct));
+    f.control(rows[0], Focus::Tone);
     f.render_widget(tone_gauge, rows[0]);
 }
 
@@ -1700,7 +1757,7 @@ fn card_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
 /// `status_label` is the text in front of the ON/OFF span ("Status: ",
 /// "Disabled: ", …); `description` renders one line per entry.
 fn draw_toggle_card(
-    f: &mut Frame,
+    f: &mut UiFrame,
     focused: bool,
     title: &str,
     status_label: &str,
@@ -1736,7 +1793,7 @@ fn draw_toggle_card(
 /// Card for an enum control cycled with Enter: one row per variant, the current
 /// one marked with ▶. `options` pairs each label with whether it is selected.
 fn draw_enum_card(
-    f: &mut Frame,
+    f: &mut UiFrame,
     focused: bool,
     title: &str,
     options: &[(String, bool)],
@@ -1781,7 +1838,8 @@ fn enum_options<T: PartialEq + ToString>(variants: &[T], current: T) -> Vec<(Str
 
 // ── The individual cards, shared by every model that has the control ──────────
 
-fn draw_denoiser_card(f: &mut Frame, app: &App, area: Rect) {
+fn draw_denoiser_card(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Denoiser);
     draw_toggle_card(
         f,
         app.focus == Focus::Denoiser,
@@ -1793,7 +1851,8 @@ fn draw_denoiser_card(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_popper_stopper_card(f: &mut Frame, app: &App, area: Rect) {
+fn draw_popper_stopper_card(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::PopperStopper);
     draw_toggle_card(
         f,
         app.focus == Focus::PopperStopper,
@@ -1805,7 +1864,8 @@ fn draw_popper_stopper_card(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_mute_btn_card(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mute_btn_card(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::MuteBtnDisable);
     draw_toggle_card(
         f,
         app.focus == Focus::MuteBtnDisable,
@@ -1821,7 +1881,8 @@ fn draw_mute_btn_card(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_limiter_card(f: &mut Frame, app: &App, area: Rect) {
+fn draw_limiter_card(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Limiter);
     draw_toggle_card(
         f,
         app.focus == Focus::Limiter,
@@ -1837,7 +1898,8 @@ fn draw_limiter_card(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_compressor_card(f: &mut Frame, app: &App, area: Rect) {
+fn draw_compressor_card(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Compressor);
     let options = enum_options(
         &[
             CompressorPreset::Off,
@@ -1856,7 +1918,8 @@ fn draw_compressor_card(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_hpf_card(f: &mut Frame, app: &App, area: Rect) {
+fn draw_hpf_card(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::Hpf);
     let options = enum_options(
         &[HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150],
         app.device_state.hpf,
@@ -1873,7 +1936,7 @@ fn draw_hpf_card(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MV6 Dynamics Tab — Denoiser, Popper Stopper, Mute Button, HPF
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mv6_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Ratio(1, 4); 4])
@@ -1889,7 +1952,7 @@ fn draw_mv6_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MVX2U Gen 2 EQ Tab — same visual style as Gen 1, no master enable, no per-band enable
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_gen2_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_gen2_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     // Gen 2: Auto mode shows the Tone slider; Manual mode shows the 5-band EQ.
     if app.device_state.mode == InputMode::Auto {
         draw_mv6_eq_tab(f, app, area);
@@ -1904,6 +1967,8 @@ fn draw_gen2_eq_tab(f: &mut Frame, app: &App, area: Rect) {
         ])
         .margin(1)
         .split(area);
+
+    f.control(chunks[0], Focus::EqBandSelect);
 
     // ── Header: band selector only (no master enable) ─────────────────────────
     let selected_freq = EQ_BAND_FREQS[app.eq_selected_band];
@@ -1957,6 +2022,7 @@ fn draw_gen2_eq_tab(f: &mut Frame, app: &App, area: Rect) {
     for (i, band) in app.device_state.eq_bands.iter().enumerate() {
         let selected = i == app.eq_selected_band;
         let gain_foc = app.focus == Focus::EqGain(i);
+        f.control(band_cols[i], Focus::EqGain(i));
 
         let border_color = if gain_foc {
             C_FOCUS
@@ -2057,7 +2123,7 @@ fn draw_gen2_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MVX2U Gen 2 Dynamics Tab — Limiter + Compressor (Gen 1 style) + Denoiser + Popper Stopper + HPF
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_gen2_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_gen2_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     // Auto mode: only Denoiser, Popper Stopper, HPF are available.
     // Manual mode: all five controls.
     let show_limiter_comp = app.device_state.mode != InputMode::Auto;
@@ -2095,7 +2161,7 @@ fn draw_gen2_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Shown on EQ/Dynamics when MVX2U is in Auto Level mode.
-fn draw_tab_locked_notice(f: &mut Frame, area: Rect, tab_name: &str) {
+fn draw_tab_locked_notice(f: &mut UiFrame, area: Rect, tab_name: &str) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -2116,7 +2182,7 @@ fn draw_tab_locked_notice(f: &mut Frame, area: Rect, tab_name: &str) {
     render_notice(f, area, lines);
 }
 
-fn render_notice(f: &mut Frame, area: Rect, lines: Vec<Line>) {
+fn render_notice(f: &mut UiFrame, area: Rect, lines: Vec<Line>) {
     let p = Paragraph::new(lines)
         .block(
             Block::default()
@@ -2133,7 +2199,7 @@ fn render_notice(f: &mut Frame, area: Rect, lines: Vec<Line>) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EQ Tab
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     if app.device_model == DeviceModel::Mv6 || app.device_model == DeviceModel::Mv7Plus {
         draw_mv6_eq_tab(f, app, area);
         return;
@@ -2158,6 +2224,14 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
         ])
         .margin(1)
         .split(area);
+
+    f.control(chunks[0], Focus::EqBandSelect);
+    let header_inner = chunks[0].inner(Margin::new(1, 1));
+    // "EQ:  " followed by the five-cell ON/OFF span.
+    f.control(
+        Rect::new(header_inner.x, header_inner.y, 10, 1).intersection(header_inner),
+        Focus::EqEnable,
+    );
 
     // ── EQ master enable header ───────────────────────────────────────────────
     let eq_en_focused = app.focus == Focus::EqEnable;
@@ -2217,6 +2291,7 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
         let en_foc = app.focus == Focus::EqBandEnable(i);
         let gain_foc = app.focus == Focus::EqGain(i);
         let any_foc = en_foc || gain_foc;
+        f.control(band_cols[i], Focus::EqGain(i));
 
         let border_color = if any_foc {
             C_FOCUS
@@ -2261,6 +2336,12 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
             format!("{} Hz", freq)
         };
 
+        // The enable row follows the bar, a blank row, and frequency.
+        let band_inner = band_cols[i].inner(Margin::new(2, 1));
+        f.control(
+            text_row(band_inner, bar_lines.len() as u16 + 2),
+            Focus::EqBandEnable(i),
+        );
         let detail_lines = vec![
             Line::from(vec![
                 Span::styled("Freq: ", Style::default().fg(C_DIM)),
@@ -2325,7 +2406,7 @@ fn draw_eq_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MV7+ Dynamics Tab — Standard controls + Reverb section
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_mv7plus_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mv7plus_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Ratio(1, 6); 6])
@@ -2343,7 +2424,7 @@ fn draw_mv7plus_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Reverb Tab (MV7+ only)
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_reverb_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_reverb_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
 
     let rows = Layout::default()
@@ -2356,6 +2437,11 @@ fn draw_reverb_tab(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Ratio(1, 3); 3])
         .split(rows[0]);
+
+    f.control(rev_cols[0], Focus::ReverbOutput);
+    f.control(rev_cols[1], Focus::ReverbMonitor);
+    f.control(rev_cols[2], Focus::ReverbPreset);
+    f.control(rows[1], Focus::ReverbIntensity);
 
     draw_toggle_card(
         f,
@@ -2434,13 +2520,16 @@ fn draw_reverb_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn draw_led_color_gauge(
-    f: &mut Frame,
-    focused: bool,
+    f: &mut UiFrame,
+    app: &App,
+    focus: Focus,
     value: u8,
     label: &str,
     color: Color,
     area: Rect,
 ) {
+    f.control(area, focus);
+    let focused = app.focus == focus;
     let gauge = Gauge::default()
         .block(
             Block::default()
@@ -2478,7 +2567,16 @@ fn draw_led_color_gauge(
     f.render_widget(gauge, area);
 }
 
-fn draw_led_cycle_row(f: &mut Frame, focused: bool, label: &str, value: &str, area: Rect) {
+fn draw_led_cycle_row(
+    f: &mut UiFrame,
+    app: &App,
+    focus: Focus,
+    label: &str,
+    value: &str,
+    area: Rect,
+) {
+    f.control(area, focus);
+    let focused = app.focus == focus;
     let p = Paragraph::new(Line::from(vec![
         Span::styled(format!("{label}:  "), Style::default().fg(C_DIM)),
         Span::styled(
@@ -2507,7 +2605,7 @@ fn draw_led_cycle_row(f: &mut Frame, focused: bool, label: &str, value: &str, ar
     f.render_widget(p, area);
 }
 
-fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
     if app.device_model == DeviceModel::Mv7 {
         draw_mv7_led_tab(f, app, area);
         return;
@@ -2538,7 +2636,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
     // Behavior row
     draw_led_cycle_row(
         f,
-        app.focus == Focus::LedBehavior,
+        app,
+        Focus::LedBehavior,
         "Behavior",
         &ds.led_behavior.to_string(),
         sections[0],
@@ -2547,7 +2646,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
     // Brightness row
     draw_led_cycle_row(
         f,
-        app.focus == Focus::LedBrightness,
+        app,
+        Focus::LedBrightness,
         "Brightness",
         &ds.led_brightness.to_string(),
         sections[1],
@@ -2559,13 +2659,7 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
         LedBehavior::Solid => ds.led_solid_theme.to_string(),
         LedBehavior::Pulsing => ds.led_pulsing_theme.to_string(),
     };
-    draw_led_cycle_row(
-        f,
-        app.focus == Focus::LedTheme,
-        "Theme",
-        &theme_str,
-        sections[2],
-    );
+    draw_led_cycle_row(f, app, Focus::LedTheme, "Theme", &theme_str, sections[2]);
 
     // Color zone rows — only rendered when Custom theme is active
     if custom_color_zones == 0 {
@@ -2585,7 +2679,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
                 .split(zone_areas[0]);
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedSolidR,
+                app,
+                Focus::LedSolidR,
                 ds.led_solid_rgb[0],
                 "Solid R",
                 Color::Rgb(220, 60, 60),
@@ -2593,7 +2688,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedSolidG,
+                app,
+                Focus::LedSolidG,
                 ds.led_solid_rgb[1],
                 "Solid G",
                 Color::Rgb(60, 200, 60),
@@ -2601,7 +2697,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedSolidB,
+                app,
+                Focus::LedSolidB,
                 ds.led_solid_rgb[2],
                 "Solid B",
                 Color::Rgb(60, 100, 220),
@@ -2615,7 +2712,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
                 .split(zone_areas[0]);
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedPulsingR,
+                app,
+                Focus::LedPulsingR,
                 ds.led_pulsing_rgb[0],
                 "Pulsing R",
                 Color::Rgb(220, 60, 60),
@@ -2623,7 +2721,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedPulsingG,
+                app,
+                Focus::LedPulsingG,
                 ds.led_pulsing_rgb[1],
                 "Pulsing G",
                 Color::Rgb(60, 200, 60),
@@ -2631,7 +2730,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedPulsingB,
+                app,
+                Focus::LedPulsingB,
                 ds.led_pulsing_rgb[2],
                 "Pulsing B",
                 Color::Rgb(60, 100, 220),
@@ -2646,7 +2746,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
                 .split(zone_areas[0]);
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveEdgeR,
+                app,
+                Focus::LedLiveEdgeR,
                 ds.led_live_edge_rgb[0],
                 "Edge R",
                 Color::Rgb(220, 60, 60),
@@ -2654,7 +2755,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveEdgeG,
+                app,
+                Focus::LedLiveEdgeG,
                 ds.led_live_edge_rgb[1],
                 "Edge G",
                 Color::Rgb(60, 200, 60),
@@ -2662,7 +2764,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveEdgeB,
+                app,
+                Focus::LedLiveEdgeB,
                 ds.led_live_edge_rgb[2],
                 "Edge B",
                 Color::Rgb(60, 100, 220),
@@ -2675,7 +2778,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
                 .split(zone_areas[1]);
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveMiddleR,
+                app,
+                Focus::LedLiveMiddleR,
                 ds.led_live_middle_rgb[0],
                 "Middle R",
                 Color::Rgb(220, 60, 60),
@@ -2683,7 +2787,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveMiddleG,
+                app,
+                Focus::LedLiveMiddleG,
                 ds.led_live_middle_rgb[1],
                 "Middle G",
                 Color::Rgb(60, 200, 60),
@@ -2691,7 +2796,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveMiddleB,
+                app,
+                Focus::LedLiveMiddleB,
                 ds.led_live_middle_rgb[2],
                 "Middle B",
                 Color::Rgb(60, 100, 220),
@@ -2704,7 +2810,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
                 .split(zone_areas[2]);
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveInteriorR,
+                app,
+                Focus::LedLiveInteriorR,
                 ds.led_live_interior_rgb[0],
                 "Interior R",
                 Color::Rgb(220, 60, 60),
@@ -2712,7 +2819,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveInteriorG,
+                app,
+                Focus::LedLiveInteriorG,
                 ds.led_live_interior_rgb[1],
                 "Interior G",
                 Color::Rgb(60, 200, 60),
@@ -2720,7 +2828,8 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
             );
             draw_led_color_gauge(
                 f,
-                app.focus == Focus::LedLiveInteriorB,
+                app,
+                Focus::LedLiveInteriorB,
                 ds.led_live_interior_rgb[2],
                 "Interior B",
                 Color::Rgb(60, 100, 220),
@@ -2731,7 +2840,7 @@ fn draw_led_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// MV7 LED panel: two switches, drawn with the same rows as the MV7+ LED tab.
-fn draw_mv7_led_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mv7_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -2746,14 +2855,16 @@ fn draw_mv7_led_tab(f: &mut Frame, app: &App, area: Rect) {
 
     draw_led_cycle_row(
         f,
-        app.focus == Focus::LedLiveMeter,
+        app,
+        Focus::LedLiveMeter,
         "Live Meter",
         on_off(ds.led_live_meter),
         sections[0],
     );
     draw_led_cycle_row(
         f,
-        app.focus == Focus::LedNightMode,
+        app,
+        Focus::LedNightMode,
         "Night Mode",
         on_off(ds.led_night_mode),
         sections[1],
@@ -2763,7 +2874,7 @@ fn draw_mv7_led_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Dynamics Tab
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     if app.device_model == DeviceModel::Mv7Plus {
         draw_mv7plus_dynamics_tab(f, app, area);
         return;
@@ -2800,7 +2911,7 @@ fn draw_dynamics_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MV7 EQ Tab — one four-way preset (High Pass and Presence Boost switches)
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_mv7_eq_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_mv7_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Ratio(1, 3); 3])
@@ -2816,13 +2927,14 @@ fn draw_mv7_eq_tab(f: &mut Frame, app: &App, area: Rect) {
         ],
         app.device_state.eq_preset,
     );
+    f.control(cols[0], Focus::EqPreset);
     draw_enum_card(f, app.focus == Focus::EqPreset, "EQ", &options, cols[0]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Presets Tab
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_presets_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_presets_tab(f: &mut UiFrame, app: &App, area: Rect) {
     // Each slot gets a fixed-height card: name row (3) + actions row (3) = 6 lines each.
     let slot_constraints: Vec<Constraint> = (0..4).map(|_| Constraint::Length(7)).collect();
     let rows = Layout::default()
@@ -2836,7 +2948,7 @@ fn draw_presets_tab(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_preset_card(f: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_preset_card(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
     // Split the card into name row and actions row.
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -2847,14 +2959,15 @@ fn draw_preset_card(f: &mut Frame, app: &App, index: usize, area: Rect) {
     draw_preset_actions_row(f, app, index, rows[1]);
 }
 
-fn draw_preset_name_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
+    f.control(area, Focus::PresetName(index));
     let focused = app.focus == Focus::PresetName(index);
     let editing = app.editing_preset_name && app.editing_preset_index == index;
 
     let (name_text, border_color, title_style) = match &app.presets[index] {
         Some(slot) => {
             let display = if editing {
-                format!("{}_", slot.name) // show cursor
+                format!("{}_", app.preset_name_draft) // show cursor
             } else {
                 slot.name.clone()
             };
@@ -2884,7 +2997,10 @@ fn draw_preset_name_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
     };
 
     let hint = if editing {
-        Span::styled("  [Enter/Esc] confirm", Style::default().fg(C_ACCENT))
+        Span::styled(
+            "  [Enter] save  [Esc/click outside] cancel",
+            Style::default().fg(C_ACCENT),
+        )
     } else if focused && app.presets[index].is_some() {
         Span::styled("  [Enter] rename", Style::default().fg(C_DIM))
     } else {
@@ -2934,7 +3050,7 @@ fn draw_preset_name_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
     f.render_widget(block, area);
 }
 
-fn draw_preset_actions_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
     let focused = app.focus == Focus::PresetActions(index);
     let filled = app.presets[index].is_some();
 
@@ -2986,18 +3102,35 @@ fn draw_preset_actions_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
 
     let border_color = if focused { C_FOCUS } else { C_BORDER };
 
+    let border = Block::default()
+        .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
+        .border_type(if focused {
+            BorderType::Thick
+        } else {
+            BorderType::Rounded
+        })
+        .border_style(Style::default().fg(border_color))
+        .padding(Padding::horizontal(1));
+    let action_row = text_row(border.inner(area), 1);
+    let keys: &[KeyCode] = if filled {
+        &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('d')]
+    } else {
+        &[KeyCode::Char('s')]
+    };
+    let mut x = action_row.x;
+    // Each action is a shortcut span plus a label span. Derive hit widths from
+    // those same spans so Load, Save, and Delete can never share a target.
+    for (spans, key) in actions.spans.as_chunks::<2>().0.iter().zip(keys) {
+        let width = spans.iter().map(Span::width).sum::<usize>() as u16;
+        f.hits.add(
+            Rect::new(x, action_row.y, width, 1).intersection(action_row),
+            Target::PresetAction(index, *key),
+        );
+        x = x.saturating_add(width);
+    }
+
     let block = Paragraph::new(vec![Line::from(""), actions])
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
-                .border_type(if focused {
-                    BorderType::Thick
-                } else {
-                    BorderType::Rounded
-                })
-                .border_style(Style::default().fg(border_color))
-                .padding(Padding::horizontal(1)),
-        )
+        .block(border)
         .style(Style::default().bg(C_BG));
     f.render_widget(block, area);
 }
@@ -3005,9 +3138,14 @@ fn draw_preset_actions_row(f: &mut Frame, app: &App, index: usize, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Info Tab
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
+fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
     let model = app.device_model;
+    let border = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(C_BORDER))
+        .padding(Padding::horizontal(1));
 
     let (vid_pid, gain_range) = match model {
         DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
@@ -3180,6 +3318,12 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
         } else {
             ("  [ Factory Reset ]", Style::default().fg(Color::Red))
         };
+        let reset_row = text_row(border.inner(area), lines.len() as u16 + 3);
+        f.control(
+            Rect::new(reset_row.x, reset_row.y, reset_label.len() as u16, 1)
+                .intersection(reset_row),
+            Focus::FactoryReset,
+        );
         lines.extend([
             Line::from(""),
             Line::from(Span::styled(
@@ -3208,13 +3352,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(C_BORDER))
-                .padding(Padding::horizontal(1)),
-        )
+        .block(border)
         .style(Style::default().bg(C_BG));
     f.render_widget(p, area);
 }
@@ -3222,7 +3360,7 @@ fn draw_info_tab(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Help Overlay
 // ─────────────────────────────────────────────────────────────────────────────
-fn draw_help_overlay(f: &mut Frame, area: Rect) {
+fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
     let popup_width = 58u16.min(area.width.saturating_sub(4));
     let popup_height = 32u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_width)) / 2;
@@ -3233,7 +3371,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
 
     let lines = vec![
         Line::from(Span::styled(
-            "  Keyboard Shortcuts",
+            "  Keyboard & Mouse",
             Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -3318,7 +3456,15 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Press ? to close",
+            "  Click: focus; click selected: activate",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "  Wheel: adjust; click outside name: cancel",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "  Press ? or Esc to close",
             Style::default().fg(C_DISABLED),
         )),
     ];
@@ -3372,7 +3518,9 @@ mod tests {
                     app.device_state.gain_tenths = 9999;
                     let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
                     terminal
-                        .draw(|f| draw(f, &app))
+                        .draw(|f| {
+                            draw(f, &app);
+                        })
                         .unwrap_or_else(|e| panic!("{model:?} {mode:?} {tab:?}: {e}"));
                 }
             }

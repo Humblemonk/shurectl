@@ -22,6 +22,7 @@
 mod app;
 mod device;
 mod meter;
+mod mouse;
 mod presets;
 mod protocol;
 mod ui;
@@ -33,7 +34,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    cursor::Show,
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -207,16 +211,16 @@ fn main() -> Result<()> {
     };
 
     enable_raw_mode()?;
+    let cleanup = TerminalCleanup;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_event_loop(&mut terminal, &mut app, &device);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    drop(terminal);
+    drop(cleanup);
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
@@ -266,6 +270,21 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
     }
 }
 
+/// Restore the terminal on normal exit, startup errors, and unwinding.
+struct TerminalCleanup;
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        );
+    }
+}
+
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -275,18 +294,29 @@ fn run_event_loop(
     let mut last_tick = Instant::now();
 
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        let mut hits = mouse::HitMap::default();
+        terminal.draw(|f| hits = ui::draw(f, app))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_default();
 
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && let Some(action) = handle_key(app, key.code, key.modifiers)
-        {
-            apply_action(app, device, action);
+        if event::poll(timeout)? {
+            let action = match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(app, key.code, key.modifiers)
+                }
+                Event::Mouse(event) => mouse::handle_mouse(app, event, &hits)
+                    .and_then(|key| handle_key(app, key, KeyModifiers::NONE)),
+                Event::Key(_)
+                | Event::Resize(_, _)
+                | Event::FocusGained
+                | Event::FocusLost
+                | Event::Paste(_) => None,
+            };
+            if let Some(action) = action {
+                apply_action(app, device, action);
+            }
         }
 
         if last_tick.elapsed() >= tick_rate {
@@ -314,26 +344,26 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     // ── Preset name editing mode ──────────────────────────────────────────────
     if app.editing_preset_name {
         match code {
-            KeyCode::Enter | KeyCode::Esc => {
+            KeyCode::Enter => {
                 app.editing_preset_name = false;
+                let name = std::mem::take(&mut app.preset_name_draft);
                 let i = app.editing_preset_index;
-                if app.presets[i].is_some() {
+                if let Some(slot) = &mut app.presets[i] {
+                    slot.name = name;
                     return Some(DeviceAction::PersistPresetName(i));
                 }
             }
-            KeyCode::Backspace => {
-                let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i] {
-                    slot.name.pop();
-                }
+            KeyCode::Esc => {
+                app.editing_preset_name = false;
+                app.preset_name_draft.clear();
             }
-            KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
-                let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i]
-                    && slot.name.len() < 40
-                {
-                    slot.name.push(c);
-                }
+            KeyCode::Backspace => {
+                app.preset_name_draft.pop();
+            }
+            KeyCode::Char(c)
+                if !mods.contains(KeyModifiers::CONTROL) && app.preset_name_draft.len() < 40 =>
+            {
+                app.preset_name_draft.push(c);
             }
             _ => {}
         }
@@ -387,8 +417,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         KeyCode::Right | KeyCode::Char('l') => app.adjust_focused(1),
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let app::Focus::PresetName(i) = app.focus
-                && app.presets[i].is_some()
+                && let Some(slot) = &app.presets[i]
             {
+                // Keep an independent draft so cancelling never changes the preset.
+                app.preset_name_draft.clone_from(&slot.name);
                 app.editing_preset_name = true;
                 app.editing_preset_index = i;
                 return None;
