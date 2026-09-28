@@ -227,6 +227,16 @@ impl DeviceModel {
         }
     }
 
+    /// Whether the model has a Gain Lock setting (`mv6_gain_locked`). On other
+    /// models the flag can still arrive in a preset saved elsewhere, and must
+    /// not freeze a gain control that has no lock to undo it.
+    pub fn has_gain_lock(&self) -> bool {
+        match self {
+            DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mvx2u | DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
+        }
+    }
+
     /// Manual gain step in tenths of a dB. The MV7 hardware only has 1.5 dB
     /// steps (it rounds other values down). The binary models step 1 dB: the
     /// wire format carries hundredths, but nobody has confirmed on hardware
@@ -1283,8 +1293,10 @@ fn parse_response_inner(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
         return None;
     }
 
+    // total_len must cover at least the fixed fields through the feature
+    // address, or the CRC and value slices below would index out of range.
     let contents_end = buf[1] as usize;
-    if contents_end + 2 > buf.len() {
+    if contents_end < 16 || contents_end + 2 > buf.len() {
         return None;
     }
 
@@ -1308,9 +1320,6 @@ fn parse_response_inner(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
         return None;
     }
 
-    if buf.len() < 16 {
-        return None;
-    }
     let prefix = buf[13];
     let feat_addr: [u8; 2] = buf[14..16].try_into().ok()?;
     let value_bytes = buf[16..contents_end].to_vec();
@@ -5130,5 +5139,33 @@ mod tests {
         assert_eq!(&pkt[14..16], &FEAT_GAIN, "feature address mismatch");
         let encoded = u16::from_be_bytes([pkt[16], pkt[17]]);
         assert_eq!(encoded, 36 * 100, "gain must be encoded as gain_db * 100");
+    }
+
+    /// A response whose total_len is too short to hold the fixed fields must be
+    /// rejected, not sliced out of range. Previously len 0 panicked in the CRC
+    /// slice and len 13 (with a matching CRC) in the value slice.
+    #[test]
+    fn parse_response_rejects_total_len_below_fixed_fields_without_panicking() {
+        let mut buf = vec![0u8; PACKET_SIZE];
+        buf[0] = REPORT_ID;
+        buf[2..4].copy_from_slice(&HEADER_MAGIC);
+        buf[10..13].copy_from_slice(&RES_GET_FEAT);
+        assert_eq!(parse_response(&buf), None, "total_len 0");
+
+        let len = 13;
+        buf[1] = len as u8;
+        let crc = crc16_ansi(&buf[2..len]);
+        buf[len] = (crc >> 8) as u8;
+        buf[len + 1] = (crc & 0xFF) as u8;
+        assert_eq!(parse_response(&buf), None, "total_len 13 with a valid CRC");
+    }
+
+    #[test]
+    fn only_mv6_and_gen2_have_gain_lock() {
+        assert!(DeviceModel::Mv6.has_gain_lock());
+        assert!(DeviceModel::Mvx2uGen2.has_gain_lock());
+        assert!(!DeviceModel::Mvx2u.has_gain_lock());
+        assert!(!DeviceModel::Mv7.has_gain_lock());
+        assert!(!DeviceModel::Mv7Plus.has_gain_lock());
     }
 }

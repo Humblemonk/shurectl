@@ -202,7 +202,7 @@ shurectl --mute off              # Unmute
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
 | `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 only |
-| `r` | Refresh state from device |
+| `r` | Refresh state from device (reconnects if the device was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |
 | `?` | Toggle help overlay |

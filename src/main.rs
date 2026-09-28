@@ -136,7 +136,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
+    let (mut device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
         let model = match parse_demo_model(model_str) {
             Ok(m) => m,
             Err(e) => {
@@ -182,6 +182,7 @@ fn main() -> Result<()> {
                 ));
             }
             Err(e) => {
+                app.device_connected = !is_disconnect(&e);
                 app.set_err(format!("Connected but failed to read state: {e}"));
             }
         }
@@ -212,7 +213,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_event_loop(&mut terminal, &mut app, &device);
+    let result = run_event_loop(&mut terminal, &mut app, &mut device);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -269,7 +270,7 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    device: &Option<ShureDevice>,
+    device: &mut Option<ShureDevice>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
@@ -302,16 +303,9 @@ fn run_event_loop(
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {
-    if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
-        || (code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL))
-    {
-        if !app.editing_preset_name {
-            app.should_quit = true;
-        }
-        return None;
-    }
-
     // ── Preset name editing mode ──────────────────────────────────────────────
+    // Handled before the quit keys so `q` can be typed in a name. Ctrl+C is
+    // ignored while editing, as before.
     if app.editing_preset_name {
         match code {
             KeyCode::Enter | KeyCode::Esc => {
@@ -337,6 +331,13 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
             _ => {}
         }
+        return None;
+    }
+
+    if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
+        || (code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL))
+    {
+        app.should_quit = true;
         return None;
     }
 
@@ -414,9 +415,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 None
             }
         }
-        KeyCode::Char('f') if app.active_tab == app::Tab::Eq && app.has_eq_bands() => {
-            Some(DeviceAction::FlattenEq)
-        }
+        KeyCode::Char('f') if app.can_flatten_eq() => Some(DeviceAction::FlattenEq),
         KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetActions(i) = app.focus {
                 if app.presets[i].is_some() {
@@ -432,16 +431,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     }
 }
 
-fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceAction) {
+fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceAction) {
     let result = match &action {
-        DeviceAction::Refresh => {
-            if let Some(dev) = device {
-                reload_state(app, dev).map(|()| app.set_ok("State refreshed from device."))
-            } else {
-                app.set_ok("Demo mode — no device to refresh.");
-                Ok(())
-            }
-        }
+        DeviceAction::Refresh => refresh(app, device),
         DeviceAction::SetGain(gain_tenths) => {
             app.set_ok(format!("Gain → {}", format_gain(*gain_tenths)));
             send_if_connected(device, |d| d.set_gain(*gain_tenths))
@@ -698,6 +690,12 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
                 app.device_state.gain_tenths = app
                     .device_model
                     .snap_gain_tenths(app.device_state.gain_tenths);
+                // A lock flag from a model with Gain Lock would sit hidden here
+                // and be saved into this model's presets, then lock the gain
+                // wherever one of those is loaded.
+                if !app.device_model.has_gain_lock() {
+                    app.device_state.mv6_gain_locked = false;
+                }
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
                 apply_preset_to_device(device, &app.device_state, app.device_model)
                     .and_then(|()| resync_mv7_state(app, device))
@@ -738,8 +736,62 @@ fn apply_action(app: &mut App, device: &Option<ShureDevice>, action: DeviceActio
     };
 
     if let Err(e) = result {
-        app.set_err(format!("Device error: {e}"));
+        if is_disconnect(&e) {
+            app.device_connected = false;
+            app.set_err(format!("Device error: {e} — press r to reconnect."));
+        } else {
+            app.set_err(format!("Device error: {e}"));
+        }
     }
+}
+
+/// Whether `e` means the device is gone (a HID read or write failed), as
+/// opposed to a device that is present but refused a command.
+fn is_disconnect(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<device::Disconnected>().is_some()
+}
+
+/// Re-read the device state. If that fails, the handle has usually gone stale
+/// because the device was unplugged; look for the same device again, and if it
+/// is back, switch to the new handle and load its state.
+///
+/// Only a HID failure, or not finding the device again, marks it disconnected.
+/// A device that is present but did not answer (an MV7 busy with MOTIV) stays
+/// connected; the status bar carries the error.
+fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
+    let Some(dev) = device.as_ref() else {
+        app.set_ok("Demo mode — no device to refresh.");
+        return Ok(());
+    };
+    let read_err = match reload_state(app, dev) {
+        Ok(()) => {
+            app.device_connected = true;
+            app.set_ok("State refreshed from device.");
+            return Ok(());
+        }
+        Err(e) => e,
+    };
+    app.device_connected = !is_disconnect(&read_err);
+    let reopened = match dev.reopen() {
+        Ok(reopened) => reopened,
+        Err(e) => {
+            if is_disconnect(&e) {
+                app.device_connected = false;
+            }
+            return Err(anyhow::anyhow!("{read_err}. Reconnect failed: {e}"));
+        }
+    };
+    let loaded = reload_state(app, &reopened);
+    let name = reopened.model.display_name();
+    // Keep the new handle even if its readback failed: the old one may be dead.
+    *device = Some(reopened);
+    if let Err(e) = loaded {
+        app.device_connected = !is_disconnect(&e);
+        return Err(e);
+    }
+    app.device_connected = true;
+    app.set_ok(format!("Reconnected to {name} — state loaded."));
+    Ok(())
 }
 
 /// Replace the app's state with a full readback from the device.
@@ -892,5 +944,148 @@ mod tests {
         app.active_tab = app::Tab::Main;
         handle_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(app.active_tab, app::Tab::Info);
+    }
+
+    fn editing_preset_name(name: &str) -> App {
+        let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
+        presets[0] = Some(PresetSlot::from_device_state(
+            name,
+            &protocol::DeviceState::default(),
+        ));
+        App {
+            presets,
+            editing_preset_name: true,
+            editing_preset_index: 0,
+            ..App::default()
+        }
+    }
+
+    #[test]
+    fn q_can_be_typed_in_a_preset_name() {
+        let mut app = editing_preset_name("");
+        for c in "Quiet q".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.presets[0].as_ref().map(|s| s.name.as_str()),
+            Some("Quiet q")
+        );
+    }
+
+    #[test]
+    fn ctrl_c_is_ignored_while_editing_a_preset_name() {
+        let mut app = editing_preset_name("Voice");
+        handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!app.should_quit);
+        assert!(app.editing_preset_name);
+        assert_eq!(
+            app.presets[0].as_ref().map(|s| s.name.as_str()),
+            Some("Voice")
+        );
+    }
+
+    #[test]
+    fn q_quits_outside_name_editing() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    fn gen2_on_eq_tab(mode: InputMode) -> App {
+        App {
+            device_model: DeviceModel::Mvx2uGen2,
+            active_tab: app::Tab::Eq,
+            device_state: protocol::DeviceState {
+                mode,
+                ..protocol::DeviceState::default()
+            },
+            ..App::default()
+        }
+    }
+
+    /// Gen 2 in Auto shows only the tone slider, so `f` must not zero the
+    /// hidden Manual-mode bands.
+    #[test]
+    fn flatten_eq_ignored_on_gen2_in_auto_mode() {
+        let mut app = gen2_on_eq_tab(InputMode::Auto);
+        let action = handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(action.is_none(), "got {action:?}");
+    }
+
+    #[test]
+    fn flatten_eq_works_on_gen2_in_manual_mode() {
+        let mut app = gen2_on_eq_tab(InputMode::Manual);
+        let action = handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(matches!(action, Some(DeviceAction::FlattenEq)));
+    }
+
+    /// A preset saved on an MV6 with gain lock on must not freeze the gain of a
+    /// model that has no Gain Lock control to undo it.
+    #[test]
+    fn mv6_gain_lock_preset_leaves_mv7plus_gain_adjustable() {
+        let mv6_state = protocol::DeviceState {
+            mode: InputMode::Manual,
+            mv6_gain_locked: true,
+            ..protocol::DeviceState::default()
+        };
+        let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
+        presets[0] = Some(PresetSlot::from_device_state("MV6", &mv6_state));
+        let mut app = App {
+            device_model: DeviceModel::Mv7Plus,
+            presets,
+            ..App::default()
+        };
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        assert!(
+            !app.device_state.mv6_gain_locked,
+            "the flag must not linger to be saved into MV7+ presets"
+        );
+        app.focus = app::Focus::Gain;
+        assert!(!app.gain_locked());
+        assert!(matches!(
+            app.adjust_focused(-1),
+            Some(DeviceAction::SetGain(_))
+        ));
+    }
+
+    /// Without a device (demo mode) Refresh has nothing to read or reconnect.
+    #[test]
+    fn refresh_without_device_reports_demo_mode() {
+        let mut app = App::default();
+        let mut device = None;
+        apply_action(&mut app, &mut device, DeviceAction::Refresh);
+        assert!(!app.status_is_error);
+        assert_eq!(app.status_message, "Demo mode — no device to refresh.");
+        assert!(device.is_none());
+    }
+
+    #[test]
+    fn hid_failures_count_as_disconnects_and_refusals_do_not() {
+        let gone = anyhow::Error::new(device::Disconnected("HID read failed".into()));
+        assert!(is_disconnect(&gone));
+        assert!(is_disconnect(&gone.context("Could not read device state")));
+        assert!(!is_disconnect(&anyhow::anyhow!(
+            "The MV7 rejected \"lock on\""
+        )));
+    }
+
+    /// Models with Gain Lock keep the preset's lock, since they can show and undo it.
+    #[test]
+    fn gain_lock_preset_keeps_lock_on_models_with_gain_lock() {
+        let locked_state = protocol::DeviceState {
+            mv6_gain_locked: true,
+            ..protocol::DeviceState::default()
+        };
+        let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
+        presets[0] = Some(PresetSlot::from_device_state("MV6", &locked_state));
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            presets,
+            ..App::default()
+        };
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        assert!(app.device_state.mv6_gain_locked);
+        assert!(app.gain_locked());
     }
 }
