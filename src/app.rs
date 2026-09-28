@@ -313,7 +313,8 @@ impl App {
 
     /// Select a visible, available tab (shared by keyboard and mouse navigation).
     pub fn select_tab(&mut self, tab: Tab) {
-        if !self.is_tab_locked(tab) {
+        // Re-selecting the active tab (a click on its label) keeps focus.
+        if tab != self.active_tab && !self.is_tab_locked(tab) {
             self.active_tab = tab;
             self.reset_focus_for_tab();
         }

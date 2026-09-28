@@ -287,6 +287,22 @@ mod tests {
     }
 
     #[test]
+    fn clicking_the_active_tab_keeps_focus() {
+        let mut app = App {
+            active_tab: Tab::Presets,
+            focus: Focus::PresetActions(2),
+            ..App::default()
+        };
+        let hits = render(&app, 120, 40);
+        assert!(click(&mut app, &hits, Target::Tab(Tab::Presets)).is_none());
+        assert_eq!(app.active_tab, Tab::Presets);
+        assert_eq!(app.focus, Focus::PresetActions(2));
+        click(&mut app, &hits, Target::Tab(Tab::Main));
+        assert_eq!(app.active_tab, Tab::Main);
+        assert_eq!(app.focus, Focus::Mode);
+    }
+
+    #[test]
     fn every_keyboard_control_has_a_mouse_target() {
         for model in MODELS {
             for mode in [InputMode::Manual, InputMode::Auto] {
