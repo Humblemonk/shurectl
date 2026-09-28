@@ -3,6 +3,8 @@
 use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
+use crossterm::event::KeyCode;
+
 use crate::meter::{METER_SILENT, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
@@ -162,9 +164,14 @@ pub struct App {
     pub editing_preset_name: bool,
     /// Which slot index is being edited (valid when `editing_preset_name` is true).
     pub editing_preset_index: usize,
+    /// Uncommitted name; the stored preset stays unchanged until Enter.
+    pub preset_name_draft: String,
     /// Set to `true` after the user first presses Enter on the factory reset button.
     /// A second Enter fires the action; any other key cancels.
     pub confirming_factory_reset: bool,
+    /// The preset slot and action a first click selected; only a second click on
+    /// that same button fires it. Cleared by any other click or any key.
+    pub armed_preset_action: Option<(usize, KeyCode)>,
     /// Instantaneous peak level shared with the cpal capture thread.
     /// Stores `peak_dbfs * 10` as i32, or `METER_SILENT` when unavailable.
     pub meter_level: Arc<AtomicI32>,
@@ -190,7 +197,9 @@ impl Default for App {
             presets: [None, None, None, None],
             editing_preset_name: false,
             editing_preset_index: 0,
+            preset_name_draft: String::new(),
             confirming_factory_reset: false,
+            armed_preset_action: None,
             meter_level: Arc::new(AtomicI32::new(METER_SILENT)),
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
         }
@@ -302,6 +311,15 @@ impl App {
             )
     }
 
+    /// Select a visible, available tab (shared by keyboard and mouse navigation).
+    pub fn select_tab(&mut self, tab: Tab) {
+        // Re-selecting the active tab (a click on its label) keeps focus.
+        if tab != self.active_tab && !self.is_tab_locked(tab) {
+            self.active_tab = tab;
+            self.reset_focus_for_tab();
+        }
+    }
+
     pub fn next_tab(&mut self) {
         // Skip past any locked tabs so we never land on one.
         let mut candidate = self.active_tab.next();
@@ -311,8 +329,7 @@ impl App {
             }
             candidate = candidate.next();
         }
-        self.active_tab = candidate;
-        self.reset_focus_for_tab();
+        self.select_tab(candidate);
     }
 
     pub fn prev_tab(&mut self) {
@@ -324,8 +341,7 @@ impl App {
             }
             candidate = candidate.prev();
         }
-        self.active_tab = candidate;
-        self.reset_focus_for_tab();
+        self.select_tab(candidate);
     }
 
     fn reset_focus_for_tab(&mut self) {

@@ -208,6 +208,10 @@ shurectl --mute off              # Unmute
 | `?` | Toggle help overlay |
 | `q` / `Ctrl+C` | Quit |
 
+The mouse works too: click a tab to switch to it, click a control to select it and click
+it again to toggle it, or scroll over a slider to adjust it. Factory Reset still needs `Enter`
+to confirm. Most terminals let you hold `Shift` to select text while the mouse is captured.
+
 ---
 
 ## Presets
@@ -227,7 +231,7 @@ hardware-identity fields like serial number or firmware version. Files are hand-
 
 On the **Presets tab**:
 - Navigate to a slot with `↑`/`↓`
-- Press `Enter` on the name field of a saved preset to rename it (type, then `Enter` or `Esc` to finish)
+- Press `Enter` on the name field of a saved preset to rename it (type, then `Enter` to save or `Esc` to cancel)
 - Press `Enter` on the actions row to load a filled preset — all settings are applied to the device immediately
 - Press `s` to save the current device state into the focused slot
 - Press `d` on the actions row to delete the focused slot

@@ -22,6 +22,7 @@
 mod app;
 mod device;
 mod meter;
+mod mouse;
 mod presets;
 mod protocol;
 mod ui;
@@ -33,8 +34,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    cursor::Show,
+    event::{
+        self, DisableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent,
+        MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -209,16 +213,16 @@ fn main() -> Result<()> {
 
     install_terminal_restore_hook();
     enable_raw_mode()?;
+    let cleanup = TerminalCleanup;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableClickCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_event_loop(&mut terminal, &mut app, &mut device);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    drop(terminal);
+    drop(cleanup);
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
@@ -234,8 +238,7 @@ fn install_terminal_restore_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // Nothing useful to do if restoring fails while already panicking.
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
+        drop(TerminalCleanup);
         default_hook(info);
     }));
 }
@@ -281,6 +284,50 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
     }
 }
 
+/// Mouse reporting for clicks and the wheel only. crossterm's `EnableMouseCapture`
+/// also turns on any-motion tracking (`?1003h`), so every pointer move woke the
+/// event loop for a full redraw. Nothing here uses motion or dragging.
+/// `DisableMouseCapture` still turns everything off on exit.
+struct EnableClickCapture;
+
+impl crossterm::Command for EnableClickCapture {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        // Normal tracking (press, release, wheel), with SGR coordinates so
+        // columns past 223 still report correctly.
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        crossterm::Command::execute_winapi(&crossterm::event::EnableMouseCapture)
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        crossterm::Command::is_ansi_code_supported(&crossterm::event::EnableMouseCapture)
+    }
+}
+
+/// Longest a wheel adjustment waits for more wheel events before it is sent.
+/// A trackpad flick sends dozens of events, each of which would otherwise be a
+/// blocking HID write that makes the device lag behind the gesture.
+const SCROLL_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Restore the terminal on normal exit, startup errors, and unwinding.
+struct TerminalCleanup;
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        );
+    }
+}
+
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -290,19 +337,71 @@ fn run_event_loop(
     let mut last_tick = Instant::now();
     let mut last_presence_poll = Instant::now();
     let mut seen_back = false;
+    // The newest wheel adjustment, its control, and when the burst began. Wheel
+    // adjustments carry absolute values, so the newest one supersedes the rest.
+    let mut pending_scroll: Option<(app::Focus, DeviceAction, Instant)> = None;
 
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        let mut hits = mouse::HitMap::default();
+        terminal.draw(|f| hits = ui::draw(f, app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_default();
+        let timeout = if pending_scroll.is_some() {
+            Duration::ZERO
+        } else {
+            tick_rate
+                .checked_sub(last_tick.elapsed())
+                .unwrap_or_default()
+        };
 
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && let Some(action) = handle_key(app, key.code, key.modifiers)
-        {
+        let queued = event::poll(timeout)?;
+        if queued {
+            let event = event::read()?;
+            let is_scroll = matches!(
+                event,
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollUp | MouseEventKind::ScrollDown,
+                    ..
+                })
+            );
+            let action = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.armed_preset_action = None;
+                    handle_key(app, key.code, key.modifiers)
+                }
+                Event::Mouse(event) => mouse::handle_mouse(app, event, &hits)
+                    .and_then(|key| handle_key(app, key, KeyModifiers::NONE)),
+                Event::Key(_)
+                | Event::Resize(_, _)
+                | Event::FocusGained
+                | Event::FocusLost
+                | Event::Paste(_) => None,
+            };
+            match action {
+                Some(action) if is_scroll => {
+                    let started = match pending_scroll.take() {
+                        Some((focus, _, started)) if focus == app.focus => started,
+                        Some((_, earlier, _)) => {
+                            apply_action(app, device, earlier);
+                            Instant::now()
+                        }
+                        None => Instant::now(),
+                    };
+                    pending_scroll = Some((app.focus, action, started));
+                }
+                Some(action) => {
+                    // Keep device writes in input order.
+                    if let Some((_, earlier, _)) = pending_scroll.take() {
+                        apply_action(app, device, earlier);
+                    }
+                    apply_action(app, device, action);
+                }
+                None => {}
+            }
+        }
+
+        if let Some((_, action, _)) = pending_scroll.take_if(|(_, _, started)| {
+            !queued || app.should_quit || started.elapsed() >= SCROLL_FLUSH_INTERVAL
+        }) {
             apply_action(app, device, action);
         }
 
@@ -329,26 +428,26 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     // ignored while editing, as before.
     if app.editing_preset_name {
         match code {
-            KeyCode::Enter | KeyCode::Esc => {
+            KeyCode::Enter => {
                 app.editing_preset_name = false;
+                let name = std::mem::take(&mut app.preset_name_draft);
                 let i = app.editing_preset_index;
-                if app.presets[i].is_some() {
+                if let Some(slot) = &mut app.presets[i] {
+                    slot.name = name;
                     return Some(DeviceAction::PersistPresetName(i));
                 }
             }
-            KeyCode::Backspace => {
-                let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i] {
-                    slot.name.pop();
-                }
+            KeyCode::Esc => {
+                app.editing_preset_name = false;
+                app.preset_name_draft.clear();
             }
-            KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
-                let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i]
-                    && slot.name.len() < 40
-                {
-                    slot.name.push(c);
-                }
+            KeyCode::Backspace => {
+                app.preset_name_draft.pop();
+            }
+            KeyCode::Char(c)
+                if !mods.contains(KeyModifiers::CONTROL) && app.preset_name_draft.len() < 40 =>
+            {
+                app.preset_name_draft.push(c);
             }
             _ => {}
         }
@@ -410,8 +509,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         KeyCode::Right | KeyCode::Char('l') => app.adjust_focused(1),
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let app::Focus::PresetName(i) = app.focus
-                && app.presets[i].is_some()
+                && let Some(slot) = &app.presets[i]
             {
+                // Keep an independent draft so cancelling never changes the preset.
+                app.preset_name_draft.clone_from(&slot.name);
                 app.editing_preset_name = true;
                 app.editing_preset_index = i;
                 return None;
@@ -1078,6 +1179,7 @@ mod tests {
             presets,
             editing_preset_name: true,
             editing_preset_index: 0,
+            preset_name_draft: name.to_owned(),
             ..App::default()
         }
     }
@@ -1089,6 +1191,11 @@ mod tests {
             handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         assert!(!app.should_quit);
+        assert_eq!(app.preset_name_draft, "Quiet q");
+        assert!(matches!(
+            handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
+            Some(DeviceAction::PersistPresetName(0))
+        ));
         assert_eq!(
             app.presets[0].as_ref().map(|s| s.name.as_str()),
             Some("Quiet q")
@@ -1101,6 +1208,7 @@ mod tests {
         handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(!app.should_quit);
         assert!(app.editing_preset_name);
+        assert_eq!(app.preset_name_draft, "Voice");
         assert_eq!(
             app.presets[0].as_ref().map(|s| s.name.as_str()),
             Some("Voice")

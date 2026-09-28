@@ -96,7 +96,7 @@ Follow this sequence without skipping steps:
 - Both return `Option<DeviceAction>`. `None` means a UI-only change with no HID write
 - Preset name editing lives in `main.rs::handle_key()`, not `toggle_focused()`. While
   `editing_preset_name` is true, chars append (including `q`, which only quits outside
-  editing), and Enter or Esc commits (`PersistPresetName`). There is no cancel
+  editing), Enter commits (`PersistPresetName`), and Esc or clicking outside cancels
 
 ## Cross-Device UI Consistency
 
