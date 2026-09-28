@@ -172,13 +172,12 @@ fn main() -> Result<()> {
     };
 
     if let Some(ref dev) = device {
-        match dev.get_state() {
-            Ok(mut state) => {
-                state.serial_number = dev.serial_number.clone();
-                app.device_state = state;
+        match reload_state(&mut app, dev) {
+            Ok(unrecognised) => {
                 app.set_ok(format!(
-                    "Connected to {} — state loaded.",
-                    dev.model.display_name()
+                    "Connected to {} — state loaded.{}",
+                    dev.model.display_name(),
+                    unrecognised_note(&unrecognised)
                 ));
             }
             Err(e) => {
@@ -239,8 +238,8 @@ fn cmd_mute(action: MuteAction, device_path: Option<&str>) -> Result<()> {
     .context("Could not open device")?;
 
     let muted = if action == MuteAction::Toggle {
-        let state = dev.get_state().context("Could not read device state")?;
-        !state.muted
+        let readback = dev.get_state().context("Could not read device state")?;
+        !readback.state.muted
     } else {
         action == MuteAction::On
     };
@@ -274,6 +273,8 @@ fn run_event_loop(
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
+    let mut last_presence_poll = Instant::now();
+    let mut seen_back = false;
 
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
@@ -288,6 +289,11 @@ fn run_event_loop(
             && let Some(action) = handle_key(app, key.code, key.modifiers)
         {
             apply_action(app, device, action);
+        }
+
+        if last_presence_poll.elapsed() >= PRESENCE_POLL_INTERVAL {
+            last_presence_poll = Instant::now();
+            poll_presence(app, device, &mut seen_back);
         }
 
         if last_tick.elapsed() >= tick_rate {
@@ -434,6 +440,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
 fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceAction) {
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
+        DeviceAction::Reconnect => reconnect(app, device),
         DeviceAction::SetGain(gain_tenths) => {
             app.set_ok(format!("Gain → {}", format_gain(*gain_tenths)));
             send_if_connected(device, |d| d.set_gain(*gain_tenths))
@@ -738,7 +745,7 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
     if let Err(e) = result {
         if is_disconnect(&e) {
             app.device_connected = false;
-            app.set_err(format!("Device error: {e} — press r to reconnect."));
+            app.set_err(format!("Device error: {e} — {RECONNECT_HINT}"));
         } else {
             app.set_err(format!("Device error: {e}"));
         }
@@ -764,42 +771,130 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         return Ok(());
     };
     let read_err = match reload_state(app, dev) {
-        Ok(()) => {
+        Ok(unrecognised) => {
             app.device_connected = true;
-            app.set_ok("State refreshed from device.");
+            app.set_ok(format!(
+                "State refreshed from device.{}",
+                unrecognised_note(&unrecognised)
+            ));
             return Ok(());
         }
         Err(e) => e,
     };
     app.device_connected = !is_disconnect(&read_err);
+    reconnect(app, device).map_err(|e| anyhow::anyhow!("{read_err}. Reconnect failed: {e}"))
+}
+
+/// Open the same device again and load its state from the new handle. Used by
+/// `refresh()` and by the presence poll once an unplugged device is back.
+fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
+    let Some(dev) = device.as_ref() else {
+        return Ok(());
+    };
     let reopened = match dev.reopen() {
         Ok(reopened) => reopened,
         Err(e) => {
             if is_disconnect(&e) {
                 app.device_connected = false;
             }
-            return Err(anyhow::anyhow!("{read_err}. Reconnect failed: {e}"));
+            return Err(e);
         }
     };
     let loaded = reload_state(app, &reopened);
     let name = reopened.model.display_name();
     // Keep the new handle even if its readback failed: the old one may be dead.
     *device = Some(reopened);
-    if let Err(e) = loaded {
-        app.device_connected = !is_disconnect(&e);
-        return Err(e);
+    match loaded {
+        Ok(unrecognised) => {
+            app.device_connected = true;
+            app.set_ok(format!(
+                "Reconnected to {name} — state loaded.{}",
+                unrecognised_note(&unrecognised)
+            ));
+            Ok(())
+        }
+        Err(e) => {
+            app.device_connected = !is_disconnect(&e);
+            Err(e)
+        }
     }
-    app.device_connected = true;
-    app.set_ok(format!("Reconnected to {name} — state loaded."));
-    Ok(())
 }
 
-/// Replace the app's state with a full readback from the device.
-fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<()> {
-    let mut state = dev.get_state()?;
-    state.serial_number = dev.serial_number.clone();
-    app.device_state = state;
-    Ok(())
+/// How often the event loop checks that the device is still plugged in.
+const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Status-bar wording for a lost device, shared by the poll and failed commands.
+const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in.";
+
+/// What one presence poll does.
+#[derive(Debug, PartialEq)]
+enum PollStep {
+    Nothing,
+    MarkDisconnected,
+    /// The device is back but was not seen on the previous poll: give it one
+    /// more interval to boot before reading its state.
+    WaitForBoot,
+    Reconnect,
+}
+
+/// Decide a presence poll from whether the app thinks the device is connected,
+/// whether it is plugged in now, and whether the previous poll already saw it
+/// plugged back in.
+fn poll_step(connected: bool, present: bool, seen_back: bool) -> PollStep {
+    match (connected, present) {
+        (true, true) | (false, false) => PollStep::Nothing,
+        (true, false) => PollStep::MarkDisconnected,
+        (false, true) if seen_back => PollStep::Reconnect,
+        (false, true) => PollStep::WaitForBoot,
+    }
+}
+
+/// Check that the device is still plugged in, from the OS device list, and
+/// reconnect it once it is back. Runs alongside `r`, which does the same on
+/// demand. A failed reconnect is retried on the next poll while the device is
+/// present and still marked disconnected.
+fn poll_presence(app: &mut App, device: &mut Option<ShureDevice>, seen_back: &mut bool) {
+    let Some(dev) = device.as_ref() else {
+        return; // demo mode
+    };
+    // A failed enumeration says nothing about the device; try again next poll.
+    let Ok(present) = dev.is_present() else {
+        return;
+    };
+    match poll_step(app.device_connected, present, *seen_back) {
+        PollStep::Nothing | PollStep::WaitForBoot => {}
+        PollStep::MarkDisconnected => {
+            app.device_connected = false;
+            app.set_err(format!(
+                "{} disconnected — {RECONNECT_HINT}",
+                dev.model.display_name()
+            ));
+        }
+        PollStep::Reconnect => apply_action(app, device, DeviceAction::Reconnect),
+    }
+    *seen_back = present && !app.device_connected;
+}
+
+/// Status-bar suffix for replies a readback could not match to any setting,
+/// so they can be seen and reported without writing to the terminal.
+fn unrecognised_note(unrecognised: &[String]) -> String {
+    match unrecognised {
+        [] => String::new(),
+        [only] => format!(" Ignored an unrecognised reply: {only}."),
+        [first, ..] => format!(
+            " Ignored {} unrecognised replies, first: {first}.",
+            unrecognised.len()
+        ),
+    }
+}
+
+/// Replace the app's state with a full readback from the device. Returns the
+/// replies it could not match, for the caller's status message.
+fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
+    let readback = dev.get_state()?;
+    app.device_state = readback.state;
+    app.device_state.serial_number = dev.serial_number.clone();
+    Ok(readback.unrecognised)
 }
 
 /// The MV7 stores mode, mic position and tone as one setting, and changing it
@@ -808,7 +903,13 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<()> {
 /// shows what the mic actually has. No-op for other models and in demo mode.
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
-        Some(dev) if dev.model == DeviceModel::Mv7 => reload_state(app, dev),
+        Some(dev) if dev.model == DeviceModel::Mv7 => {
+            let unrecognised = reload_state(app, dev)?;
+            // Keep the caller's message ("Mode → …") and add the note to it.
+            app.status_message
+                .push_str(&unrecognised_note(&unrecognised));
+            Ok(())
+        }
         Some(_) | None => Ok(()),
     }
 }
@@ -1087,5 +1188,46 @@ mod tests {
         apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
         assert!(app.device_state.mv6_gain_locked);
         assert!(app.gain_locked());
+    }
+
+    #[test]
+    fn presence_poll_marks_loss_and_reconnects_after_one_more_poll() {
+        use PollStep::*;
+        for (connected, present, seen_back, expected) in [
+            (true, true, false, Nothing),
+            (true, false, false, MarkDisconnected),
+            (false, false, false, Nothing),
+            (false, false, true, Nothing),
+            (false, true, false, WaitForBoot),
+            (false, true, true, Reconnect),
+        ] {
+            assert_eq!(
+                poll_step(connected, present, seen_back),
+                expected,
+                "connected={connected} present={present} seen_back={seen_back}"
+            );
+        }
+    }
+
+    #[test]
+    fn presence_poll_does_nothing_in_demo_mode() {
+        let mut app = App::default();
+        let mut seen_back = false;
+        poll_presence(&mut app, &mut None, &mut seen_back);
+        assert!(app.device_connected);
+        assert_eq!(app.status_message, App::default().status_message);
+    }
+
+    #[test]
+    fn unrecognised_note_is_empty_or_names_the_first_reply() {
+        assert_eq!(unrecognised_note(&[]), "");
+        assert_eq!(
+            unrecognised_note(&["feature 0x01 0x99".into()]),
+            " Ignored an unrecognised reply: feature 0x01 0x99."
+        );
+        assert_eq!(
+            unrecognised_note(&["feature 0x01 0x99".into(), "feature 0x02 0x77".into()]),
+            " Ignored 2 unrecognised replies, first: feature 0x01 0x99."
+        );
     }
 }

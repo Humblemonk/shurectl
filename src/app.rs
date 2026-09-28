@@ -1211,6 +1211,9 @@ pub enum DeviceAction {
     /// Zero all 5 EQ band gains. Gen 1: leaves EQ master and per-band enables untouched.
     FlattenEq,
     Refresh,
+    /// Open the device again after it was unplugged and plugged back in, and
+    /// load its state. Sent by main's presence poll rather than a key.
+    Reconnect,
     /// Send a factory reset command to the MV7+. Device disconnects immediately after.
     FactoryReset,
 }

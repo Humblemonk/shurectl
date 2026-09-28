@@ -166,14 +166,7 @@ impl ShureDevice {
     /// Errors are one line, for the status bar.
     pub fn reopen(&self) -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
-        let matches: Vec<(&hidapi::DeviceInfo, DeviceModel)> = shure_devices(&api)
-            .into_iter()
-            .filter(|(info, model)| {
-                *model == self.model
-                    && info.serial_number().unwrap_or(UNKNOWN_SERIAL) == self.serial_number
-            })
-            .collect();
-        match matches.as_slice() {
+        match self.same_devices(&api).as_slice() {
             [(info, model)] => Self::open_info(&api, info, *model)
                 .map_err(|e| anyhow!("{}", e.to_string().replace('\n', " "))),
             [] => Err(Disconnected(format!("{} not found", self.model.display_name())).into()),
@@ -182,6 +175,25 @@ impl ShureDevice {
                 self.model.display_name()
             )),
         }
+    }
+
+    /// Whether this device is still plugged in, from the OS device list alone.
+    /// Nothing is sent to the device, so polling this cannot disturb the
+    /// protocol or a command MOTIV has in flight.
+    pub fn is_present(&self) -> Result<bool> {
+        let api = HidApi::new().context("Failed to initialise hidapi")?;
+        Ok(!self.same_devices(&api).is_empty())
+    }
+
+    /// Supported devices in `api`'s list with this device's model and USB serial.
+    fn same_devices<'a>(&self, api: &'a HidApi) -> Vec<(&'a hidapi::DeviceInfo, DeviceModel)> {
+        shure_devices(api)
+            .into_iter()
+            .filter(|(info, model)| {
+                *model == self.model
+                    && info.serial_number().unwrap_or(UNKNOWN_SERIAL) == self.serial_number
+            })
+            .collect()
     }
 
     fn open_info(api: &HidApi, info: &hidapi::DeviceInfo, model: DeviceModel) -> Result<Self> {
@@ -373,82 +385,54 @@ impl ShureDevice {
         }
     }
 
-    /// Send one GET and apply its reply to `state`. Returns whether a reply was
-    /// applied. A failed write or read is an error (the device is gone); a
-    /// timeout or an unrecognised reply is not.
-    fn query(&self, pkt: &[u8], state: &mut DeviceState, context: &str) -> Result<bool> {
-        let Some((feat, value)) = self.send_get(pkt)? else {
-            return Ok(false);
-        };
-        let applied = apply_response(feat, &value, state);
-        if !applied {
-            eprintln!("{context}: unrecognised feature {feat:#04x?} in response");
+    /// Send one GET and apply its reply to `readback`. A failed write or read is
+    /// an error (the device is gone); a timeout or an unrecognised reply is not.
+    fn query(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
+        if let Some((feat, value)) = self.send_get(pkt)? {
+            readback.apply(feat, &value);
         }
-        Ok(applied)
+        Ok(())
     }
 
-    /// Fetch all 5 EQ band gain values and apply them to `state`. Returns how
-    /// many were applied. Used by both Gen 1 and Gen 2 state readback.
-    fn fetch_eq_band_gains(&self, state: &mut DeviceState, context: &str) -> Result<usize> {
-        let mut applied = 0;
+    /// Fetch all 5 EQ band gain values. Used by both Gen 1 and Gen 2 state readback.
+    fn fetch_eq_band_gains(&self, readback: &mut Readback) -> Result<()> {
         for band in 0..5 {
-            let gain_pkt = cmd_get_eq_band_gain(self.next_seq(), band);
-            applied += usize::from(self.query(&gain_pkt, state, context)?);
+            self.query(&cmd_get_eq_band_gain(self.next_seq(), band), readback)?;
         }
-        Ok(applied)
+        Ok(())
     }
 
-    /// Send each getter and apply its reply to `state`. Returns how many were applied.
-    fn run_getters(
-        &self,
-        getters: &[fn(u8) -> Vec<u8>],
-        state: &mut DeviceState,
-        context: &str,
-    ) -> Result<usize> {
-        let mut applied = 0;
+    /// Send each getter and apply its reply to `readback`.
+    fn run_getters(&self, getters: &[fn(u8) -> Vec<u8>], readback: &mut Readback) -> Result<()> {
         for getter in getters {
-            applied += usize::from(self.query(&getter(self.next_seq()), state, context)?);
-        }
-        Ok(applied)
-    }
-
-    /// A readback that got no usable reply at all would hand back
-    /// `DeviceState::default()` as if it were the device's settings.
-    fn ensure_answered(applied: usize) -> Result<()> {
-        if applied == 0 {
-            return Err(anyhow!("No response from the device to any state query"));
+            self.query(&getter(self.next_seq()), readback)?;
         }
         Ok(())
     }
 
     /// Fetch the complete device state by querying every feature for this model.
-    pub fn get_state(&self) -> Result<DeviceState> {
+    pub fn get_state(&self) -> Result<Readback> {
+        let mut readback = Readback::default();
         match self.model {
-            DeviceModel::Mvx2u => self.get_state_mvx2u(),
-            DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(),
-            DeviceModel::Mv6 => self.get_state_mv6(),
-            DeviceModel::Mv7 => self.get_state_mv7(),
-            DeviceModel::Mv7Plus => self.get_state_mv7_plus(),
-        }
+            DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
+            DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),
+            DeviceModel::Mv6 => self.get_state_mv6(&mut readback),
+            DeviceModel::Mv7 => self.get_state_mv7(&mut readback),
+            DeviceModel::Mv7Plus => self.get_state_mv7_plus(&mut readback),
+        }?;
+        readback.finish()
     }
 
-    fn get_state_mv7(&self) -> Result<DeviceState> {
-        let mut state = DeviceState::default();
+    fn get_state_mv7(&self, readback: &mut Readback) -> Result<()> {
         for command in mv7_text::state_queries() {
             let reply = self.send_text(&command)?;
-            if !mv7_text::apply_reply(&reply, &mut state) {
-                eprintln!(
-                    "get_state(mv7): unrecognised reply {reply:?} to {:?}",
-                    command.line
-                );
-            }
+            let applied = mv7_text::apply_reply(&reply, &mut readback.state);
+            readback.record(applied, || format!("{reply:?} to {:?}", command.line));
         }
-        Ok(state)
+        Ok(())
     }
 
-    fn get_state_mvx2u(&self) -> Result<DeviceState> {
-        let mut state = DeviceState::default();
-
+    fn get_state_mvx2u(&self, readback: &mut Readback) -> Result<()> {
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_lock,
             cmd_get_gain,
@@ -468,21 +452,15 @@ impl ShureDevice {
             cmd_get_serial,
         ];
 
-        let mut applied = self.run_getters(getters, &mut state, "get_state")?;
+        self.run_getters(getters, readback)?;
 
         for band in 0..5 {
-            let en_pkt = cmd_get_eq_band_enable(self.next_seq(), band);
-            applied += usize::from(self.query(&en_pkt, &mut state, "get_state")?);
+            self.query(&cmd_get_eq_band_enable(self.next_seq(), band), readback)?;
         }
-        applied += self.fetch_eq_band_gains(&mut state, "get_state")?;
-
-        Self::ensure_answered(applied)?;
-        Ok(state)
+        self.fetch_eq_band_gains(readback)
     }
 
-    fn get_state_mvx2u_gen2(&self) -> Result<DeviceState> {
-        let mut state = DeviceState::default();
-
+    fn get_state_mvx2u_gen2(&self, readback: &mut Readback) -> Result<()> {
         // Gen 2 shares most getters with Gen 1 but has no config lock, no EQ master
         // enable, and no per-band enable. It adds denoiser, popper stopper, gain lock,
         // tone, and uses the MV6-style monitor mix framing.
@@ -504,18 +482,13 @@ impl ShureDevice {
             cmd_get_serial,
         ];
 
-        let mut applied = self.run_getters(getters, &mut state, "get_state(mvx2u_gen2)")?;
+        self.run_getters(getters, readback)?;
 
         // Gen 2 has 5-band EQ gain (no master enable, no per-band enable toggle).
-        applied += self.fetch_eq_band_gains(&mut state, "get_state(mvx2u_gen2)")?;
-
-        Self::ensure_answered(applied)?;
-        Ok(state)
+        self.fetch_eq_band_gains(readback)
     }
 
-    fn get_state_mv6(&self) -> Result<DeviceState> {
-        let mut state = DeviceState::default();
-
+    fn get_state_mv6(&self, readback: &mut Readback) -> Result<()> {
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
             cmd_get_mute,
@@ -532,15 +505,10 @@ impl ShureDevice {
             cmd_get_serial,
         ];
 
-        let applied = self.run_getters(getters, &mut state, "get_state(mv6)")?;
-
-        Self::ensure_answered(applied)?;
-        Ok(state)
+        self.run_getters(getters, readback)
     }
 
-    fn get_state_mv7_plus(&self) -> Result<DeviceState> {
-        let mut state = DeviceState::default();
-
+    fn get_state_mv7_plus(&self, readback: &mut Readback) -> Result<()> {
         // Shared features: use standard GET framing (HDR_CONSTANT=0x03).
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
@@ -572,7 +540,7 @@ impl ShureDevice {
             cmd_get_firmware_version,
             cmd_get_serial,
         ];
-        let mut applied = self.run_getters(getters, &mut state, "get_state(mv7plus)")?;
+        self.run_getters(getters, readback)?;
 
         // Playback mix uses the same FEAT_MIX address as mic mix but with prefix=0x03.
         // We issued the request so we know the response is the playback mix channel.
@@ -580,12 +548,10 @@ impl ShureDevice {
         if let Some((_prefix, _feat, value)) = self.send_get_with_prefix(&pmix_pkt)?
             && let Some(&mix) = value.first()
         {
-            state.playback_mix = mix.min(100);
-            applied += 1;
+            readback.state.playback_mix = mix.min(100);
+            readback.record(true, String::new);
         }
-
-        Self::ensure_answered(applied)?;
-        Ok(state)
+        Ok(())
     }
 
     /// Read just the factory serial number (the serial printed on the device,
@@ -951,6 +917,46 @@ impl ShureDevice {
     }
 }
 
+/// A full state readback from [`ShureDevice::get_state`]. `unrecognised`
+/// describes replies that arrived but matched no known setting. The caller
+/// reports them: in the TUI that is the status bar, since writing to stderr
+/// would garble the screen.
+#[derive(Default)]
+pub struct Readback {
+    pub state: DeviceState,
+    pub unrecognised: Vec<String>,
+    /// Replies applied to `state`. Zero means the device answered nothing.
+    applied: usize,
+}
+
+impl Readback {
+    /// Apply one binary GET reply, noting it if no setting matches.
+    fn apply(&mut self, feat: [u8; 2], value: &[u8]) {
+        let applied = apply_response(feat, value, &mut self.state);
+        self.record(applied, || {
+            format!("feature {:#04x} {:#04x}", feat[0], feat[1])
+        });
+    }
+
+    /// Count an applied reply, or note an unrecognised one as `describe()`.
+    fn record(&mut self, applied: bool, describe: impl FnOnce() -> String) {
+        if applied {
+            self.applied += 1;
+        } else {
+            self.unrecognised.push(describe());
+        }
+    }
+
+    /// A readback that got no usable reply at all would hand back
+    /// `DeviceState::default()` as if it were the device's settings.
+    fn finish(self) -> Result<Self> {
+        if self.applied == 0 {
+            return Err(anyhow!("No response from the device to any state query"));
+        }
+        Ok(self)
+    }
+}
+
 /// Information about a detected Shure device, returned by [`list_devices`].
 pub struct DeviceInfo {
     pub path: String,
@@ -1010,4 +1016,29 @@ pub fn list_devices() -> Vec<DeviceInfo> {
             model,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readback_notes_unrecognised_replies_instead_of_printing_them() {
+        let mut readback = Readback::default();
+        readback.apply([0x7F, 0x7F], &[1]);
+        assert_eq!(readback.unrecognised, vec!["feature 0x7f 0x7f"]);
+    }
+
+    #[test]
+    fn readback_with_no_applied_reply_is_an_error() {
+        let mut readback = Readback::default();
+        readback.apply([0x7F, 0x7F], &[1]);
+        assert!(readback.finish().is_err());
+
+        let mut readback = Readback::default();
+        readback.record(true, String::new);
+        readback.apply([0x7F, 0x7F], &[1]);
+        let readback = readback.finish().expect("one reply applied");
+        assert_eq!(readback.unrecognised.len(), 1);
+    }
 }
