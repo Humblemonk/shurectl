@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
+    cursor,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -206,6 +207,7 @@ fn main() -> Result<()> {
         None
     };
 
+    install_terminal_restore_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -223,6 +225,19 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Restore the terminal before a panic message prints. Release builds abort on
+/// panic, so without this the terminal stays in raw mode on the alternate
+/// screen with the cursor hidden, and the message is lost with that screen.
+fn install_terminal_restore_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Nothing useful to do if restoring fails while already panicking.
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
+        default_hook(info);
+    }));
 }
 
 /// Apply a mute action to the connected device without launching the TUI.
