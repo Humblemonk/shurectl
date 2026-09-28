@@ -191,19 +191,6 @@ shurectl --mute on               # Mute
 shurectl --mute off              # Unmute
 ```
 
-### Connection Status
-
-The header shows whether shurectl can reach the device:
-
-| Header | Meaning |
-|--------|---------|
-| `[CONNECTED]` (green) | The device is plugged in and answering |
-| `[DISCONNECTED]` (red) | The device was unplugged or its USB connection failed. shurectl checks every 2 seconds and reconnects on its own a few seconds after it is plugged back in; press `r` to reconnect right away |
-| `[DEMO — no device]` | Demo mode: changes are not sent to a device |
-
-Changes made while disconnected are not sent to the device. After reconnecting, shurectl
-reloads the device's settings, so the screen shows what the device actually has.
-
 ### Keyboard Shortcuts
 
 | Key | Action |
