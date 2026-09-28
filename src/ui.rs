@@ -116,17 +116,19 @@ pub fn draw(frame: &mut Frame, app: &App) -> HitMap {
 }
 
 fn draw_header(f: &mut UiFrame, app: &App, area: Rect) {
-    let demo_tag = if app.demo_mode {
-        Span::styled(
-            " [DEMO — no device] ",
-            Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
-        )
+    let (connection_label, connection_color) = if app.demo_mode {
+        (" [DEMO — no device] ", C_WARN)
+    } else if app.device_connected {
+        (" [CONNECTED] ", C_SUCCESS)
     } else {
-        Span::styled(
-            " [CONNECTED] ",
-            Style::default().fg(C_SUCCESS).add_modifier(Modifier::BOLD),
-        )
+        (" [DISCONNECTED] ", C_ERROR)
     };
+    let demo_tag = Span::styled(
+        connection_label,
+        Style::default()
+            .fg(connection_color)
+            .add_modifier(Modifier::BOLD),
+    );
 
     // Identity label: the user-set device name when present, otherwise the model.
     let device_label: &str = if app.device_state.device_name != "Unknown" {
@@ -234,10 +236,7 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             " Editing name — [Enter] save  [Esc/click outside] cancel  [Backspace] delete",
             Style::default().fg(C_ACCENT),
         )
-    } else if app.active_tab == Tab::Eq
-        && app.has_eq_bands()
-        && app.device_state.mode == crate::protocol::InputMode::Manual
-    {
+    } else if app.can_flatten_eq() {
         Span::styled(
             " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
             Style::default().fg(C_DISABLED),
@@ -680,13 +679,13 @@ fn segmented_span(label: &'static str, active: bool, focused: bool) -> Span<'sta
 }
 
 /// Renders the manual Gain gauge, shared by every model. The locked styling
-/// follows `mv6_gain_locked`, the same flag that makes adjust_focused() ignore ←/→.
+/// follows `App::gain_locked()`, the same check that makes adjust_focused() ignore ←/→.
 fn draw_gain_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::Gain);
     let gain_focused = app.focus == Focus::Gain;
     let gain = app.device_state.gain_tenths;
     let max = app.device_model.max_gain_tenths();
-    let gain_locked = app.device_state.mv6_gain_locked;
+    let gain_locked = app.gain_locked();
     let gauge = Gauge::default()
         .block(
             Block::default()
@@ -3525,6 +3524,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn header_text(app: &App) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| {
+                draw(f, app);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn header_shows_connection_state() {
+        let connected = App::default();
+        assert!(header_text(&connected).contains("[CONNECTED]"));
+
+        let unplugged = App {
+            device_connected: false,
+            ..App::default()
+        };
+        let text = header_text(&unplugged);
+        assert!(text.contains("[DISCONNECTED]"), "{text}");
+        assert!(!text.contains("[CONNECTED]"), "{text}");
+
+        let demo = App {
+            demo_mode: true,
+            device_connected: false,
+            ..App::default()
+        };
+        assert!(header_text(&demo).contains("[DEMO"));
     }
 
     // ── enum_options ──────────────────────────────────────────────────────────

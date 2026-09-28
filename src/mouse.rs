@@ -405,16 +405,19 @@ mod tests {
             );
             assert_eq!(app.device_state.gain_tenths, 0);
             app.device_state.mv6_gain_locked = true;
-            assert!(
-                dispatch(
-                    &mut app,
-                    &hits,
-                    Target::Control(Focus::Gain),
-                    MouseEventKind::ScrollUp
-                )
-                .is_none()
+            let action = dispatch(
+                &mut app,
+                &hits,
+                Target::Control(Focus::Gain),
+                MouseEventKind::ScrollUp,
             );
-            assert_eq!(app.device_state.gain_tenths, 0);
+            if model.has_gain_lock() {
+                assert!(action.is_none());
+                assert_eq!(app.device_state.gain_tenths, 0);
+            } else {
+                assert!(matches!(action, Some(DeviceAction::SetGain(_))));
+                assert_eq!(app.device_state.gain_tenths, model.gain_step_tenths());
+            }
         }
     }
 

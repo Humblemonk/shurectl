@@ -201,7 +201,8 @@ impl PresetSlot {
     }
 
     /// Apply this preset's settings onto a `DeviceState`, preserving
-    /// hardware-identity fields (`serial_number`).
+    /// hardware-identity fields (`serial_number`). Presets are hand-editable, so
+    /// bounded values are clamped to the range the controls work in.
     pub fn apply_to_device_state(&self, state: &mut DeviceState) {
         state.gain_tenths = gain_db_to_tenths(self.gain_db);
         state.mode = InputMode::from(self.mode);
@@ -211,21 +212,24 @@ impl PresetSlot {
         state.auto_tone = AutoTone::from(self.auto_tone);
         state.auto_gain = AutoGain::from(self.auto_gain);
         state.phantom_power = self.phantom_power;
-        state.monitor_mix = self.monitor_mix;
+        state.monitor_mix = self.monitor_mix.min(100);
         state.limiter_enabled = self.limiter_enabled;
         state.compressor = CompressorPreset::from(self.compressor);
         state.eq_enabled = self.eq_enabled;
-        state.eq_bands = self.eq_bands.map(EqBand::from);
+        state.eq_bands = self.eq_bands.map(|band| EqBand {
+            gain_db: band.gain_db.clamp(-80, 60),
+            ..EqBand::from(band)
+        });
         state.denoiser_enabled = self.denoiser_enabled;
         state.popper_stopper_enabled = self.popper_stopper_enabled;
         state.mute_btn_disabled = self.mute_btn_disabled;
-        state.tone = self.tone;
+        state.tone = self.tone.clamp(-10, 10);
         state.mv6_gain_locked = self.mv6_gain_locked;
-        state.playback_mix = self.playback_mix;
+        state.playback_mix = self.playback_mix.min(100);
         state.reverb_on_output = self.reverb_on_output;
         state.reverb_monitoring = self.reverb_monitoring;
         state.reverb_type = ReverbType::from(self.reverb_type);
-        state.reverb_intensity = self.reverb_intensity;
+        state.reverb_intensity = self.reverb_intensity.min(100);
         state.led_behavior = LedBehavior::from(self.led_behavior);
         state.led_brightness = LedBrightness::from(self.led_brightness);
         state.led_live_theme = LedLiveTheme::from(self.led_live_theme);
@@ -1287,5 +1291,28 @@ mod tests {
         state.auto_tone = AutoTone::Dark;
         let s = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv7);
         assert_eq!(s, "Auto · Far · Dark");
+    }
+
+    /// Presets are hand-editable; out-of-range values must not reach the UI,
+    /// where `monitor_mix = 255` overflowed on the next ← / →.
+    #[test]
+    fn apply_to_device_state_clamps_hand_edited_values() {
+        let mut slot = PresetSlot::from_device_state("edited", &DeviceState::default());
+        slot.monitor_mix = 255;
+        slot.playback_mix = 150;
+        slot.reverb_intensity = 101;
+        slot.tone = 100;
+        slot.eq_bands[0].gain_db = 1000;
+        slot.eq_bands[1].gain_db = -1000;
+
+        let mut state = DeviceState::default();
+        slot.apply_to_device_state(&mut state);
+
+        assert_eq!(state.monitor_mix, 100);
+        assert_eq!(state.playback_mix, 100);
+        assert_eq!(state.reverb_intensity, 100);
+        assert_eq!(state.tone, 10);
+        assert_eq!(state.eq_bands[0].gain_db, 60);
+        assert_eq!(state.eq_bands[1].gain_db, -80);
     }
 }

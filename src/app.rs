@@ -150,6 +150,9 @@ pub struct App {
     pub eq_selected_band: usize,
     pub should_quit: bool,
     pub demo_mode: bool,
+    /// False after a HID read or write failed (the device was unplugged), until
+    /// a refresh reads from it or reconnects. Meaningless in demo mode.
+    pub device_connected: bool,
     pub help_visible: bool,
     /// Which device model is connected. Drives which controls are shown.
     pub device_model: DeviceModel,
@@ -183,6 +186,7 @@ impl Default for App {
             eq_selected_band: 0,
             should_quit: false,
             demo_mode: false,
+            device_connected: true,
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
@@ -248,6 +252,38 @@ impl App {
         match self.device_model {
             DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => true,
             DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
+        }
+    }
+
+    /// Returns true when `f` flattens the EQ: on the EQ tab, with the 5 bands on
+    /// screen. Gen 2 in Auto mode shows the tone slider instead, and Gen 1 in
+    /// Auto locks the tab, so the bands are only editable in Manual mode.
+    pub fn can_flatten_eq(&self) -> bool {
+        self.active_tab == Tab::Eq
+            && self.has_eq_bands()
+            && self.device_state.mode == InputMode::Manual
+    }
+
+    /// Returns true when Gain Lock is on and the model has one. A lock flag from
+    /// a preset saved on another model is ignored, since there is no control
+    /// here to turn it off.
+    pub fn gain_locked(&self) -> bool {
+        self.device_model.has_gain_lock() && self.device_state.mv6_gain_locked
+    }
+
+    /// Keep the view valid after the device state changed underneath it, such as
+    /// a refresh that finds the mode switched. Leave a tab that is now locked, and
+    /// re-pick focus when the mode changed on a tab whose controls depend on it.
+    /// Without this, ←/→ would still adjust controls no longer on screen. The
+    /// Presets tab keeps its focus, so loading a preset leaves you on its slot.
+    pub fn settle_focus(&mut self, mode_before: InputMode) {
+        if self.is_tab_locked(self.active_tab) {
+            self.active_tab = Tab::Main;
+            self.reset_focus_for_tab();
+        } else if self.device_state.mode != mode_before
+            && matches!(self.active_tab, Tab::Main | Tab::Eq | Tab::Dynamics)
+        {
+            self.reset_focus_for_tab();
         }
     }
 
@@ -782,7 +818,7 @@ impl App {
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
         match self.focus {
             Focus::Gain => {
-                if self.device_state.mv6_gain_locked {
+                if self.gain_locked() {
                     return None;
                 }
                 let step = i32::from(self.device_model.gain_step_tenths());
@@ -953,13 +989,11 @@ impl App {
                 None
             }
             Focus::EqGain(b) => {
-                let step: i32 = match self.device_model {
-                    DeviceModel::Mvx2uGen2 => 5, // 0.5 dB steps
-                    _ => 20,                     // 2.0 dB steps
-                };
+                let model = self.device_model;
                 let band = &mut self.device_state.eq_bands[b];
-                let new_gain = ((band.gain_db as i32) + delta * step).clamp(-80, 60) as i16;
-                band.gain_db = new_gain;
+                let moved = i32::from(band.gain_db) + delta * i32::from(model.eq_step_tenths());
+                // Land on the step grid even if the device reported an off-grid value.
+                band.gain_db = model.snap_eq_gain_tenths(moved.clamp(-80, 60) as i16);
                 Some(DeviceAction::SetEqBandGain(b, band.gain_db))
             }
             _ => None,
@@ -976,8 +1010,6 @@ impl App {
                 };
                 self.focus = match (self.device_model, self.device_state.mode) {
                     (DeviceModel::Mvx2u | DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
-                    // MV7+ has no focusable gain — always move to Mute
-                    (DeviceModel::Mv7Plus, _) => Focus::Mute,
                     (_, InputMode::Manual) => Focus::Gain,
                     (_, InputMode::Auto) => Focus::Mute,
                 };
@@ -1202,6 +1234,9 @@ pub enum DeviceAction {
     /// Zero all 5 EQ band gains. Gen 1: leaves EQ master and per-band enables untouched.
     FlattenEq,
     Refresh,
+    /// Open the device again after it was unplugged and plugged back in, and
+    /// load its state. Sent by main's presence poll rather than a key.
+    Reconnect,
     /// Send a factory reset command to the MV7+. Device disconnects immediately after.
     FactoryReset,
 }
@@ -2450,6 +2485,126 @@ mod tests {
         assert!(matches!(
             app.adjust_focused(1),
             Some(DeviceAction::SetMv6MonitorMix(1))
+        ));
+    }
+
+    #[test]
+    fn gain_lock_flag_only_locks_models_with_gain_lock() {
+        let locked_state = DeviceState {
+            mode: InputMode::Manual,
+            mv6_gain_locked: true,
+            gain_tenths: 200,
+            ..DeviceState::default()
+        };
+        for (model, locked) in [
+            (DeviceModel::Mv6, true),
+            (DeviceModel::Mvx2uGen2, true),
+            (DeviceModel::Mvx2u, false),
+            (DeviceModel::Mv7, false),
+            (DeviceModel::Mv7Plus, false),
+        ] {
+            let mut app = App {
+                device_model: model,
+                device_state: locked_state.clone(),
+                focus: Focus::Gain,
+                ..App::default()
+            };
+            assert_eq!(app.gain_locked(), locked, "{model:?}");
+            assert_eq!(app.adjust_focused(1).is_none(), locked, "{model:?}");
+        }
+    }
+
+    /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to Mute.
+    #[test]
+    fn mv7plus_mode_toggle_focuses_gain_in_manual_and_mute_in_auto() {
+        let mut app = App {
+            device_model: DeviceModel::Mv7Plus,
+            focus: Focus::Mode,
+            ..App::default()
+        };
+        app.toggle_focused();
+        assert_eq!(app.device_state.mode, InputMode::Manual);
+        assert_eq!(app.focus, Focus::Gain);
+
+        app.focus = Focus::Mode;
+        app.toggle_focused();
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        assert_eq!(app.focus, Focus::Mute);
+    }
+
+    /// A refresh that finds a Gen 1 in Auto must not leave the EQ tab's
+    /// controls live behind its lock notice.
+    #[test]
+    fn settle_focus_leaves_a_tab_that_became_locked() {
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqGain(0),
+            device_state: DeviceState {
+                mode: InputMode::Auto,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        app.settle_focus(InputMode::Manual);
+        assert_eq!(app.active_tab, Tab::Main);
+        assert_eq!(app.focus, Focus::Mode);
+        assert!(app.adjust_focused(1).is_none());
+    }
+
+    /// Gain is hidden in Auto, so focus must not stay on it for ←/→ to adjust.
+    #[test]
+    fn settle_focus_repicks_focus_when_the_mode_changed_under_it() {
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            focus: Focus::Gain,
+            device_state: DeviceState {
+                mode: InputMode::Auto,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        app.settle_focus(InputMode::Manual);
+        assert_eq!(app.active_tab, Tab::Main);
+        assert_eq!(app.focus, Focus::Mode);
+    }
+
+    #[test]
+    fn settle_focus_keeps_focus_when_nothing_changed_or_on_presets() {
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            focus: Focus::MonitorMix,
+            device_state: DeviceState {
+                mode: InputMode::Manual,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        app.settle_focus(InputMode::Manual);
+        assert_eq!(app.focus, Focus::MonitorMix);
+
+        app.active_tab = Tab::Presets;
+        app.focus = Focus::PresetActions(2);
+        app.device_state.mode = InputMode::Auto;
+        app.settle_focus(InputMode::Manual);
+        assert_eq!(app.focus, Focus::PresetActions(2));
+    }
+
+    #[test]
+    fn eq_gain_adjust_lands_back_on_the_gen1_grid() {
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqGain(0),
+            ..App::default()
+        };
+        app.device_state.eq_bands[0].gain_db = 15; // 1.5 dB, from a Gen 2 preset
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetEqBandGain(0, 40))
+        ));
+        app.device_state.eq_bands[0].gain_db = 15;
+        assert!(matches!(
+            app.adjust_focused(-1),
+            Some(DeviceAction::SetEqBandGain(0, 0))
         ));
     }
 }

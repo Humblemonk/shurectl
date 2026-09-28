@@ -1,6 +1,7 @@
 # shurectl
 
-An open-source terminal UI configurator for Shure USB audio interfaces and microphones on Linux, macOS, and Windows. Replaces the Windows/Mac-only ShurePlus MOTIV Desktop app.
+An open-source terminal UI for configuring Shure USB microphones and audio interfaces on Linux,
+macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app.
 
 ![Project Example Screenshot](images/shurectl.png)
 
@@ -17,52 +18,57 @@ An open-source terminal UI configurator for Shure USB audio interfaces and micro
 
 ## Features
 
-### All Devices
-- **Gain Control** — Auto Level / Manual toggle; manual gain in 1 dB steps (1.5 dB on the MV7)
-- **Mic Mute** — toggle mute
-- **Monitor Mix** — mic vs. playback blend slider
-- **Compressor** — Off / Light / Medium / Heavy
-- **High-Pass Filter** — Off / 75 Hz / 150 Hz (not on the MV7)
+On every supported device:
+
 - **Real-time Level Meter** — dBFS input meter with peak-hold display
-- **4 Preset Slots** — save and load named presets stored as TOML in `~/.config/shurectl/presets/`
+- **4 Preset Slots** — save and load named presets stored as TOML files (see [Presets](#presets))
 - **Device Info** — factory serial number, device name, and firmware version
-- **Demo mode** — run without a device plugged in (`--demo`)
+- **Command-line mute** — toggle mute without opening the TUI (`--mute`)
+- **Demo mode** — explore the UI without a device plugged in (`--demo`)
 
-### MVX2U Gen 1
-- **Gain range** — 0–60 dB
-- **Phantom Power** — 48V on/off; warns if enabled when muting ribbon mics
-- **5-band Parametric EQ** — per-band enable, gain (−8 to +6 dB in 2 dB steps)
-- **Limiter** — enable/disable
-- **Panel Lock** — lock the physical panel controls on the device
-- **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright), gain environment (Quiet/Normal/Loud)
+Device controls by model:
 
-### MVX2U Gen 2 -  Builds on Gen 1 features with the following
-- **5-band Parametric EQ** — gain (−8 to +6 dB in 0.5 dB steps)
-- **Tone** — Dark / Natural / Bright
-- **Real-time Denoiser** — enable/disable
-- **Popper Stopper** — enable/disable
-- **Gain Lock** — hardware freeze of the gain control (Manual mode only)
+✓ = available · **Manual** / **Auto** = only in that mode · — = not on this device
 
-### MV6
-- **Gain range** — 0–36 dB
-- **Tone** — Dark / Natural / Bright
-- **Real-time Denoiser** — enable/disable
-- **Popper Stopper** — enable/disable
-- **Mute Button Disable** — prevent accidental mutes
-- **Gain Lock** — hardware freeze of the gain control (Manual mode only)
+| Control | MVX2U Gen 1 | MVX2U Gen 2 | MV6 | MV7 | MV7+ |
+|---------|:-----------:|:-----------:|:---:|:---:|:----:|
+| **Main tab** | | | | | |
+| Mode (Auto Level / Manual) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Mute | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Gain | Manual, 0–60 dB | Manual, 0–60 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB |
+| Gain Lock | — | Manual | Manual | — | — |
+| Monitor Mix (mic ↔ playback, 0–100%) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Playback Mix (second mix, independent of Monitor Mix) | — | — | — | — | ✓ |
+| Phantom Power (48V) | ✓ | ✓ | — | — | — |
+| Config Lock | ✓ | — | — | ✓ | — |
+| Mic Position (Near / Far) | Auto | — | — | Auto | — |
+| Auto Tone (Dark / Natural / Bright) | Auto | — | — | Auto | — |
+| Gain Environment (Quiet / Normal / Loud) | Auto | — | — | — | — |
+| **EQ tab** | | | | | |
+| 5-band Parametric EQ (−8 to +6 dB) | Manual, 2 dB steps | Manual, 0.5 dB steps | — | — | — |
+| Tone (Dark ↔ Natural ↔ Bright slider, 10% steps) | — | Auto | ✓ | — | ✓ |
+| EQ Preset (Flat / High Pass / Presence Boost / both) | — | — | — | Manual | — |
+| **Dynamics tab** | | | | | |
+| Limiter | Manual | Manual | — | — | ✓ |
+| Compressor (Off / Light / Medium / Heavy) | Manual | Manual | — | Manual | ✓ |
+| High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | — | ✓ |
+| Denoiser | — | ✓ | ✓ | — | ✓ |
+| Popper Stopper | — | ✓ | ✓ | — | ✓ |
+| Mute Button Disable | — | — | ✓ | — | ✓ |
+| **Other tabs** | | | | | |
+| Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | ✓ |
+| LED Panel | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
+| Factory Reset (Info tab) | — | — | — | — | ✓ |
 
-### MV7
-- **Gain range** — 0–36 dB in 1.5 dB steps (the hardware's own step size)
-- **Auto Level controls** — mic position (Near/Far), tone (Dark/Natural/Bright)
-- **EQ** — Flat / High Pass / Presence Boost / High Pass + Presence Boost
-- **Panel Lock** — lock the touch panel
-- **LED Panel** — Live Meter on/off, Night Mode (dimmed LEDs) on/off
-- EQ and Dynamics are managed by the mic in Auto Level mode, as on the MVX2U Gen 1
-- The limiter MOTIV shows for the MV7 is processing inside the MOTIV app, not a mic setting, so shurectl does not offer it
+Notes:
 
-### MV7+ - Builds on MV6 features with the following
-- **Reverb** — output and monitor enable/disable; Type: Plate / Hall / Studio; Intensity: 0–100%
-- **LED Panel** — Behavior (Live / Pulsing / Solid), Brightness (Low / Med / High / Max), theme and custom RGB color per mode
+- Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
+- On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
+  mode, so those tabs are locked until you switch to Manual.
+- On the MVX2U Gen 1, the EQ also has a master enable and a per-band enable.
+- The limiter MOTIV shows for the MV7 is processing inside the MOTIV app, not a mic
+  setting, so shurectl does not offer it.
+- Factory Reset asks for confirmation, and the mic disconnects afterwards.
 
 ---
 
@@ -78,14 +84,16 @@ The package installs the udev rules to `/usr/lib/udev/rules.d/62-shure.rules` fo
 the [Linux setup step](#linux--udev-rules-required-for-non-root-access) below can be
 skipped — **replug the device after installing** so udev applies the new rules to it.
 
-### Via Homebrew (macOS)
+### Via Homebrew (macOS / Linux)
 
 ```bash
 brew install humblemonk/shurectl/shurectl
 ```
 
 Updates arrive through `brew upgrade` like any other formula. The formula builds from
-source, so the first install pulls in a Rust toolchain and takes a minute or two.
+source, so the first install pulls in a Rust toolchain and takes a minute or two. On Linux,
+Homebrew can't install system udev rules, so you still need the
+[Linux setup step](#linux--udev-rules-required-for-non-root-access) below.
 
 ### Via cargo install
 
@@ -175,7 +183,7 @@ Windows grants user-space HID access out of the box via the `setupapi` backend �
 ```bash
 shurectl                         # Connect to first detected device and launch TUI
 shurectl --device <path>         # Connect to a specific device (use --list to find paths)
-shurectl --demo                  # Run without a device (explore the UI)
+shurectl --demo                  # Run without a device (simulates an MVX2U Gen 1)
 shurectl --demo mv7              # Demo a specific model: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus
 shurectl --list                  # List detected Shure devices and exit
 shurectl --mute                  # Toggle mute without launching the TUI
@@ -193,10 +201,10 @@ shurectl --mute off              # Unmute
 | `←` / `h` | Decrease value |
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
-| `f` | Flatten EQ (zero all bands) — EQ tab, Gen 1 and Gen 2 only |
-| `r` | Refresh state from device |
+| `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 only |
+| `r` | Refresh state from device (reconnects right away if it was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
-| `d` | Delete preset (on Presets tab, focused slot) |
+| `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |
 | `?` | Toggle help overlay |
 | `q` / `Ctrl+C` | Quit |
 
@@ -226,25 +234,25 @@ selection; many terminals let you hold **Shift** to select text instead.
 
 ## Presets
 
-Presets are stored as human-readable TOML files in `~/.config/shurectl/presets/`:
+Presets are stored as human-readable TOML files in a `shurectl/presets/` folder under your
+platform's config directory:
 
-```
-~/.config/shurectl/presets/
-├── preset_1.toml
-├── preset_2.toml
-├── preset_3.toml
-└── preset_4.toml
-```
+| Platform | Location |
+|----------|----------|
+| Linux | `~/.config/shurectl/presets/` |
+| macOS | `~/Library/Application Support/shurectl/presets/` |
+| Windows | `%APPDATA%\shurectl\presets\` |
 
-Each file captures all configurable DSP settings (gain, mode, EQ, dynamics, monitor mix, etc.)
-but not hardware-identity fields like serial number or firmware version. Files are hand-editable.
+Each slot is its own file, `preset_1.toml` through `preset_4.toml`. A file captures all
+configurable DSP settings (gain, mode, EQ, dynamics, monitor mix, etc.) but not
+hardware-identity fields like serial number or firmware version. Files are hand-editable.
 
 On the **Presets tab**:
 - Navigate to a slot with `↑`/`↓`
-- Press `Enter` on the name field to rename it (type, then `Enter` to confirm or `Esc` to cancel)
+- Press `Enter` on the name field of a saved preset to rename it (type, then `Enter` to save or `Esc` to cancel)
 - Press `Enter` on the actions row to load a filled preset — all settings are applied to the device immediately
 - Press `s` to save the current device state into the focused slot
-- Press `d` to delete the focused slot
+- Press `d` on the actions row to delete the focused slot
 
 ---
 
@@ -253,8 +261,19 @@ On the **Presets tab**:
 **"Cannot open device"** — device not found or a permissions issue.
 Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS and Windows, ensure no other software (e.g. ShurePlus MOTIV) has exclusive access to the device.
 
-**Gain slider is greyed out in Auto Level mode** — This is correct hardware behaviour;
-the device ignores gain commands in Auto Level mode. Switch to Manual mode first.
+**Header stays `[DISCONNECTED]` with the device plugged in** — shurectl can see the
+device but cannot open it. Check the status bar for the reason, then follow "Cannot open
+device" above. With two identical devices that report no USB serial number, restart
+shurectl with `--device`.
+
+**"Ignored an unrecognised reply" in the status bar** — the device answered with a setting
+shurectl doesn't know, often after a firmware update. Everything else loaded normally.
+Please open an issue with the message and the firmware version from the Info tab.
+
+**No gain slider in Auto Level mode** — This is correct hardware behaviour; the device
+sets its own gain in Auto Level mode, so the slider is hidden. Switch to Manual mode first.
+
+**Gain won't change** — On the MVX2U Gen 2 and MV6, check that Gain Lock is off.
 
 **MV7: MOTIV stops showing the mic's settings** — The MV7 has a single command channel
 that MOTIV and shurectl share. Quit MOTIV before using shurectl with an MV7; if MOTIV
@@ -278,5 +297,9 @@ repository.
 
 Protocol implementation is based on publicly documented USB HID packet captures
 by PennRobotics (shux project, Apache 2.0) as well as author's own usbmon captures.
+
+shurectl does not update device firmware. The firmware-update commands are intentionally
+left out of its protocol implementation, and it never sends them. To update firmware, use
+ShurePlus MOTIV; the Info tab shows the firmware version your device is running.
 
 shurectl is not affiliated with or endorsed by Shure Incorporated.
