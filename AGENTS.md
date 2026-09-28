@@ -61,6 +61,14 @@ src/
 **Demo mode:** `--demo` runs with `device: None`, and `send_if_connected()` silently succeeds.
 State changes still apply; only HID writes are skipped. Demo mode must stay fully navigable.
 
+**Connection state:** `run_event_loop()` calls `poll_presence()` every 2 s. It checks the OS
+device list only (`ShureDevice::is_present()`), with no HID traffic. A missing device shows
+`[DISCONNECTED]` in the header; once it is back (after one more poll, to let it boot) it is
+reconnected through `DeviceAction::Reconnect`, so `apply_action()` stays the only writer.
+`r` refreshes and reconnects on demand. Only a `device::Disconnected` error (HID read/write
+failure, or the device not found again) marks the device disconnected; a device that is
+present but refuses or ignores a command stays connected.
+
 ## Adding a New Command
 
 Follow this sequence without skipping steps:
@@ -87,8 +95,8 @@ Follow this sequence without skipping steps:
   booleans and enum cycling
 - Both return `Option<DeviceAction>`. `None` means a UI-only change with no HID write
 - Preset name editing lives in `main.rs::handle_key()`, not `toggle_focused()`. While
-  `editing_preset_name` is true, chars append, Enter commits (`PersistPresetName`), and Esc
-  cancels
+  `editing_preset_name` is true, chars append (including `q`, which only quits outside
+  editing), and Enter or Esc commits (`PersistPresetName`). There is no cancel
 
 ## Cross-Device UI Consistency
 
@@ -149,7 +157,8 @@ Shared across all models unless the hardware makes it impossible:
 
 - No `unwrap()`/`expect()` in production paths; no `panic!()` outside tests; no
   `todo!()`/`unimplemented!()` in final code
-- No `println!()`. Use `eprintln!()` only at startup, and the TUI status bar after that
+- No `println!()`. Use `eprintln!()` only at startup, and the TUI status bar after that.
+  State readback collects unrecognised replies in `Readback::unrecognised` for this
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
 - Exhaustive match arms; no wildcard `_` that silently swallows variants

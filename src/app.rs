@@ -150,6 +150,9 @@ pub struct App {
     pub eq_selected_band: usize,
     pub should_quit: bool,
     pub demo_mode: bool,
+    /// False after a HID read or write failed (the device was unplugged), until
+    /// a refresh reads from it or reconnects. Meaningless in demo mode.
+    pub device_connected: bool,
     pub help_visible: bool,
     /// Which device model is connected. Drives which controls are shown.
     pub device_model: DeviceModel,
@@ -181,6 +184,7 @@ impl Default for App {
             eq_selected_band: 0,
             should_quit: false,
             demo_mode: false,
+            device_connected: true,
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
@@ -246,6 +250,22 @@ impl App {
             DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => true,
             DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
         }
+    }
+
+    /// Returns true when `f` flattens the EQ: on the EQ tab, with the 5 bands on
+    /// screen. Gen 2 in Auto mode shows the tone slider instead, and Gen 1 in
+    /// Auto locks the tab, so the bands are only editable in Manual mode.
+    pub fn can_flatten_eq(&self) -> bool {
+        self.active_tab == Tab::Eq
+            && self.has_eq_bands()
+            && self.device_state.mode == InputMode::Manual
+    }
+
+    /// Returns true when Gain Lock is on and the model has one. A lock flag from
+    /// a preset saved on another model is ignored, since there is no control
+    /// here to turn it off.
+    pub fn gain_locked(&self) -> bool {
+        self.device_model.has_gain_lock() && self.device_state.mv6_gain_locked
     }
 
     /// Returns true when a tab should be inaccessible given the current device state.
@@ -773,7 +793,7 @@ impl App {
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
         match self.focus {
             Focus::Gain => {
-                if self.device_state.mv6_gain_locked {
+                if self.gain_locked() {
                     return None;
                 }
                 let step = i32::from(self.device_model.gain_step_tenths());
@@ -967,8 +987,6 @@ impl App {
                 };
                 self.focus = match (self.device_model, self.device_state.mode) {
                     (DeviceModel::Mvx2u | DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
-                    // MV7+ has no focusable gain — always move to Mute
-                    (DeviceModel::Mv7Plus, _) => Focus::Mute,
                     (_, InputMode::Manual) => Focus::Gain,
                     (_, InputMode::Auto) => Focus::Mute,
                 };
@@ -1193,6 +1211,9 @@ pub enum DeviceAction {
     /// Zero all 5 EQ band gains. Gen 1: leaves EQ master and per-band enables untouched.
     FlattenEq,
     Refresh,
+    /// Open the device again after it was unplugged and plugged back in, and
+    /// load its state. Sent by main's presence poll rather than a key.
+    Reconnect,
     /// Send a factory reset command to the MV7+. Device disconnects immediately after.
     FactoryReset,
 }
@@ -2442,5 +2463,49 @@ mod tests {
             app.adjust_focused(1),
             Some(DeviceAction::SetMv6MonitorMix(1))
         ));
+    }
+
+    #[test]
+    fn gain_lock_flag_only_locks_models_with_gain_lock() {
+        let locked_state = DeviceState {
+            mode: InputMode::Manual,
+            mv6_gain_locked: true,
+            gain_tenths: 200,
+            ..DeviceState::default()
+        };
+        for (model, locked) in [
+            (DeviceModel::Mv6, true),
+            (DeviceModel::Mvx2uGen2, true),
+            (DeviceModel::Mvx2u, false),
+            (DeviceModel::Mv7, false),
+            (DeviceModel::Mv7Plus, false),
+        ] {
+            let mut app = App {
+                device_model: model,
+                device_state: locked_state.clone(),
+                focus: Focus::Gain,
+                ..App::default()
+            };
+            assert_eq!(app.gain_locked(), locked, "{model:?}");
+            assert_eq!(app.adjust_focused(1).is_none(), locked, "{model:?}");
+        }
+    }
+
+    /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to Mute.
+    #[test]
+    fn mv7plus_mode_toggle_focuses_gain_in_manual_and_mute_in_auto() {
+        let mut app = App {
+            device_model: DeviceModel::Mv7Plus,
+            focus: Focus::Mode,
+            ..App::default()
+        };
+        app.toggle_focused();
+        assert_eq!(app.device_state.mode, InputMode::Manual);
+        assert_eq!(app.focus, Focus::Gain);
+
+        app.focus = Focus::Mode;
+        app.toggle_focused();
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        assert_eq!(app.focus, Focus::Mute);
     }
 }

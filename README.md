@@ -191,6 +191,19 @@ shurectl --mute on               # Mute
 shurectl --mute off              # Unmute
 ```
 
+### Connection Status
+
+The header shows whether shurectl can reach the device:
+
+| Header | Meaning |
+|--------|---------|
+| `[CONNECTED]` (green) | The device is plugged in and answering |
+| `[DISCONNECTED]` (red) | The device was unplugged or its USB connection failed. shurectl checks every 2 seconds and reconnects on its own a few seconds after it is plugged back in; press `r` to reconnect right away |
+| `[DEMO — no device]` | Demo mode: changes are not sent to a device |
+
+Changes made while disconnected are not sent to the device. After reconnecting, shurectl
+reloads the device's settings, so the screen shows what the device actually has.
+
 ### Keyboard Shortcuts
 
 | Key | Action |
@@ -202,7 +215,7 @@ shurectl --mute off              # Unmute
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
 | `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 only |
-| `r` | Refresh state from device |
+| `r` | Refresh state from device (reconnects right away if it was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |
 | `?` | Toggle help overlay |
@@ -238,6 +251,15 @@ On the **Presets tab**:
 
 **"Cannot open device"** — device not found or a permissions issue.
 Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS and Windows, ensure no other software (e.g. ShurePlus MOTIV) has exclusive access to the device.
+
+**Header stays `[DISCONNECTED]` with the device plugged in** — shurectl can see the
+device but cannot open it. Check the status bar for the reason, then follow "Cannot open
+device" above. With two identical devices that report no USB serial number, restart
+shurectl with `--device`.
+
+**"Ignored an unrecognised reply" in the status bar** — the device answered with a setting
+shurectl doesn't know, often after a firmware update. Everything else loaded normally.
+Please open an issue with the message and the firmware version from the Info tab.
 
 **No gain slider in Auto Level mode** — This is correct hardware behaviour; the device
 sets its own gain in Auto Level mode, so the slider is hidden. Switch to Manual mode first.
