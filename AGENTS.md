@@ -56,7 +56,7 @@ src/
 - Raw protocol byte values live *only* in `protocol.rs` as named constants.
 - `shurectl-probe` must never ship to end users via `cargo install` or Homebrew.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
-  the readme legal section).
+  the readme Credits and legal section).
 
 **Demo mode:** `--demo` runs with `device: None`, and `send_if_connected()` silently succeeds.
 State changes still apply; only HID writes are skipped. Demo mode must stay fully navigable.
@@ -85,8 +85,9 @@ Follow this sequence without skipping steps:
 6. `presets.rs`: if it's a DSP setting, add it to `PresetSlot`, `from_device_state()`, and
    `apply_to_device_state()` so presets capture it
 7. `protocol.rs`: roundtrip test for the new packet
-8. `README.md`: update the protocol table and keyboard shortcuts, noting which models support
-   the command if it isn't universal
+8. `README.md`: add a row to the collapsed Device support table (with the models that have
+   it) and update the key table if a shortcut changed. Keep the top of the readme for
+   install and first run; don't add sections there
 
 ## TUI / Focus Model
 
