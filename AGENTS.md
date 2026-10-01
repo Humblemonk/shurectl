@@ -86,7 +86,7 @@ Follow this sequence without skipping steps:
    `apply_to_device_state()` so presets capture it
 7. `protocol.rs`: roundtrip test for the new packet
 8. `README.md`: add a row to the collapsed Device support table (with the models that have
-   it) and update the key table if a shortcut changed. Keep the top of the README for
+   it) and update the key table if a shortcut changed. Keep the top of the readme for
    install and first run; don't add sections there
 
 ## TUI / Focus Model
