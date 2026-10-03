@@ -7,7 +7,7 @@ default-run = "shurectl"
 description = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
 license = "GPL-3.0-only"
 repository = "https://github.com/Humblemonk/shurectl"
-keywords = ["shure", "motiv", "microphone", "usb-hid", "audio-interface"]
+keywords = ["shure", "motiv", "microphone", "tui", "audio-interface"]
 categories = ["command-line-utilities", "hardware-support", "multimedia::audio"]
 
 [[bin]]
