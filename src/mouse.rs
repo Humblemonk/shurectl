@@ -60,9 +60,14 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
     if app.help_visible {
         return None;
     }
-    if app.editing_preset_name {
-        let outside_name = hits.target_at(event.column, event.row)
-            != Some(Target::Control(Focus::PresetName(app.editing_preset_index)));
+    if app.editing_name() {
+        let name_field = if app.editing_device_name {
+            Focus::DeviceName
+        } else {
+            Focus::PresetName(app.editing_preset_index)
+        };
+        let outside_name =
+            hits.target_at(event.column, event.row) != Some(Target::Control(name_field));
         return (left_click && outside_name).then_some(KeyCode::Esc);
     }
     let key = match event.kind {
@@ -541,7 +546,7 @@ mod tests {
         for key in [KeyCode::Enter, KeyCode::Backspace, KeyCode::Char('X')] {
             assert!(crate::handle_key(&mut app, key, KeyModifiers::NONE).is_none());
         }
-        assert_eq!(app.preset_name_draft, "TesX");
+        assert_eq!(app.name_draft, "TesX");
         assert_eq!(app.presets[0].as_ref().unwrap().name, "Test");
         app
     }
@@ -570,7 +575,7 @@ mod tests {
             assert_eq!(key, KeyCode::Esc);
             assert!(crate::handle_key(&mut app, key, KeyModifiers::NONE).is_none());
             assert!(!app.editing_preset_name);
-            assert!(app.preset_name_draft.is_empty());
+            assert!(app.name_draft.is_empty());
             assert_eq!(app.presets[0].as_ref().unwrap().name, "Test");
             assert_eq!(app.presets[1].as_ref().unwrap().name, "Other");
             assert_eq!(app.active_tab, Tab::Presets);
@@ -597,8 +602,32 @@ mod tests {
             assert!(dispatch(&mut app, &hits, Target::Tab(Tab::Main), kind).is_none());
         }
         assert!(app.editing_preset_name);
-        assert_eq!(app.preset_name_draft, "TesX");
+        assert_eq!(app.name_draft, "TesX");
         assert_eq!(app.presets[0].as_ref().unwrap().name, "Test");
+    }
+
+    #[test]
+    fn device_name_row_is_clickable_and_click_outside_cancels_edit() {
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            active_tab: Tab::Info,
+            focus: Focus::DeviceName,
+            ..App::default()
+        };
+        assert_label_target(
+            &app,
+            "Device Name",
+            Target::Control(Focus::DeviceName),
+            false,
+        );
+        app.editing_device_name = true;
+        app.name_draft = String::from("New");
+        let hits = render(&app, 120, 40);
+        assert!(click(&mut app, &hits, Target::Control(Focus::DeviceName)).is_none());
+        assert!(app.editing_device_name, "a click inside keeps editing");
+        assert!(click(&mut app, &hits, Target::Tab(Tab::Main)).is_none());
+        assert!(!app.editing_device_name);
+        assert_eq!(app.device_state.device_name, "Unknown");
     }
 
     #[test]
@@ -606,17 +635,17 @@ mod tests {
         let mut app = editing_preset();
         assert!(crate::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE).is_none());
         assert!(!app.editing_preset_name);
-        assert!(app.preset_name_draft.is_empty());
+        assert!(app.name_draft.is_empty());
         assert_eq!(app.presets[0].as_ref().unwrap().name, "Test");
         crate::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.preset_name_draft, "Test");
+        assert_eq!(app.name_draft, "Test");
         crate::handle_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
         assert!(matches!(
             crate::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
             Some(DeviceAction::PersistPresetName(0))
         ));
         assert!(!app.editing_preset_name);
-        assert!(app.preset_name_draft.is_empty());
+        assert!(app.name_draft.is_empty());
         assert_eq!(app.presets[0].as_ref().unwrap().name, "Test!");
     }
 

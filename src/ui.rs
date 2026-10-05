@@ -231,7 +231,7 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
         (format!("  {}", app.status_message), C_DIM)
     };
 
-    let hint = if app.editing_preset_name {
+    let hint = if app.editing_name() {
         Span::styled(
             " Editing name — [Enter] save  [Esc/click outside] cancel  [Backspace] delete",
             Style::default().fg(C_ACCENT),
@@ -2966,7 +2966,7 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
     let (name_text, border_color, title_style) = match &app.presets[index] {
         Some(slot) => {
             let display = if editing {
-                format!("{}_", app.preset_name_draft) // show cursor
+                format!("{}_", app.name_draft) // show cursor
             } else {
                 slot.name.clone()
             };
@@ -3175,7 +3175,39 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     // firmware are read over HID from the lock-class identity features; each is
     // shown only when the device reported it (otherwise the field stays "Unknown"
     // and the row is hidden), so we never display an empty field.
-    if ds.device_name != "Unknown" {
+    // Where renaming works the row is always shown, so a device with no name
+    // can be given one.
+    if model.has_device_rename() {
+        let focused = app.focus == Focus::DeviceName;
+        let editing = app.editing_device_name;
+        f.control(
+            text_row(border.inner(area), lines.len() as u16),
+            Focus::DeviceName,
+        );
+        let (name, name_style) = if editing {
+            (
+                format!("{}_", app.name_draft), // show cursor
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (ds.device_name.clone(), focused_style(focused))
+        };
+        let hint = if editing {
+            Span::styled(
+                "  [Enter] save  [Esc/click outside] cancel",
+                Style::default().fg(C_ACCENT),
+            )
+        } else if focused {
+            Span::styled("  [Enter] rename", Style::default().fg(C_DIM))
+        } else {
+            Span::raw("")
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Device Name  : ", Style::default().fg(C_DIM)),
+            Span::styled(name, name_style),
+            hint,
+        ]));
+    } else if ds.device_name != "Unknown" {
         lines.push(Line::from(vec![
             Span::styled("  Device Name  : ", Style::default().fg(C_DIM)),
             Span::styled(&*ds.device_name, Style::default().fg(C_TEXT)),

@@ -61,6 +61,8 @@ shurectl --list           # List detected Shure devices
 shurectl --device <path>  # Connect to a specific device from --list
 shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus
 shurectl --mute           # Toggle mute without launching the TUI (or --mute on / --mute off)
+shurectl --mute status    # Print "on" or "off", e.g. for a status bar
+shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
 ```
 
 | Key | Action |
@@ -155,10 +157,11 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | **Other tabs** | | | | | |
 | Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | ✓ |
 | LED Panel | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
+| Rename device (Info tab) | ✓ | ✓ | ✓ | — | ✓ |
 | Factory Reset (Info tab) | — | — | — | — | ✓ |
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
-firmware version), `--mute`, and `--demo`.
+firmware version), `--mute`, `--preset`, and `--demo`.
 
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
