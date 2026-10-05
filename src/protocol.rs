@@ -230,6 +230,18 @@ impl DeviceModel {
     /// Whether the model has a Gain Lock setting (`mv6_gain_locked`). On other
     /// models the flag can still arrive in a preset saved elsewhere, and must
     /// not freeze a gain control that has no lock to undo it.
+    /// Only confirmed on hardware for the Gen 2; see `FEAT_DEVICE_NAME`.
+    pub fn has_device_rename(&self) -> bool {
+        match self {
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7Plus => true,
+            // The MV7's text shell has no device name.
+            DeviceModel::Mv7 => false,
+        }
+    }
+
     pub fn has_gain_lock(&self) -> bool {
         match self {
             DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 => true,
@@ -372,7 +384,13 @@ const FEAT_EQ: [u8; 2] = [0x02, 0x00];
 // string: [len_hi, len_lo, bytes…] where len is a big-endian u16 equal to the
 // whole value length. Confirmed on MVX2U Gen 2 (PID 0x1033); see issue #63.
 /// User-set device name (set in the MOTIV app, persisted on the adapter).
+/// SET is the same lock class and prefix with the GET reply's length-prefixed
+/// value, then CONFIRM. Confirmed on MVX2U Gen 2 by writing candidate formats and
+/// reading the name back; the Gen 1, MV6 and MV7+ (with its 0x00 header) are untested.
 const FEAT_DEVICE_NAME: [u8; 2] = [0x00, 0x12];
+/// Longest device name shurectl writes. The firmware's own limit is unknown;
+/// this stays under a likely 32-byte buffer.
+pub const DEVICE_NAME_MAX_LEN: usize = 31;
 /// Firmware version string, e.g. "1.2.0.6".
 const FEAT_FIRMWARE: [u8; 2] = [0x00, 0x09];
 /// Factory serial number printed on the device and shown in the MOTIV app
@@ -1621,6 +1639,41 @@ pub fn cmd_get_lock(seq: u8) -> Vec<u8> {
 pub fn cmd_get_device_name(seq: u8) -> Vec<u8> {
     let payload = [0x00, FEAT_DEVICE_NAME[0], FEAT_DEVICE_NAME[1]];
     build_packet(seq, &CMD_GET_LOCK, &payload)
+}
+
+/// Whether `c` may appear in a device name: printable ASCII, since the name is
+/// stored as ASCII and other bytes are untested.
+pub fn is_device_name_char(c: char) -> bool {
+    c.is_ascii_graphic() || c == ' '
+}
+
+/// Build a SET packet for the user-set device name (MVX2U Gen 1/Gen 2, MV6).
+/// Must be followed by CONFIRM.
+pub fn cmd_set_device_name(seq: u8, name: &str) -> Vec<u8> {
+    build_packet(seq, &CMD_SET_LOCK, &device_name_payload(name))
+}
+
+/// Like `cmd_set_device_name`, with the 0x00 header every MV7+ SET uses.
+pub fn cmd_set_mv7_device_name(seq: u8, name: &str) -> Vec<u8> {
+    build_packet_hdr0(seq, &CMD_SET_LOCK, &device_name_payload(name))
+}
+
+/// The value mirrors the GET reply: `[len_hi, len_lo, ascii…]`, where the length
+/// counts itself. Characters `is_device_name_char` rejects are dropped and the
+/// name is cut to `DEVICE_NAME_MAX_LEN`.
+fn device_name_payload(name: &str) -> Vec<u8> {
+    let ascii: Vec<u8> = name
+        .chars()
+        .filter(|&c| is_device_name_char(c))
+        .take(DEVICE_NAME_MAX_LEN)
+        .map(|c| c as u8)
+        .collect();
+    // At most 2 + DEVICE_NAME_MAX_LEN, so it always fits a u16.
+    let len = (2 + ascii.len()) as u16;
+    let mut payload = vec![0x00, FEAT_DEVICE_NAME[0], FEAT_DEVICE_NAME[1]];
+    payload.extend_from_slice(&len.to_be_bytes());
+    payload.extend_from_slice(&ascii);
+    payload
 }
 
 /// Build a GET packet for the firmware version string (e.g. "1.2.0.6").
@@ -3913,6 +3966,45 @@ mod tests {
         assert_eq!(&pkt[10..13], &CMD_GET_LOCK, "must use CMD_GET_LOCK");
         assert_eq!(pkt[13], 0x00, "identity payload prefix must be 0x00");
         assert_eq!(&pkt[14..16], &FEAT_DEVICE_NAME);
+    }
+
+    #[test]
+    fn device_name_set_packet_matches_hardware_capture() {
+        // The packet sent to an MVX2U Gen 2 that then read back as "SHURECTL".
+        let mut expected = vec![
+            0x01, 0x1a, 0x11, 0x22, 0x01, 0x03, 0x08, 0x12, 0x70, 0x12, 0x02, 0x02, 0x01, 0x00,
+            0x00, 0x12, 0x00, 0x0a, b'S', b'H', b'U', b'R', b'E', b'C', b'T', b'L', 0xa3, 0x5b,
+        ];
+        expected.resize(PACKET_SIZE, 0x00);
+        assert_eq!(cmd_set_device_name(1, "SHURECTL"), expected);
+    }
+
+    #[test]
+    fn mv7_plus_device_name_set_differs_only_in_header() {
+        let standard = cmd_set_device_name(1, "SHURECTL");
+        let mv7_plus = cmd_set_mv7_device_name(1, "SHURECTL");
+        // Everything before the CRC matches except HDR_CONSTANT at byte 5.
+        let crc_start = usize::from(standard[1]);
+        let mut expected = standard[..crc_start].to_vec();
+        expected[5] = 0x00;
+        assert_eq!(mv7_plus[..crc_start], expected[..]);
+    }
+
+    #[test]
+    fn device_name_set_value_roundtrips_through_get_decoder() {
+        let pkt = cmd_set_device_name(7, "Desk Mic");
+        let value_end = usize::from(pkt[1]);
+        let value = &pkt[16..value_end];
+        assert_eq!(decode_lp_string(value).as_deref(), Some("Desk Mic"));
+    }
+
+    #[test]
+    fn device_name_set_clamps_length_and_characters() {
+        let pkt = cmd_set_device_name(0, &format!("né{}", "A".repeat(40)));
+        assert_eq!(pkt.len(), PACKET_SIZE);
+        let value = &pkt[16..usize::from(pkt[1])];
+        let expected = format!("n{}", "A".repeat(DEVICE_NAME_MAX_LEN - 1));
+        assert_eq!(decode_lp_string(value).as_deref(), Some(expected.as_str()));
     }
 
     #[test]

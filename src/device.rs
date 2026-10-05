@@ -755,6 +755,23 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
+    /// Set the user-set device name. The MV7 has none.
+    pub fn set_device_name(&self, name: &str) -> Result<()> {
+        let pkt = match self.model {
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
+                protocol::cmd_set_device_name(self.next_seq(), name)
+            }
+            DeviceModel::Mv7Plus => protocol::cmd_set_mv7_device_name(self.next_seq(), name),
+            DeviceModel::Mv7 => {
+                return Err(anyhow!(
+                    "Renaming is not available on the {}",
+                    self.model.display_name()
+                ));
+            }
+        };
+        self.send_set(&pkt)
+    }
+
     pub fn set_mv6_gain_lock(&self, locked: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_mv6_gain_lock(self.next_seq(), locked))
     }

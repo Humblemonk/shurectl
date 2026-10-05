@@ -59,6 +59,8 @@ enum MuteAction {
     On,
     /// Unmute the microphone.
     Off,
+    /// Print the current state (`on` or `off`) without changing it.
+    Status,
 }
 
 impl std::str::FromStr for MuteAction {
@@ -69,8 +71,11 @@ impl std::str::FromStr for MuteAction {
             "toggle" => Ok(MuteAction::Toggle),
             "on" => Ok(MuteAction::On),
             "off" => Ok(MuteAction::Off),
+            "status" => Ok(MuteAction::Status),
             other => {
-                anyhow::bail!("unknown mute action \"{other}\". Valid options: toggle, on, off")
+                anyhow::bail!(
+                    "unknown mute action \"{other}\". Valid options: toggle, on, off, status"
+                )
             }
         }
     }
@@ -100,8 +105,14 @@ struct Cli {
 
     /// Set mute state without launching the TUI.
     /// toggle (default): flip current state. on: mute. off: unmute.
+    /// status: print the current state (on or off) without changing it.
     #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION")]
     mute: Option<MuteAction>,
+
+    /// Load a saved preset slot (1-4) onto the device without launching the TUI.
+    #[arg(long, short = 'p', value_name = "SLOT", conflicts_with = "mute",
+          value_parser = clap::value_parser!(u8).range(1..=presets::PRESET_COUNT as i64))]
+    preset: Option<u8>,
 }
 
 fn main() -> Result<()> {
@@ -110,6 +121,10 @@ fn main() -> Result<()> {
     if let Some(action) = cli.mute {
         let path = cli.device.as_deref();
         return cmd_mute(action, path);
+    }
+
+    if let Some(slot_number) = cli.preset {
+        return cmd_preset(slot_number.into(), cli.device.as_deref());
     }
 
     if cli.list {
@@ -248,23 +263,57 @@ fn install_terminal_restore_hook() {
 /// Opens the device (or the specific path if `--device` was given), reads
 /// current state to resolve `Toggle`, then sends a single `set_mute()`.
 /// Prints the resulting state to stdout so the caller can see what happened.
+/// `Status` prints a bare `on`/`off` instead, for status-bar scripts.
 fn cmd_mute(action: MuteAction, device_path: Option<&str>) -> Result<()> {
-    let dev = match device_path {
-        Some(path) => ShureDevice::open_path(path),
-        None => ShureDevice::open(),
-    }
-    .context("Could not open device")?;
+    let dev = open_cli_device(device_path)?;
+    let read_muted = || -> Result<bool> {
+        Ok(dev
+            .get_state()
+            .context("Could not read device state")?
+            .state
+            .muted)
+    };
 
-    let muted = if action == MuteAction::Toggle {
-        let readback = dev.get_state().context("Could not read device state")?;
-        !readback.state.muted
-    } else {
-        action == MuteAction::On
+    let muted = match action {
+        MuteAction::On => true,
+        MuteAction::Off => false,
+        MuteAction::Toggle => !read_muted()?,
+        MuteAction::Status => {
+            println!("{}", if read_muted()? { "on" } else { "off" });
+            return Ok(());
+        }
     };
 
     dev.set_mute(muted).context("Could not set mute")?;
     println!("Mute → {}", if muted { "ON" } else { "OFF" });
     Ok(())
+}
+
+/// Load preset slot `slot_number` (1-based) onto the device without launching the TUI.
+///
+/// Reads the current state first so settings the preset doesn't cover keep
+/// their values, then sends everything the same way the Presets tab does.
+fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
+    let slot = presets::load_preset(slot_number - 1)?
+        .with_context(|| format!("Preset slot {slot_number} is empty."))?;
+    let dev = open_cli_device(device_path)?;
+    let model = dev.model;
+    let mut state = dev
+        .get_state()
+        .context("Could not read device state")?
+        .state;
+    apply_preset_to_state(&slot, &mut state, model);
+    apply_preset_to_device(&Some(dev), &state, model).context("Could not load preset")?;
+    println!("Loaded \"{}\".", slot.name);
+    Ok(())
+}
+
+fn open_cli_device(device_path: Option<&str>) -> Result<ShureDevice> {
+    match device_path {
+        Some(path) => ShureDevice::open_path(path),
+        None => ShureDevice::open(),
+    }
+    .context("Could not open device")
 }
 
 /// Parse a `--demo` model string into a `DeviceModel`.
@@ -423,14 +472,28 @@ fn run_event_loop(
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {
-    // ── Preset name editing mode ──────────────────────────────────────────────
+    // ── Preset or device name editing mode ────────────────────────────────────
     // Handled before the quit keys so `q` can be typed in a name. Ctrl+C is
     // ignored while editing, as before.
-    if app.editing_preset_name {
+    if app.editing_name() {
+        let (max_len, device_name) = if app.editing_device_name {
+            (protocol::DEVICE_NAME_MAX_LEN, true)
+        } else {
+            (40, false)
+        };
         match code {
+            KeyCode::Enter if device_name => {
+                app.editing_device_name = false;
+                let name = std::mem::take(&mut app.name_draft);
+                if name.is_empty() {
+                    app.set_err("The device name can't be empty.");
+                } else {
+                    return Some(DeviceAction::RenameDevice(name));
+                }
+            }
             KeyCode::Enter => {
                 app.editing_preset_name = false;
-                let name = std::mem::take(&mut app.preset_name_draft);
+                let name = std::mem::take(&mut app.name_draft);
                 let i = app.editing_preset_index;
                 if let Some(slot) = &mut app.presets[i] {
                     slot.name = name;
@@ -439,15 +502,18 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
             KeyCode::Esc => {
                 app.editing_preset_name = false;
-                app.preset_name_draft.clear();
+                app.editing_device_name = false;
+                app.name_draft.clear();
             }
             KeyCode::Backspace => {
-                app.preset_name_draft.pop();
+                app.name_draft.pop();
             }
             KeyCode::Char(c)
-                if !mods.contains(KeyModifiers::CONTROL) && app.preset_name_draft.len() < 40 =>
+                if !mods.contains(KeyModifiers::CONTROL)
+                    && app.name_draft.len() < max_len
+                    && (!device_name || protocol::is_device_name_char(c)) =>
             {
-                app.preset_name_draft.push(c);
+                app.name_draft.push(c);
             }
             _ => {}
         }
@@ -512,9 +578,21 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 && let Some(slot) = &app.presets[i]
             {
                 // Keep an independent draft so cancelling never changes the preset.
-                app.preset_name_draft.clone_from(&slot.name);
+                app.name_draft.clone_from(&slot.name);
                 app.editing_preset_name = true;
                 app.editing_preset_index = i;
+                return None;
+            }
+            if app.focus == app::Focus::DeviceName {
+                // Only focusable on models that support renaming.
+                if app.device_model.has_device_rename() {
+                    // An independent draft, so cancelling never changes the name.
+                    app.name_draft = match app.device_state.device_name.as_str() {
+                        "Unknown" => String::new(),
+                        name => name.to_string(),
+                    };
+                    app.editing_device_name = true;
+                }
                 return None;
             }
             if app.focus == app::Focus::FactoryReset {
@@ -807,21 +885,7 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
         }
         DeviceAction::LoadPreset(i) => {
             if let Some(slot) = &app.presets[*i].clone() {
-                slot.apply_to_device_state(&mut app.device_state);
-                // Show the gain and EQ the device will actually get: presets are
-                // shared across models, so one saved elsewhere may be out of
-                // range or off this model's step grid.
-                let model = app.device_model;
-                app.device_state.gain_tenths = model.snap_gain_tenths(app.device_state.gain_tenths);
-                for band in &mut app.device_state.eq_bands {
-                    band.gain_db = model.snap_eq_gain_tenths(band.gain_db);
-                }
-                // A lock flag from a model with Gain Lock would sit hidden here
-                // and be saved into this model's presets, then lock the gain
-                // wherever one of those is loaded.
-                if !app.device_model.has_gain_lock() {
-                    app.device_state.mv6_gain_locked = false;
-                }
+                apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
                 apply_preset_to_device(device, &app.device_state, app.device_model)
                     .and_then(|()| resync_mv7_state(app, device))
@@ -855,6 +919,11 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                 Ok(())
             }
         }
+        DeviceAction::RenameDevice(name) => send_if_connected(device, |d| d.set_device_name(name))
+            .map(|()| {
+                app.device_state.device_name.clone_from(name);
+                app.set_ok(format!("Renamed device to \"{name}\"."));
+            }),
         DeviceAction::FactoryReset => {
             app.set_ok("Factory reset sent — device is restarting. Restart shurectl to reconnect.");
             send_if_connected(device, |d| d.factory_reset())
@@ -1046,6 +1115,24 @@ where
     }
 }
 
+/// Apply `slot` to `state`, fitted to `model`.
+fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, model: DeviceModel) {
+    slot.apply_to_device_state(state);
+    // Show the gain and EQ the device will actually get: presets are
+    // shared across models, so one saved elsewhere may be out of
+    // range or off this model's step grid.
+    state.gain_tenths = model.snap_gain_tenths(state.gain_tenths);
+    for band in &mut state.eq_bands {
+        band.gain_db = model.snap_eq_gain_tenths(band.gain_db);
+    }
+    // A lock flag from a model with Gain Lock would sit hidden here
+    // and be saved into this model's presets, then lock the gain
+    // wherever one of those is loaded.
+    if !model.has_gain_lock() {
+        state.mv6_gain_locked = false;
+    }
+}
+
 /// Send every configurable field of `state` to the device.
 /// Called after loading a preset to bring the hardware into sync.
 fn apply_preset_to_device(
@@ -1150,6 +1237,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cli_parses_mute_status_and_preset_slot() {
+        let cli = Cli::try_parse_from(["shurectl", "--mute", "status"]).expect("mute status");
+        assert_eq!(cli.mute, Some(MuteAction::Status));
+        let cli = Cli::try_parse_from(["shurectl", "--preset", "4"]).expect("preset 4");
+        assert_eq!(cli.preset, Some(4));
+        for bad in [["shurectl", "--preset", "0"], ["shurectl", "--preset", "5"]] {
+            assert!(
+                Cli::try_parse_from(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        assert!(Cli::try_parse_from(["shurectl", "--preset", "1", "--mute"]).is_err());
+    }
+
+    fn device_name_focused(model: DeviceModel, name: &str) -> App {
+        let mut app = App {
+            device_model: model,
+            active_tab: app::Tab::Info,
+            focus: app::Focus::DeviceName,
+            ..App::default()
+        };
+        app.device_state.device_name = name.to_owned();
+        app
+    }
+
+    #[test]
+    fn device_name_edit_drops_unsupported_chars_and_renames_on_enter() {
+        let mut app = device_name_focused(DeviceModel::Mvx2uGen2, "Desk");
+        assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+        assert!(app.editing_device_name);
+        assert_eq!(app.name_draft, "Desk");
+        for c in " é2q".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(!app.should_quit);
+        assert_eq!(app.name_draft, "Desk 2q");
+        assert_eq!(
+            app.device_state.device_name, "Desk",
+            "unchanged until Enter"
+        );
+        let action = handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(&action, Some(DeviceAction::RenameDevice(n)) if n == "Desk 2q"));
+        assert!(!app.editing_device_name);
+        apply_action(&mut app, &mut None, action.expect("rename action"));
+        assert_eq!(app.device_state.device_name, "Desk 2q");
+    }
+
+    #[test]
+    fn empty_device_name_is_rejected() {
+        let mut app = device_name_focused(DeviceModel::Mvx2uGen2, "Unknown");
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            app.name_draft.is_empty(),
+            "\"Unknown\" is not a name to edit"
+        );
+        assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+        assert!(!app.editing_device_name);
+        assert!(app.status_is_error);
+    }
+
+    #[test]
+    fn device_name_is_not_editable_without_rename_support() {
+        let mut app = device_name_focused(DeviceModel::Mv7, "Studio");
+        assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+        assert!(!app.editing_device_name);
+    }
+
+    #[test]
     fn tab_key_moves_to_next_tab() {
         let mut app = App::default();
         // Manual mode, so the MVX2U Gen 1's EQ tab isn't locked and skipped.
@@ -1179,7 +1334,7 @@ mod tests {
             presets,
             editing_preset_name: true,
             editing_preset_index: 0,
-            preset_name_draft: name.to_owned(),
+            name_draft: name.to_owned(),
             ..App::default()
         }
     }
@@ -1191,7 +1346,7 @@ mod tests {
             handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         assert!(!app.should_quit);
-        assert_eq!(app.preset_name_draft, "Quiet q");
+        assert_eq!(app.name_draft, "Quiet q");
         assert!(matches!(
             handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
             Some(DeviceAction::PersistPresetName(0))
@@ -1208,7 +1363,7 @@ mod tests {
         handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(!app.should_quit);
         assert!(app.editing_preset_name);
-        assert_eq!(app.preset_name_draft, "Voice");
+        assert_eq!(app.name_draft, "Voice");
         assert_eq!(
             app.presets[0].as_ref().map(|s| s.name.as_str()),
             Some("Voice")

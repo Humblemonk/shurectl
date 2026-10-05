@@ -139,6 +139,7 @@ pub enum Focus {
     PresetName(usize),
     PresetActions(usize),
     // Info tab
+    DeviceName,
     FactoryReset,
 }
 
@@ -164,8 +165,10 @@ pub struct App {
     pub editing_preset_name: bool,
     /// Which slot index is being edited (valid when `editing_preset_name` is true).
     pub editing_preset_index: usize,
-    /// Uncommitted name; the stored preset stays unchanged until Enter.
-    pub preset_name_draft: String,
+    /// Set to `true` while the user is typing a new device name on the Info tab.
+    pub editing_device_name: bool,
+    /// Uncommitted preset or device name; nothing changes until Enter.
+    pub name_draft: String,
     /// Set to `true` after the user first presses Enter on the factory reset button.
     /// A second Enter fires the action; any other key cancels.
     pub confirming_factory_reset: bool,
@@ -197,7 +200,8 @@ impl Default for App {
             presets: [None, None, None, None],
             editing_preset_name: false,
             editing_preset_index: 0,
-            preset_name_draft: String::new(),
+            editing_device_name: false,
+            name_draft: String::new(),
             confirming_factory_reset: false,
             armed_preset_action: None,
             meter_level: Arc::new(AtomicI32::new(METER_SILENT)),
@@ -242,6 +246,11 @@ impl App {
     /// packet is known; the original MV7 has no factory reset at all (MOTIV
     /// doesn't offer one either). The UI hides the button and the Enter handler
     /// ignores it on every other model.
+    /// Whether a preset or device name is being typed.
+    pub fn editing_name(&self) -> bool {
+        self.editing_preset_name || self.editing_device_name
+    }
+
     pub fn supports_factory_reset(&self) -> bool {
         match self.device_model {
             DeviceModel::Mv7Plus => true,
@@ -385,6 +394,7 @@ impl App {
             (Tab::Led, DeviceModel::Mv7) => Focus::LedLiveMeter,
             (Tab::Led, _) => Focus::LedBehavior,
             (Tab::Presets, _) => Focus::PresetName(0),
+            (Tab::Info, model) if model.has_device_rename() => Focus::DeviceName,
             (Tab::Info, _) => Focus::FactoryReset,
         };
     }
@@ -601,6 +611,14 @@ impl App {
             }
             (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
+            // Info: Device Name ↔ Factory Reset where both exist (MV7+).
+            (Tab::Info, Focus::DeviceName, _, _) if self.supports_factory_reset() => {
+                Focus::FactoryReset
+            }
+            (Tab::Info, Focus::FactoryReset, model, _) if model.has_device_rename() => {
+                Focus::DeviceName
+            }
+
             _ => self.focus,
         };
     }
@@ -785,6 +803,14 @@ impl App {
             (Tab::Presets, Focus::PresetName(i), _, _) => Focus::PresetActions(i - 1),
             (Tab::Presets, Focus::PresetActions(i), _, _) => Focus::PresetName(*i),
             (Tab::Presets, _, _, _) => Focus::PresetName(0),
+
+            // Info: Device Name ↔ Factory Reset where both exist (MV7+).
+            (Tab::Info, Focus::DeviceName, _, _) if self.supports_factory_reset() => {
+                Focus::FactoryReset
+            }
+            (Tab::Info, Focus::FactoryReset, model, _) if model.has_device_rename() => {
+                Focus::DeviceName
+            }
 
             _ => self.focus,
         };
@@ -1238,6 +1264,8 @@ pub enum DeviceAction {
     DeletePreset(usize),
     /// Write the (already in-memory-updated) preset name for slot `usize` back to disk.
     PersistPresetName(usize),
+    /// Write a new user-set name to the device.
+    RenameDevice(String),
     /// Zero all 5 EQ band gains. Gen 1: leaves EQ master and per-band enables untouched.
     FlattenEq,
     Refresh,
@@ -1316,12 +1344,50 @@ mod tests {
     }
 
     #[test]
+    fn info_tab_focuses_device_name_only_where_rename_is_supported() {
+        for (model, expected) in [
+            (DeviceModel::Mvx2uGen2, Focus::DeviceName),
+            (DeviceModel::Mv7Plus, Focus::DeviceName),
+            (DeviceModel::Mv7, Focus::FactoryReset),
+        ] {
+            let mut app = App {
+                device_model: model,
+                active_tab: Tab::Presets,
+                ..App::default()
+            };
+            app.next_tab();
+            assert_eq!(app.active_tab, Tab::Info);
+            assert_eq!(app.focus, expected, "{model:?}");
+        }
+    }
+
+    #[test]
+    fn info_tab_focus_moves_between_device_name_and_factory_reset() {
+        let mut app = App {
+            device_model: DeviceModel::Mv7Plus,
+            active_tab: Tab::Info,
+            focus: Focus::DeviceName,
+            ..App::default()
+        };
+        app.focus_next();
+        assert_eq!(app.focus, Focus::FactoryReset);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::DeviceName);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::FactoryReset);
+        app.device_model = DeviceModel::Mv6;
+        app.focus = Focus::DeviceName;
+        app.focus_next();
+        assert_eq!(app.focus, Focus::DeviceName, "the MV6 has no factory reset");
+    }
+
+    #[test]
     fn switching_to_non_main_tabs_sets_correct_default_focus() {
         let expected: &[(Tab, Focus)] = &[
             (Tab::Eq, Focus::EqEnable),
             (Tab::Dynamics, Focus::Limiter),
             (Tab::Presets, Focus::PresetName(0)),
-            (Tab::Info, Focus::FactoryReset),
+            (Tab::Info, Focus::DeviceName),
         ];
         for (tab, expected_focus) in expected {
             let mut app = App::default();
