@@ -3149,7 +3149,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let (vid_pid, gain_range) = match model {
         DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
         DeviceModel::Mvx2uGen2 => ("14ED:1033", "0–60 dB"),
-        DeviceModel::Mv6 => ("14ED:1026", "0–36 dB"),
+        DeviceModel::Mv6 => ("14ED:1026 or 1035 (Gen 2)", "0–36 dB"),
         DeviceModel::Mv7 => ("14ED:1012", "0–36 dB (1.5 dB steps)"),
         DeviceModel::Mv7Plus => ("14ED:1019", "0–36 dB"),
     };

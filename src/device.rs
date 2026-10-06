@@ -4,6 +4,7 @@
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — treated as the MV6 (unverified)
 //!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
 //!
@@ -44,9 +45,9 @@ use anyhow::{Context, Result, anyhow};
 use hidapi::{HidApi, HidDevice};
 
 use crate::protocol::{
-    self, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, MV6_PID, MV7_PID,
-    MV7_PLUS_PID, MVX2U_GEN2_PID, MicPosition, PACKET_SIZE, PID, VID, apply_response, cmd_confirm,
-    cmd_factory_reset, cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone,
+    self, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, MV6_GEN2_PID, MV6_PID,
+    MV7_PID, MV7_PLUS_PID, MVX2U_GEN2_PID, MicPosition, PACKET_SIZE, PID, VID, apply_response,
+    cmd_confirm, cmd_factory_reset, cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone,
     cmd_get_compressor, cmd_get_device_name, cmd_get_eq_band_enable, cmd_get_eq_band_gain,
     cmd_get_eq_enable, cmd_get_firmware_version, cmd_get_gain, cmd_get_hpf, cmd_get_limiter,
     cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
@@ -219,13 +220,14 @@ impl ShureDevice {
         let Some(model) = supported_model(info) else {
             return Err(anyhow!(
                 "{path} is not a supported Shure device \
-                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, {:#06x}, {:#06x}, or {:#06x}.",
+                (VID={:#06x} PID={:#06x}); expected VID={:#06x} with PID={:#06x}, {:#06x}, {:#06x}, {:#06x}, {:#06x}, or {:#06x}.",
                 info.vendor_id(),
                 pid,
                 VID,
                 PID,
                 MVX2U_GEN2_PID,
                 MV6_PID,
+                MV6_GEN2_PID,
                 MV7_PID,
                 MV7_PLUS_PID,
             ));
