@@ -4,6 +4,7 @@
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2, new DSP)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
+//!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — treated as the MV6 (unverified)
 //!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone
 //!
@@ -35,6 +36,7 @@
 //!   Product ID: 0x1013  (MVX2U Gen 1)
 //!   Product ID: 0x1033  (MVX2U Gen 2)
 //!   Product ID: 0x1026  (MV6)
+//!   Product ID: 0x1035  (MV6 Gen 2)
 //!   Product ID: 0x1012  (MV7)
 //!   Product ID: 0x1019  (MV7+)
 //!
@@ -188,6 +190,9 @@ pub const PID: u16 = 0x1013;
 pub const MVX2U_GEN2_PID: u16 = 0x1033;
 /// MV6: USB gaming microphone.
 pub const MV6_PID: u16 = 0x1026;
+/// MV6 Gen 2. Driven as an MV6 until its feature map is captured; its new
+/// controls (5-band EQ, Denoiser level, Auto Level tuning) are not exposed. See issue #99.
+pub const MV6_GEN2_PID: u16 = 0x1035;
 /// MV7 (original): USB/XLR dynamic microphone. Text command shell, not the binary protocol.
 pub const MV7_PID: u16 = 0x1012;
 /// MV7+: USB/XLR dynamic microphone.
@@ -212,7 +217,7 @@ impl DeviceModel {
         match pid {
             PID => Some(DeviceModel::Mvx2u),
             MVX2U_GEN2_PID => Some(DeviceModel::Mvx2uGen2),
-            MV6_PID => Some(DeviceModel::Mv6),
+            MV6_PID | MV6_GEN2_PID => Some(DeviceModel::Mv6),
             MV7_PID => Some(DeviceModel::Mv7),
             MV7_PLUS_PID => Some(DeviceModel::Mv7Plus),
             _ => None,
@@ -4542,6 +4547,7 @@ mod tests {
         assert_eq!(DeviceModel::from_pid(0x1013), Some(DeviceModel::Mvx2u));
         assert_eq!(DeviceModel::from_pid(0x1033), Some(DeviceModel::Mvx2uGen2));
         assert_eq!(DeviceModel::from_pid(0x1026), Some(DeviceModel::Mv6));
+        assert_eq!(DeviceModel::from_pid(0x1035), Some(DeviceModel::Mv6));
         assert_eq!(DeviceModel::from_pid(0x1012), Some(DeviceModel::Mv7));
         assert_eq!(DeviceModel::from_pid(0x1019), Some(DeviceModel::Mv7Plus));
         assert_eq!(DeviceModel::from_pid(0x0000), None);

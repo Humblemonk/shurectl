@@ -12,6 +12,7 @@
 //!   cargo run --bin probe -- --pid 0x1013                   # target MVX2U Gen 1
 //!   cargo run --bin probe -- --pid 0x1019                   # target MV7+
 //!   cargo run --bin probe -- --pid 0x1026                   # target MV6
+//!   cargo run --bin probe -- --pid 0x1035                   # target MV6 Gen 2
 //!   cargo run --bin probe -- --output results.txt
 //!   cargo run --bin probe -- --page 0x03
 //!   cargo run --bin probe -- --also-mix-class          # try is_mix=0x01 for every address
@@ -74,6 +75,8 @@ const PID_MVX2U: u16 = 0x1013;
 const PID_MVX2U_GEN2: u16 = 0x1033;
 /// MV6
 const PID_MV6: u16 = 0x1026;
+/// MV6 Gen 2
+const PID_MV6_GEN2: u16 = 0x1035;
 /// MV7+
 const PID_MV7_PLUS: u16 = 0x1019;
 const READ_TIMEOUT_MS: i32 = 150;
@@ -202,7 +205,7 @@ const KNOWN_MV7_LOCK_ADDRS: &[([u8; 2], &str)] = &[
 )]
 struct Cli {
     /// Target device PID in hex. Defaults to 0x1033 (MVX2U Gen 2).
-    /// Use 0x1013 for MVX2U Gen 1, 0x1019 for MV7+, 0x1026 for MV6.
+    /// Use 0x1013 for MVX2U Gen 1, 0x1019 for MV7+, 0x1026 for MV6, 0x1035 for MV6 Gen 2.
     #[arg(long, default_value = "0x1033")]
     pid: String,
 
@@ -619,6 +622,7 @@ fn main() -> Result<()> {
         PID_MVX2U => "MVX2U Gen 1",
         PID_MVX2U_GEN2 => "MVX2U Gen 2",
         PID_MV6 => "MV6",
+        PID_MV6_GEN2 => "MV6 Gen 2",
         PID_MV7_PLUS => "MV7+",
         _ => "Unknown",
     };

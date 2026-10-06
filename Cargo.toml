@@ -1,6 +1,6 @@
 [package]
 name = "shurectl"
-version = "2.8.0"
+version = "2.8.1"
 edition = "2024"
 rust-version = "1.88"
 default-run = "shurectl"

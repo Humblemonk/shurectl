@@ -5,7 +5,7 @@ macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app
 
 ![Project Example Screenshot](images/shurectl.png)
 
-**Supported devices:** MVX2U Gen 1, MVX2U Gen 2, MV6, MV7, MV7+
+**Supported devices:** MVX2U Gen 1, MVX2U Gen 2, MV6, MV6 Gen 2 (basic), MV7, MV7+
 
 - Gain, mute, Auto Level / Manual mode, and monitor mix
 - EQ, compressor, limiter, high-pass filter, denoiser, and popper stopper, where the device
@@ -163,6 +163,8 @@ on the device itself, not the OS capture volume level. Both can be set independe
 Every model also has the level meter, presets, an Info tab (serial number, device name,
 firmware version), `--mute`, `--preset`, and `--demo`.
 
+- The MV6 Gen 2 follows the MV6 column for now. Its 5-band EQ, Denoiser level, and Auto
+  Level tuning are not supported yet ([#99](https://github.com/Humblemonk/shurectl/issues/99)).
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.
