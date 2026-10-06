@@ -82,7 +82,7 @@ The probe is **read-only** — it only sends GET packets, never SET or CONFIRM. 
 The probe binary is named `shurectl-probe` and is gated behind the `probe` cargo feature, so it is **not built by default**. This keeps it out of `cargo install` and Homebrew installs — end users have no reason to have an HID address sweeper in their `PATH`.
 
 ```bash
-cargo run --bin shurectl-probe --features probe                          # scan MVX2U Gen 2 (default)
+cargo run --bin shurectl-probe --features probe                          # scan the connected device
 cargo run --bin shurectl-probe --features probe -- --pid 0x1013          # MVX2U Gen 1
 cargo run --bin shurectl-probe --features probe -- --pid 0x1026          # MV6
 cargo run --bin shurectl-probe --features probe -- --also-mix-class      # also sweep mix-class prefix

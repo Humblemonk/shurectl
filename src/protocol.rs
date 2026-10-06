@@ -397,7 +397,7 @@ const FEAT_DEVICE_NAME: [u8; 2] = [0x00, 0x12];
 /// this stays under a likely 32-byte buffer.
 pub const DEVICE_NAME_MAX_LEN: usize = 31;
 /// Firmware version string, e.g. "1.2.0.6".
-const FEAT_FIRMWARE: [u8; 2] = [0x00, 0x09];
+pub const FEAT_FIRMWARE: [u8; 2] = [0x00, 0x09];
 /// Factory serial number printed on the device and shown in the MOTIV app
 /// (e.g. "3EK26001276"). Distinct from the USB descriptor serial. Confirmed at
 /// [00 02] on MVX2U Gen 2 (PID 0x1033); see issue #64.
