@@ -8,7 +8,7 @@
 //! features such as native preset slots and monitor mix addresses.
 //!
 //! Usage:
-//!   cargo run --bin probe                                    # defaults to MVX2U Gen 2 (PID 0x1033)
+//!   cargo run --bin probe                                    # the one supported device plugged in
 //!   cargo run --bin probe -- --pid 0x1013                   # target MVX2U Gen 1
 //!   cargo run --bin probe -- --pid 0x1019                   # target MV7+
 //!   cargo run --bin probe -- --pid 0x1026                   # target MV6
@@ -79,7 +79,17 @@ const PID_MV6: u16 = 0x1026;
 const PID_MV6_GEN2: u16 = 0x1035;
 /// MV7+
 const PID_MV7_PLUS: u16 = 0x1019;
-const READ_TIMEOUT_MS: i32 = 150;
+/// Models the probe can sweep. The original MV7 is left out: it speaks a text shell.
+const SUPPORTED_PIDS: [u16; 5] = [
+    PID_MVX2U,
+    PID_MVX2U_GEN2,
+    PID_MV6,
+    PID_MV6_GEN2,
+    PID_MV7_PLUS,
+];
+/// How long to wait for each GET's reply. Replies take a few ms; a slower one is
+/// not lost, because `Probe::get()` logs it as stray when it turns up later.
+const READ_TIMEOUT: Duration = Duration::from_millis(50);
 
 const CMD_GET_FEAT: [u8; 3] = [0x01, 0x02, 0x02];
 const CMD_GET_LOCK: [u8; 3] = [0x01, 0x02, 0x01];
@@ -204,16 +214,17 @@ const KNOWN_MV7_LOCK_ADDRS: &[([u8; 2], &str)] = &[
     about = "Shure HID feature address probe — discovers undocumented feature addresses (READ-ONLY)"
 )]
 struct Cli {
-    /// Target device PID in hex. Defaults to 0x1033 (MVX2U Gen 2).
-    /// Use 0x1013 for MVX2U Gen 1, 0x1019 for MV7+, 0x1026 for MV6, 0x1035 for MV6 Gen 2.
-    #[arg(long, default_value = "0x1033")]
-    pid: String,
+    /// Target device PID in hex. Detected when exactly one supported device is plugged in.
+    /// Use 0x1013 for MVX2U Gen 1, 0x1033 for MVX2U Gen 2, 0x1019 for MV7+, 0x1026 for MV6,
+    /// 0x1035 for MV6 Gen 2.
+    #[arg(long)]
+    pid: Option<String>,
 
     /// Output file for results. Defaults to probe_results.txt.
     #[arg(long, short, default_value = "probe_results.txt")]
     output: String,
 
-    /// Only sweep a specific page (e.g. 0x03). Sweeps all pages if omitted.
+    /// Only sweep a specific page (e.g. 0x03). Sweeps pages 0x00–0x0F if omitted.
     #[arg(long)]
     page: Option<String>,
 
@@ -266,13 +277,15 @@ fn build_get_packet_raw(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
 // ── Response parser ───────────────────────────────────────────────────────────
 #[derive(Debug)]
 struct ParsedResponse {
+    feat_addr: [u8; 2],
     value_bytes: Vec<u8>,
     raw: Vec<u8>,
 }
 
 fn parse_response(buf: &[u8]) -> Option<ParsedResponse> {
-    let (_prefix, _feat_addr, value_bytes) = protocol::parse_response_with_prefix(buf)?;
+    let (_prefix, feat_addr, value_bytes) = protocol::parse_response_with_prefix(buf)?;
     Some(ParsedResponse {
+        feat_addr,
         value_bytes,
         raw: buf.to_vec(),
     })
@@ -332,6 +345,7 @@ struct Probe {
     delay: Duration,
     output_log: String,
     hits: Vec<ProbeHit>,
+    strays: u32,
 }
 
 #[derive(Debug)]
@@ -352,6 +366,7 @@ impl Probe {
             delay: Duration::from_millis(delay_ms),
             output_log: String::new(),
             hits: Vec::new(),
+            strays: 0,
         }
     }
 
@@ -367,6 +382,50 @@ impl Probe {
         self.output_log.push('\n');
     }
 
+    /// Send a GET and wait for the reply carrying feature address `expected`.
+    ///
+    /// A reply for any other address (a late answer to an earlier GET, or a
+    /// report sent because someone touched the mic) is logged as STRAY rather
+    /// than taken as this address's answer. Taking it would shift every later
+    /// result in the sweep onto the wrong address.
+    fn get(&mut self, pkt: &[u8], expected: [u8; 2]) -> Result<Option<ParsedResponse>> {
+        self.device.write(pkt).context("HID write failed")?;
+        std::thread::sleep(self.delay);
+        let deadline = Instant::now() + READ_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(0);
+            if timeout_ms == 0 {
+                return Ok(None);
+            }
+            let mut buf = vec![0u8; PACKET_SIZE];
+            let n = self
+                .device
+                .read_timeout(&mut buf, timeout_ms)
+                .map_err(|e| anyhow!("HID read failed: {e}"))?;
+            if n == 0 {
+                return Ok(None);
+            }
+            // Input that isn't a Shure reply (the mute-button report) is skipped.
+            let Some(resp) = parse_response(&buf[..n]) else {
+                continue;
+            };
+            if resp.feat_addr == expected {
+                return Ok(Some(resp));
+            }
+            self.strays += 1;
+            self.log(&format!(
+                "  STRAY [{:02X} {:02X}]  value: [{}]  (arrived while waiting for [{:02X} {:02X}])",
+                resp.feat_addr[0],
+                resp.feat_addr[1],
+                fmt_value_hex(&resp.value_bytes),
+                expected[0],
+                expected[1],
+            ));
+            self.log(&hex_dump(&resp.raw));
+        }
+    }
+
     fn probe_address(
         &mut self,
         cmd: &[u8; 3],
@@ -375,14 +434,7 @@ impl Probe {
     ) -> Result<Option<ParsedResponse>> {
         let seq = self.next_seq();
         let pkt = build_get_packet(seq, cmd, addr, is_mix_or_lock);
-        self.device.write(&pkt).context("HID write failed")?;
-        std::thread::sleep(self.delay);
-        let mut buf = vec![0u8; PACKET_SIZE];
-        match self.device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
-            Ok(0) => Ok(None),
-            Ok(n) => Ok(parse_response(&buf[..n])),
-            Err(e) => Err(anyhow!("HID read failed: {e}")),
-        }
+        self.get(&pkt, addr)
     }
 
     /// Sweep all 256 addresses on a page using CMD_GET_FEAT with is_mix=0x00.
@@ -440,15 +492,8 @@ impl Probe {
         for sub_addr in 0x00u8..=0xFF {
             let seq = self.next_seq();
             let pkt = build_get_packet_mv7_lock(seq, page, sub_addr);
-            self.device.write(&pkt).context("HID write failed")?;
-            std::thread::sleep(self.delay);
-            let mut buf = vec![0u8; PACKET_SIZE];
-            let resp = match self.device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
-                Ok(0) => None,
-                Ok(n) => parse_response(&buf[..n]),
-                Err(e) => return Err(anyhow!("HID read failed: {e}")),
-            };
-            if let Some(resp) = resp {
+            // Replies drop the page: [0x0C, 0x00, 0x60] answers as [0x00, 0x60].
+            if let Some(resp) = self.get(&pkt, [0x00, sub_addr])? {
                 responded += 1;
                 let is_known = known_mv7_lock_name(page, sub_addr).is_some();
                 if !is_known {
@@ -606,6 +651,13 @@ impl Probe {
             self.log("\n  ACTION: Add these addresses to protocol.rs as FEAT_* constants.");
         }
 
+        if self.strays > 0 {
+            self.log(&format!(
+                "\nStray replies: {} (search the log for STRAY; each is listed under its own address)",
+                self.strays
+            ));
+        }
+
         self.log("\n══════════════════════════════════════════════════════════════════════\n");
     }
 }
@@ -613,9 +665,13 @@ impl Probe {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let pid: u16 = {
-        let s = cli.pid.trim_start_matches("0x").trim_start_matches("0X");
-        u16::from_str_radix(s, 16).context("--pid must be a hex value, e.g. 0x1033")?
+    let api = HidApi::new().context("Failed to initialise hidapi")?;
+    let pid: u16 = match cli.pid.as_deref() {
+        Some(s) => {
+            let s = s.trim_start_matches("0x").trim_start_matches("0X");
+            u16::from_str_radix(s, 16).context("--pid must be a hex value, e.g. 0x1033")?
+        }
+        None => detect_pid(&api)?,
     };
 
     let device_label = match pid {
@@ -636,7 +692,6 @@ fn main() -> Result<()> {
         })
         .transpose()?;
 
-    let api = HidApi::new().context("Failed to initialise hidapi")?;
     let device = api.open(VID, pid).map_err(|e| {
         anyhow!(
             "Cannot open device (VID={:#06x} PID={:#06x} / {}): {e}\n\
@@ -661,6 +716,15 @@ fn main() -> Result<()> {
 
     let mut probe = Probe::new(device, cli.delay_ms);
 
+    // Feature maps differ between firmware versions, so every result file names one.
+    let mut identity = protocol::DeviceState::default();
+    let seq = probe.next_seq();
+    let firmware_get = protocol::cmd_get_firmware_version(seq);
+    if let Some(resp) = probe.get(&firmware_get, protocol::FEAT_FIRMWARE)? {
+        // A reply that doesn't decode leaves the version as "Unknown".
+        let _ = protocol::apply_response(resp.feat_addr, &resp.value_bytes, &mut identity);
+    }
+
     let start_time = chrono_now();
     probe.log("══════════════════════════════════════════════════════════════════════");
     probe.log(&format!("Shure HID Feature Address Probe  —  {start_time}"));
@@ -668,6 +732,7 @@ fn main() -> Result<()> {
     probe.log(&format!("Device : {product} ({device_label})"));
     probe.log(&format!("PID    : {pid:#06x}"));
     probe.log(&format!("Serial : {serial}"));
+    probe.log(&format!("Firmware: {}", identity.firmware_version));
     probe.log(&format!("Output : {}", cli.output));
     probe.log(&format!("Delay  : {} ms between packets", cli.delay_ms));
     probe.log(&format!("Mix class sweep     : {}", cli.also_mix_class));
@@ -680,7 +745,7 @@ fn main() -> Result<()> {
 
     let pages_to_sweep: Vec<u8> = match specific_page {
         Some(p) => vec![p],
-        None => vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+        None => (0x00..=0x0F).collect(),
     };
 
     let start = Instant::now();
@@ -711,6 +776,31 @@ fn main() -> Result<()> {
 
     println!("\nResults written to: {}", cli.output);
     Ok(())
+}
+
+/// The PID of the supported Shure device that is plugged in, when there is
+/// exactly one model. Two of the same model share a PID, and the first is used.
+fn detect_pid(api: &HidApi) -> Result<u16> {
+    let mut pids: Vec<u16> = api
+        .device_list()
+        .filter(|d| d.vendor_id() == VID && SUPPORTED_PIDS.contains(&d.product_id()))
+        .map(|d| d.product_id())
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    match pids.as_slice() {
+        [pid] => Ok(*pid),
+        [] => Err(anyhow!(
+            "No supported Shure device found. Check the udev rules, or pass --pid."
+        )),
+        _ => Err(anyhow!(
+            "Several Shure devices found ({}). Pass --pid to pick one.",
+            pids.iter()
+                .map(|pid| format!("{pid:#06x}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 fn chrono_now() -> String {
