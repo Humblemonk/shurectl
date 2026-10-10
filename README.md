@@ -5,7 +5,7 @@ macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app
 
 ![Project Example Screenshot](images/shurectl.png)
 
-**Supported devices:** MVX2U Gen 1, MVX2U Gen 2, MV6, MV6 Gen 2 (basic), MV7, MV7+
+**Supported devices:** MVX2U Gen 1, MVX2U Gen 2, MV6, MV6 Gen 2, MV7, MV7+
 
 - Gain, mute, Auto Level / Manual mode, and monitor mix
 - EQ, compressor, limiter, high-pass filter, denoiser, and popper stopper, where the device
@@ -59,7 +59,7 @@ macOS and Windows need no setup.
 shurectl                  # Connect to the first detected device
 shurectl --list           # List detected Shure devices
 shurectl --device <path>  # Connect to a specific device from --list
-shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus
+shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7, mv7plus
 shurectl --mute           # Toggle mute without launching the TUI (or --mute on / --mute off)
 shurectl --mute status    # Print "on" or "off", e.g. for a status bar
 shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
@@ -73,7 +73,7 @@ shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
 | `←` / `h` | Decrease value |
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
-| `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 only |
+| `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2, and MV6 Gen 2 in Advanced tone |
 | `r` | Refresh state from device (reconnects right away if it was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |
@@ -113,7 +113,7 @@ Please open an issue with the message and the firmware version from the Info tab
 **No gain slider in Auto Level mode** — This is correct hardware behaviour; the device
 sets its own gain in Auto Level mode, so the slider is hidden. Switch to Manual mode first.
 
-**Gain won't change** — On the MVX2U Gen 2 and MV6, check that Gain Lock is off.
+**Gain won't change** — On the MVX2U Gen 2, MV6 and MV6 Gen 2, check that Gain Lock is off.
 
 **MV7: MOTIV stops showing the mic's settings** — The MV7 has a single command channel
 that MOTIV and shurectl share. Quit MOTIV before using shurectl with an MV7; if MOTIV
@@ -129,42 +129,47 @@ on the device itself, not the OS capture volume level. Both can be set independe
 
 ✓ = available · **Manual** / **Auto** = only in that mode · — = not on this device
 
-| Control | MVX2U Gen 1 | MVX2U Gen 2 | MV6 | MV7 | MV7+ |
-|---------|:-----------:|:-----------:|:---:|:---:|:----:|
-| **Main tab** | | | | | |
-| Mode (Auto Level / Manual) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Mute | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Gain | Manual, 0–60 dB | Manual, 0–60 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB |
-| Gain Lock | — | Manual | Manual | — | — |
-| Monitor Mix (mic ↔ playback, 0–100%) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Playback Mix (second mix, independent of Monitor Mix) | — | — | — | — | ✓ |
-| Phantom Power (48V) | ✓ | ✓ | — | — | — |
-| Config Lock | ✓ | — | — | ✓ | — |
-| Mic Position (Near / Far) | Auto | — | — | Auto | — |
-| Auto Tone (Dark / Natural / Bright) | Auto | — | — | Auto | — |
-| Gain Environment (Quiet / Normal / Loud) | Auto | — | — | — | — |
-| **EQ tab** | | | | | |
-| 5-band Parametric EQ (−8 to +6 dB) | Manual, 2 dB steps | Manual, 0.5 dB steps | — | — | — |
-| Tone (Dark ↔ Natural ↔ Bright slider, 10% steps) | — | Auto | ✓ | — | ✓ |
-| EQ Preset (Flat / High Pass / Presence Boost / both) | — | — | — | Manual | — |
-| **Dynamics tab** | | | | | |
-| Limiter | Manual | Manual | — | — | ✓ |
-| Compressor (Off / Light / Medium / Heavy) | Manual | Manual | — | Manual | ✓ |
-| High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | — | ✓ |
-| Denoiser | — | ✓ | ✓ | — | ✓ |
-| Popper Stopper | — | ✓ | ✓ | — | ✓ |
-| Mute Button Disable | — | — | ✓ | — | ✓ |
-| **Other tabs** | | | | | |
-| Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | ✓ |
-| LED Panel | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
-| Rename device (Info tab) | ✓ | ✓ | ✓ | — | ✓ |
-| Factory Reset (Info tab) | — | — | — | — | ✓ |
+| Control | MVX2U Gen 1 | MVX2U Gen 2 | MV6 | MV6 Gen 2 | MV7 | MV7+ |
+|---------|:-----------:|:-----------:|:---:|:---------:|:---:|:----:|
+| **Main tab** | | | | | | |
+| Mode (Auto Level / Manual) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Mute | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Gain | Manual, 0–60 dB | Manual, 0–60 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB |
+| Gain Lock | — | Manual | Manual | Manual | — | — |
+| Monitor Mix (0–100%) | ✓ | ✓ | Mic level | Mic level | ✓ | Mic level |
+| Playback Mix (playback level, 0–100%) | — | — | ✓ | ✓ | — | ✓ |
+| Phantom Power (48V) | ✓ | ✓ | — | — | — | — |
+| Config Lock | ✓ | — | — | — | ✓ | — |
+| Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
+| Auto Tone (Dark / Natural / Bright) | Auto | — | — | — | Auto | — |
+| Gain Environment (Quiet / Normal / Loud) | Auto | — | — | — | — | — |
+| Target Level (Low / Med / High) | — | — | — | Auto | — | — |
+| Adaptation Rate (Slow / Fast) | — | — | — | Auto | — | — |
+| Mic Preset (Speech / Singing / Instrument) | — | — | — | ✓ | — | — |
+| **EQ tab** | | | | | | |
+| 5-band Parametric EQ (−8 to +6 dB) | Manual, 2 dB steps | Manual, 0.5 dB steps | — | Advanced tone, 2 dB steps | — | — |
+| Tone (Dark ↔ Natural ↔ Bright slider, 10% steps) | — | Auto | ✓ | Simple tone | — | ✓ |
+| EQ Preset (Flat / High Pass / Presence Boost / both) | — | — | — | — | Manual | — |
+| **Dynamics tab** | | | | | | |
+| Limiter | Manual | Manual | — | — | — | ✓ |
+| Compressor (Off / Light / Medium / Heavy) | Manual | Manual | — | — | Manual | ✓ |
+| High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | ✓ | — | ✓ |
+| Denoiser | — | ✓ | ✓ | ✓, level 1–100% | — | ✓ |
+| Popper Stopper | — | ✓ | ✓ | ✓ | — | ✓ |
+| Mute Button Disable | — | — | ✓ | ✓ | — | ✓ |
+| **Other tabs** | | | | | | |
+| Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | — | ✓ |
+| LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
+| Rename device (Info tab) | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Factory Reset (Info tab) | — | — | — | ✓ | — | ✓ |
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
 firmware version), `--mute`, `--preset`, and `--demo`.
 
-- The MV6 Gen 2 follows the MV6 column for now. Its 5-band EQ, Denoiser level, and Auto
-  Level tuning are not supported yet ([#99](https://github.com/Humblemonk/shurectl/issues/99)).
+- On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
+  5-band EQ (Advanced), as in MOTIV.
+- Monitor Mix balances mic against playback in your headphones. On the MV6, MV6 Gen 2 and
+  MV7+ it is the mic level alone, and Playback Mix sets the playback level.
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.

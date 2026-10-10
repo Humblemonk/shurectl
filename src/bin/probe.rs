@@ -35,19 +35,18 @@
 //! — use CMD_GET_LOCK with the standard prefix 0x00. --also-lock-class therefore
 //! sweeps the lock command class at both 0x06 and 0x00.
 //!
-//! # MV6 monitor mix — why the probe missed it
+//! # Monitor mix: one address, a channel per prefix
 //!
-//! The MV6 monitor mix uses the same address as the MVX2U ([0x01, 0x86]). Its GET
-//! packet uses standard framing (HDR_CONSTANT=0x03, prefix=0x00) — confirmed by
-//! Wireshark. However, the device only responds to GET after at least one SET has
-//! been issued. On a fresh device the address returns nothing, which is why the
-//! probe sweep found no response.
+//! FEAT_MIX [0x01, 0x86] answers at a different payload prefix per model:
+//! 0x00 is the mic level (MV6, MV6 Gen 2, MV7+), 0x01 the MVX2U Gen 1 balance,
+//! and 0x03 the playback level (MV7+, MV6 Gen 2; MV6 expected but unconfirmed). The standard sweep reads
+//! that address at all three, so whichever channels a model has show up. (It
+//! used to force 0x01 there, which hid the MV6 family's monitor levels.) The
+//! original MV6 is reported to answer only after a SET since power-on; the MV6
+//! Gen 2 answers straight away.
 //!
-//! Its SET packet uses HDR_CONSTANT=0x00 (not the usual 0x03), which is why it
-//! also didn't appear in the mix-class sweep.
-//!
-//! Use Wireshark (not this probe) to investigate any future MV6 features that
-//! involve non-standard HDR_CONSTANT values or state-dependent GET responses.
+//! Use Wireshark (not this probe) to investigate SET framing, such as the
+//! HDR_CONSTANT=0x00 the MV6 family's mix SETs need.
 
 use std::fmt::Write as FmtWrite;
 use std::fs;
@@ -111,9 +110,18 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
     ([0x01, 0x85], "AUTO_LEVEL"),
     (
         [0x01, 0x86],
-        "MONITOR_MIX (Gen1: GET/SET both use mix-class prefix 0x01; Gen2/MV6: GET standard, SET uses HDR_CONSTANT=0x00; device only responds to GET after first SET)",
+        "MONITOR_MIX (prefix 0x00: mic level, MV6 family and MV7+; 0x01: Gen1 balance; 0x03: playback level, MV7+ and MV6 Gen 2, MV6 unconfirmed)",
     ),
-    ([0x01, 0x87], "AUTO_GAIN (Gen1 only)"),
+    (
+        [0x01, 0x78],
+        "MV6G2_PRESET (0=Speech, 1=Singing, 3=Instrument, 0xFF=none)",
+    ),
+    (
+        [0x01, 0x87],
+        "AUTO_GAIN (Gen1) / TARGET_LEVEL (MV6 Gen 2; 0/1/2 = Low/Med/High)",
+    ),
+    ([0x01, 0x88], "MV6G2_ADAPTATION_RATE (0=Slow, 1=Fast)"),
+    ([0x01, 0xD1], "MV6G2_DENOISER_LEVEL (1–100%)"),
     ([0x01, 0xF3], "GAIN_LOCK (MV6/Gen2)"),
     (
         [0x01, 0xF4],
@@ -125,6 +133,7 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
     ),
     ([0x02, 0x00], "EQ_MASTER (Gen1 only — not present on Gen2)"),
     ([0x02, 0x04], "TONE_SLIDER (MV6/Gen2)"),
+    ([0x02, 0x05], "MV6G2_TONE_MODE (0=Simple, 1=Advanced)"),
     (
         [0x02, 0x10],
         "EQ_100HZ_EN (Gen1 only — not present on Gen2)",
@@ -541,46 +550,48 @@ impl Probe {
         for addr_lo in 0x00u8..=0xFF {
             let addr = [page, addr_lo];
 
-            // For the standard sweep, use the known prefix for already-identified
-            // mix-class addresses so we don't miss them.
-            let effective_prefix = if class_label == "standard" && addr == [0x01, 0x86] {
-                0x01
+            // The standard sweep reads FEAT_MIX at each prefix a model uses for
+            // it (see the module docs); everything else at the class prefix.
+            let prefixes: &[u8] = if class_label == "standard" && addr == [0x01, 0x86] {
+                &[0x00, 0x01, 0x03]
             } else {
-                prefix
+                std::slice::from_ref(&prefix)
             };
 
-            match self.probe_address(cmd, addr, effective_prefix) {
-                Ok(Some(resp)) => {
-                    responded += 1;
-                    let is_known = known_name(addr).is_some();
-                    if !is_known {
-                        new_found += 1;
+            for &effective_prefix in prefixes {
+                match self.probe_address(cmd, addr, effective_prefix) {
+                    Ok(Some(resp)) => {
+                        responded += 1;
+                        let is_known = known_name(addr).is_some();
+                        if !is_known {
+                            new_found += 1;
+                        }
+                        let name_tag = known_name(addr)
+                            .map(|n| format!(" [{n}]"))
+                            .unwrap_or_else(|| " *** NEW ***".to_string());
+                        let val_hex = fmt_value_hex(&resp.value_bytes);
+                        self.log(&format!(
+                            "  RESP  [{:02X} {:02X}]{}  prefix=0x{effective_prefix:02X}  value: [{}]  ({} bytes)",
+                            addr[0], addr[1], name_tag, val_hex, resp.value_bytes.len(),
+                        ));
+                        if !is_known {
+                            self.log("  Raw response packet:");
+                            self.log(&hex_dump(&resp.raw));
+                        }
+                        self.hits.push(ProbeHit {
+                            addr,
+                            value_bytes: resp.value_bytes,
+                            prefix: effective_prefix,
+                            cmd_class: class_label,
+                            is_known,
+                            known_name: known_name(addr),
+                        });
                     }
-                    let name_tag = known_name(addr)
-                        .map(|n| format!(" [{n}]"))
-                        .unwrap_or_else(|| " *** NEW ***".to_string());
-                    let val_hex = fmt_value_hex(&resp.value_bytes);
-                    self.log(&format!(
-                        "  RESP  [{:02X} {:02X}]{}  prefix=0x{effective_prefix:02X}  value: [{}]  ({} bytes)",
-                        addr[0], addr[1], name_tag, val_hex, resp.value_bytes.len(),
-                    ));
-                    if !is_known {
-                        self.log("  Raw response packet:");
-                        self.log(&hex_dump(&resp.raw));
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.log(&format!("  ERROR [{:02X} {:02X}]: {e}", addr[0], addr[1]));
+                        return Err(e);
                     }
-                    self.hits.push(ProbeHit {
-                        addr,
-                        value_bytes: resp.value_bytes,
-                        prefix: effective_prefix,
-                        cmd_class: class_label,
-                        is_known,
-                        known_name: known_name(addr),
-                    });
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    self.log(&format!("  ERROR [{:02X} {:02X}]: {e}", addr[0], addr[1]));
-                    return Err(e);
                 }
             }
         }

@@ -1,10 +1,10 @@
 //! Shure USB HID Protocol Implementation
 //!
-//! Covers five devices:
+//! Covers six devices:
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2, new DSP)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
-//!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — treated as the MV6 (unverified)
+//!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — USB gaming microphone (Gen 2)
 //!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone
 //!
@@ -190,8 +190,8 @@ pub const PID: u16 = 0x1013;
 pub const MVX2U_GEN2_PID: u16 = 0x1033;
 /// MV6: USB gaming microphone.
 pub const MV6_PID: u16 = 0x1026;
-/// MV6 Gen 2. Driven as an MV6 until its feature map is captured; its new
-/// controls (5-band EQ, Denoiser level, Auto Level tuning) are not exposed. See issue #99.
+/// MV6 Gen 2 ("MV6 G2" in MOTIV): the MV6 plus Target Level, Adaptation Rate,
+/// a Denoiser level, separate monitor levels, and a 5-band EQ. See issue #99.
 pub const MV6_GEN2_PID: u16 = 0x1035;
 /// MV7 (original): USB/XLR dynamic microphone. Text command shell, not the binary protocol.
 pub const MV7_PID: u16 = 0x1012;
@@ -205,6 +205,9 @@ pub enum DeviceModel {
     Mvx2u,
     Mvx2uGen2,
     Mv6,
+    /// MV6 with Auto Level tuning, a Denoiser level, and Simple/Advanced tone
+    /// (Tone slider or 5-band EQ).
+    Mv6Gen2,
     /// Original MV7. Uses the ASCII command shell in [`mv7_text`], not binary packets.
     Mv7,
     /// USB/XLR dynamic microphone. All SET commands use HDR_CONSTANT=0x00.
@@ -217,7 +220,8 @@ impl DeviceModel {
         match pid {
             PID => Some(DeviceModel::Mvx2u),
             MVX2U_GEN2_PID => Some(DeviceModel::Mvx2uGen2),
-            MV6_PID | MV6_GEN2_PID => Some(DeviceModel::Mv6),
+            MV6_PID => Some(DeviceModel::Mv6),
+            MV6_GEN2_PID => Some(DeviceModel::Mv6Gen2),
             MV7_PID => Some(DeviceModel::Mv7),
             MV7_PLUS_PID => Some(DeviceModel::Mv7Plus),
             _ => None,
@@ -228,7 +232,9 @@ impl DeviceModel {
     pub fn max_gain_tenths(&self) -> u16 {
         match self {
             DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => 600,
-            DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => 360,
+            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => {
+                360
+            }
         }
     }
 
@@ -241,6 +247,7 @@ impl DeviceModel {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => true,
             // The MV7's text shell has no device name.
             DeviceModel::Mv7 => false,
@@ -249,8 +256,47 @@ impl DeviceModel {
 
     pub fn has_gain_lock(&self) -> bool {
         match self {
-            DeviceModel::Mv6 | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mvx2uGen2 => true,
             DeviceModel::Mvx2u | DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
+        }
+    }
+
+    /// Whether the model has two monitor levels: Monitor Mix is then the mic
+    /// level in the headphones and Playback Mix the playback level. Elsewhere
+    /// Monitor Mix is one mic ↔ playback balance.
+    ///
+    /// The MV6 is included because MOTIV shows it with Mic Level and Playback
+    /// Level sliders and its mic level already uses the MV6 Gen 2 packet.
+    /// Unconfirmed on MV6 hardware: that its playback level is FEAT_MIX prefix
+    /// 0x03 like the MV6 Gen 2 and MV7+ (issue #99).
+    pub fn has_playback_mix(&self) -> bool {
+        match self {
+            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => true,
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7 => false,
+        }
+    }
+
+    /// Whether the model has built-in Mic Presets (Speech / Singing / Instrument).
+    pub fn has_mic_presets(&self) -> bool {
+        match self {
+            DeviceModel::Mv6Gen2 => true,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7
+            | DeviceModel::Mv7Plus => false,
+        }
+    }
+
+    /// Whether the Denoiser has a 1–100% level next to its on/off switch.
+    pub fn has_denoiser_level(&self) -> bool {
+        match self {
+            DeviceModel::Mv6Gen2 => true,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7
+            | DeviceModel::Mv7Plus => false,
         }
     }
 
@@ -264,6 +310,7 @@ impl DeviceModel {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => 10,
         }
     }
@@ -282,7 +329,11 @@ impl DeviceModel {
     pub fn eq_step_tenths(&self) -> i16 {
         match self {
             DeviceModel::Mvx2uGen2 => 5,
-            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => 20,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7
+            | DeviceModel::Mv7Plus => 20,
         }
     }
 
@@ -303,8 +354,8 @@ impl DeviceModel {
     /// - MV7+: a CONFIRM ack (`09 00 00`) and a SET echo (`04 02 02`).
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`) and a CONFIRM
     ///   ack (`09 00 00`).
-    /// - MVX2U Gen 1 and MV6: assumed to match (same binary protocol), not yet
-    ///   checked on hardware. If one sends fewer, each missing ack costs one
+    /// - MVX2U Gen 1, MV6 and MV6 Gen 2: assumed to match (same binary protocol),
+    ///   not yet checked on hardware. If one sends fewer, each missing ack costs one
     ///   ack timeout per SET, not a wrong readback.
     /// - MV7: never sends binary SETs.
     pub fn reports_after_confirm(&self) -> usize {
@@ -312,6 +363,7 @@ impl DeviceModel {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => 2,
             DeviceModel::Mv7 => 0,
         }
@@ -323,6 +375,7 @@ impl DeviceModel {
             DeviceModel::Mvx2u => "Shure MVX2U",
             DeviceModel::Mvx2uGen2 => "Shure MVX2U Gen 2",
             DeviceModel::Mv6 => "Shure MV6",
+            DeviceModel::Mv6Gen2 => "Shure MV6 Gen 2",
             DeviceModel::Mv7 => "Shure MV7",
             DeviceModel::Mv7Plus => "Shure MV7+",
         }
@@ -445,12 +498,37 @@ const MV6_FEAT_TONE: [u8; 2] = [0x02, 0x04];
 /// SET confirmed working: standard CMD_SET_FEAT / prefix 0x00.
 const MV6_FEAT_GAIN_LOCK: [u8; 2] = [0x01, 0xF3];
 
+// ── MV6 Gen 2 feature addresses ──────────────────────────────────────────────
+//
+// Found by probe (firmware 1.1.0.21), then confirmed by a USB capture of MOTIV
+// and by writing and reading back each one. Target Level reuses FEAT_AUTO_GAIN
+// ([0x01, 0x87], 4-byte 0/1/2 = Low/Med/High). The 5-band EQ uses the MVX2U Gen 2
+// addresses and 1-byte encoding (EQ_BAND_ADDRS); MOTIV steps it in 2 dB.
+// Monitor levels match the MV7+: FEAT_MIX prefix 0x00 is MOTIV's Mic Level and
+// prefix 0x03 its Playback Level. MOTIV picks a Mic Preset by writing
+// [0x03, 0x87] (see MicPreset); [0x01, 0x78] reports which one the current
+// settings match. SETs use the standard framing (CMD_SET_FEAT, prefix 0x00).
+// MOTIV's Reset to defaults is the MV7+ factory reset packet (cmd_factory_reset).
+
+/// Auto Level Adaptation Rate. 0 = Slow, 1 = Fast.
+const MV6_GEN2_FEAT_ADAPTATION_RATE: [u8; 2] = [0x01, 0x88];
+/// Denoiser level in percent, 1–100 (default 50). The on/off switch stays at
+/// MV6_FEAT_DENOISER; turning it off keeps the level.
+const MV6_GEN2_FEAT_DENOISER_LEVEL: [u8; 2] = [0x01, 0xD1];
+/// Selects a Mic Preset: write its `MicPreset::wire_value()`. The mic then sets
+/// the preset's mode, Denoiser and Popper Stopper itself.
+const MV6_GEN2_FEAT_PRESET_SELECT: [u8; 2] = [0x03, 0x87];
+/// Tone mode. 0 = Simple (the Tone slider, factory default), 1 = Advanced (the
+/// 5-band EQ). Confirmed by capture: MOTIV writes 1 when Advanced is picked.
+const MV6_GEN2_FEAT_TONE_MODE: [u8; 2] = [0x02, 0x05];
+
 // ── MV7+ exclusive feature addresses ─────────────────────────────────────────
 //
 // Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
 // All MV7+ SETs use HDR_CONSTANT=0x00 via build_packet_hdr0().
 // Playback mix uses the same address as FEAT_MIX but with prefix=0x03 (see
-// cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix).
+// cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix). The MV6 Gen 2 shares it;
+// there MOTIV calls the two FEAT_MIX channels Mic Level and Playback Level.
 
 /// Reverb effect on headphone/speaker output. 0=off, 1=on.
 const MV7_FEAT_REVERB_OUTPUT: [u8; 2] = [0x03, 0x82];
@@ -552,9 +630,18 @@ pub struct DeviceState {
     /// while locked. Address [0x01, 0xF3] confirmed by probe diff.
     pub mv6_gain_locked: bool,
 
+    // ── MV6 Gen 2 fields ─────────────────────────────────────────────────────
+    /// Auto Level Adaptation Rate: false = Slow, true = Fast.
+    pub adaptation_rate_fast: bool,
+    /// Denoiser level, 1–100%.
+    pub denoiser_level: u8,
+    /// Tone mode: false = Simple (Tone slider), true = Advanced (5-band EQ).
+    pub tone_advanced: bool,
+
     // ── MV7+ exclusive fields ────────────────────────────────────────────────
-    /// Playback mix: 0=100% mic, 100=100% playback. MV7+ second mix channel.
-    /// Uses same FEAT_MIX address as mic mix but with prefix=0x03 on the wire.
+    /// Playback level in the headphones, 0–100%. MV7+, MV6 Gen 2 and (unconfirmed)
+    /// MV6, where `monitor_mix` is the mic level. Same FEAT_MIX address as
+    /// `monitor_mix`, with prefix=0x03 on the wire.
     pub playback_mix: u8,
     /// Reverb applied to speaker/headphone output.
     pub reverb_on_output: bool,
@@ -631,6 +718,10 @@ impl Default for DeviceState {
             mute_btn_disabled: false,
             tone: 0, // Natural
             mv6_gain_locked: false,
+            // MV6 Gen 2 factory defaults, read back after a MOTIV reset.
+            adaptation_rate_fast: false,
+            denoiser_level: 50,
+            tone_advanced: false,
             // MV7+ defaults
             playback_mix: 0,
             reverb_on_output: false,
@@ -794,6 +885,16 @@ impl AutoGain {
         }
     }
 
+    /// The MV6 Gen 2 shows this setting as Target Level, stored with the same
+    /// values: Quiet/Normal/Loud = Low/Med/High.
+    pub fn target_level_label(&self) -> &'static str {
+        match self {
+            AutoGain::Quiet => "Low",
+            AutoGain::Normal => "Med",
+            AutoGain::Loud => "High",
+        }
+    }
+
     /// Encodes as 4-byte big-endian u32.
     pub(crate) fn as_be_bytes(&self) -> [u8; 4] {
         let v: u32 = match self {
@@ -828,6 +929,85 @@ impl std::fmt::Display for AutoGain {
             AutoGain::Normal => write!(f, "Normal"),
             AutoGain::Loud => write!(f, "Loud"),
         }
+    }
+}
+
+/// MV6 Gen 2 built-in presets (MOTIV's Speech / Singing / Instrument). Each sets
+/// only Auto Level, the Denoiser switch and Popper Stopper. The mic doesn't store
+/// a selection: it reports the preset those three settings match ([0x01, 0x78],
+/// 0xFF for none), so `matching()` derives it from state the same way. Confirmed
+/// on hardware: selecting each one, and Popper Stopper off/on leaving and
+/// returning to Speech.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MicPreset {
+    Speech,
+    Singing,
+    Instrument,
+}
+
+impl MicPreset {
+    pub const ALL: [MicPreset; 3] = [MicPreset::Speech, MicPreset::Singing, MicPreset::Instrument];
+
+    /// Value written to select it. Two is unused.
+    fn wire_value(self) -> u8 {
+        match self {
+            MicPreset::Speech => 0,
+            MicPreset::Singing => 1,
+            MicPreset::Instrument => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MicPreset::Speech => "Speech",
+            MicPreset::Singing => "Singing",
+            MicPreset::Instrument => "Instrument",
+        }
+    }
+
+    pub fn cycle_next(self) -> Self {
+        match self {
+            MicPreset::Speech => MicPreset::Singing,
+            MicPreset::Singing => MicPreset::Instrument,
+            MicPreset::Instrument => MicPreset::Speech,
+        }
+    }
+
+    /// The preset's (mode, Denoiser on, Popper Stopper on).
+    fn settings(self) -> (InputMode, bool, bool) {
+        match self {
+            MicPreset::Speech => (InputMode::Auto, true, true),
+            MicPreset::Singing => (InputMode::Manual, false, true),
+            MicPreset::Instrument => (InputMode::Manual, false, false),
+        }
+    }
+
+    /// Set the preset's mode, Denoiser and Popper Stopper on `state`, as the mic
+    /// does when it is selected.
+    pub fn apply_to(self, state: &mut DeviceState) {
+        (
+            state.mode,
+            state.denoiser_enabled,
+            state.popper_stopper_enabled,
+        ) = self.settings();
+    }
+
+    /// The preset `state` matches, or `None` for any other combination.
+    pub fn matching(state: &DeviceState) -> Option<Self> {
+        let current = (
+            state.mode,
+            state.denoiser_enabled,
+            state.popper_stopper_enabled,
+        );
+        MicPreset::ALL
+            .into_iter()
+            .find(|preset| preset.settings() == current)
+    }
+}
+
+impl std::fmt::Display for MicPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
     }
 }
 
@@ -1477,6 +1657,18 @@ pub fn cmd_get_mv6_tone(seq: u8) -> Vec<u8> {
 pub fn cmd_get_mv6_gain_lock(seq: u8) -> Vec<u8> {
     cmd_get(seq, &MV6_FEAT_GAIN_LOCK)
 }
+
+// ── MV6 Gen 2 GET constructors ────────────────────────────────────────────────
+
+pub fn cmd_get_adaptation_rate(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_GEN2_FEAT_ADAPTATION_RATE)
+}
+pub fn cmd_get_denoiser_level(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_GEN2_FEAT_DENOISER_LEVEL)
+}
+pub fn cmd_get_tone_mode(seq: u8) -> Vec<u8> {
+    cmd_get(seq, &MV6_GEN2_FEAT_TONE_MODE)
+}
 /// GET for MV6 monitor mix. Uses standard framing (HDR_CONSTANT=0x03, prefix=0x00).
 /// Confirmed by Wireshark capture. Note: the device only responds after at least one
 /// SET has been issued — a fresh device returns nothing, which is why the probe sweep
@@ -1810,15 +2002,41 @@ pub fn cmd_set_eq_band_gain(seq: u8, band: usize, gain_tenths: i16, model: Devic
     );
     let clamped = gain_tenths.clamp(-80, 60);
     match model {
-        DeviceModel::Mvx2uGen2 => {
-            // Gen 2: 1-byte signed encoding confirmed by probe capture.
+        DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 => {
+            // 1-byte signed encoding: Gen 2 by probe capture, MV6 Gen 2 by a
+            // capture of MOTIV.
             cmd_set(seq, &EQ_BAND_ADDRS[band].1, &[clamped as i8 as u8])
         }
-        _ => {
-            // Gen 1: 2-byte signed big-endian encoding.
+        // Gen 1: 2-byte signed big-endian encoding. The other models have no
+        // EQ bands and never send this.
+        DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => {
             cmd_set(seq, &EQ_BAND_ADDRS[band].1, &clamped.to_be_bytes())
         }
     }
+}
+
+// ── MV6 Gen 2 SET constructors ────────────────────────────────────────────────
+
+/// Set the Auto Level Adaptation Rate: Slow (false) or Fast (true).
+pub fn cmd_set_adaptation_rate(seq: u8, fast: bool) -> Vec<u8> {
+    cmd_set(seq, &MV6_GEN2_FEAT_ADAPTATION_RATE, &[u8::from(fast)])
+}
+
+/// Set the Tone mode: Simple (false, the Tone slider) or Advanced (true, the
+/// 5-band EQ).
+pub fn cmd_set_mic_preset(seq: u8, preset: MicPreset) -> Vec<u8> {
+    cmd_set(seq, &MV6_GEN2_FEAT_PRESET_SELECT, &[preset.wire_value()])
+}
+
+/// Set the Tone mode: Simple (false, the Tone slider) or Advanced (true, the
+/// 5-band EQ).
+pub fn cmd_set_tone_mode(seq: u8, advanced: bool) -> Vec<u8> {
+    cmd_set(seq, &MV6_GEN2_FEAT_TONE_MODE, &[u8::from(advanced)])
+}
+
+/// Set the Denoiser level. `level` is clamped to 1–100%, MOTIV's slider range.
+pub fn cmd_set_denoiser_level(seq: u8, level: u8) -> Vec<u8> {
+    cmd_set(seq, &MV6_GEN2_FEAT_DENOISER_LEVEL, &[level.clamp(1, 100)])
 }
 
 // ── MV6 SET constructors ──────────────────────────────────────────────────────
@@ -2121,6 +2339,27 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             }
             // Inverted encoding: 0x00=button disabled, 0x01=button active.
             state.mute_btn_disabled = value[0] == 0x00;
+            true
+        }
+        f if f == MV6_GEN2_FEAT_ADAPTATION_RATE => {
+            if value.is_empty() {
+                return false;
+            }
+            state.adaptation_rate_fast = value[0] != 0;
+            true
+        }
+        f if f == MV6_GEN2_FEAT_DENOISER_LEVEL => {
+            if value.is_empty() {
+                return false;
+            }
+            state.denoiser_level = value[0].clamp(1, 100);
+            true
+        }
+        f if f == MV6_GEN2_FEAT_TONE_MODE => {
+            if value.is_empty() {
+                return false;
+            }
+            state.tone_advanced = value[0] != 0;
             true
         }
         f if f == MV6_FEAT_TONE => {
@@ -4500,6 +4739,7 @@ mod tests {
         assert_eq!(DeviceModel::Mvx2u.max_gain_tenths(), 600);
         assert_eq!(DeviceModel::Mvx2uGen2.max_gain_tenths(), 600);
         assert_eq!(DeviceModel::Mv6.max_gain_tenths(), 360);
+        assert_eq!(DeviceModel::Mv6Gen2.max_gain_tenths(), 360);
         assert_eq!(DeviceModel::Mv7.max_gain_tenths(), 360);
     }
 
@@ -4510,6 +4750,7 @@ mod tests {
             DeviceModel::Mvx2u,
             DeviceModel::Mvx2uGen2,
             DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
             DeviceModel::Mv7Plus,
         ] {
             assert_eq!(model.gain_step_tenths(), 10, "{model:?}");
@@ -4535,6 +4776,7 @@ mod tests {
             DeviceModel::Mvx2u,
             DeviceModel::Mvx2uGen2,
             DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
             DeviceModel::Mv7Plus,
         ] {
             assert_eq!(model.reports_after_confirm(), 2, "{model:?}");
@@ -4547,7 +4789,7 @@ mod tests {
         assert_eq!(DeviceModel::from_pid(0x1013), Some(DeviceModel::Mvx2u));
         assert_eq!(DeviceModel::from_pid(0x1033), Some(DeviceModel::Mvx2uGen2));
         assert_eq!(DeviceModel::from_pid(0x1026), Some(DeviceModel::Mv6));
-        assert_eq!(DeviceModel::from_pid(0x1035), Some(DeviceModel::Mv6));
+        assert_eq!(DeviceModel::from_pid(0x1035), Some(DeviceModel::Mv6Gen2));
         assert_eq!(DeviceModel::from_pid(0x1012), Some(DeviceModel::Mv7));
         assert_eq!(DeviceModel::from_pid(0x1019), Some(DeviceModel::Mv7Plus));
         assert_eq!(DeviceModel::from_pid(0x0000), None);
@@ -4604,6 +4846,153 @@ mod tests {
     fn mv6_gain_lock_apply_response_empty_returns_false() {
         let mut state = DeviceState::default();
         assert!(!apply_response(MV6_FEAT_GAIN_LOCK, &[], &mut state));
+    }
+
+    // ── MV6 Gen 2 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn mv6_gen2_set_packets_encode_address_and_value() {
+        let cases: [(Vec<u8>, [u8; 2], u8); 13] = [
+            // Mic Preset selection, as checked on hardware.
+            (
+                cmd_set_mic_preset(0, MicPreset::Speech),
+                MV6_GEN2_FEAT_PRESET_SELECT,
+                0,
+            ),
+            (
+                cmd_set_mic_preset(0, MicPreset::Singing),
+                MV6_GEN2_FEAT_PRESET_SELECT,
+                1,
+            ),
+            (
+                cmd_set_mic_preset(0, MicPreset::Instrument),
+                MV6_GEN2_FEAT_PRESET_SELECT,
+                3,
+            ),
+            // Tone mode and EQ payloads as MOTIV sent them in the capture.
+            (cmd_set_tone_mode(0, true), MV6_GEN2_FEAT_TONE_MODE, 0x01),
+            (cmd_set_tone_mode(0, false), MV6_GEN2_FEAT_TONE_MODE, 0x00),
+            (
+                cmd_set_eq_band_gain(0, 0, 20, DeviceModel::Mv6Gen2),
+                EQ_BAND_ADDRS[0].1,
+                0x14,
+            ),
+            (
+                cmd_set_eq_band_gain(0, 2, 40, DeviceModel::Mv6Gen2),
+                EQ_BAND_ADDRS[2].1,
+                0x28,
+            ),
+            (
+                cmd_set_eq_band_gain(0, 4, -60, DeviceModel::Mv6Gen2),
+                EQ_BAND_ADDRS[4].1,
+                0xc4,
+            ),
+            (
+                cmd_set_adaptation_rate(0, false),
+                MV6_GEN2_FEAT_ADAPTATION_RATE,
+                0x00,
+            ),
+            (
+                cmd_set_adaptation_rate(0, true),
+                MV6_GEN2_FEAT_ADAPTATION_RATE,
+                0x01,
+            ),
+            (
+                cmd_set_denoiser_level(0, 37),
+                MV6_GEN2_FEAT_DENOISER_LEVEL,
+                0x25,
+            ),
+            // Out-of-range levels clamp to MOTIV's 1–100% slider.
+            (
+                cmd_set_denoiser_level(0, 0),
+                MV6_GEN2_FEAT_DENOISER_LEVEL,
+                1,
+            ),
+            (
+                cmd_set_denoiser_level(0, 200),
+                MV6_GEN2_FEAT_DENOISER_LEVEL,
+                100,
+            ),
+        ];
+        for (pkt, addr, value) in cases {
+            assert_eq!(pkt.len(), PACKET_SIZE);
+            assert_eq!(&pkt[10..13], &CMD_SET_FEAT);
+            assert_eq!(pkt[13], 0x00, "standard prefix");
+            assert_eq!(pkt[14..16], addr);
+            assert_eq!(pkt[16], value);
+            let total_len = pkt[1] as usize;
+            let stored_crc = u16::from_be_bytes([pkt[total_len], pkt[total_len + 1]]);
+            assert_eq!(stored_crc, crc16_ansi(&pkt[2..total_len]));
+        }
+    }
+
+    #[test]
+    fn mic_preset_matches_only_its_three_settings() {
+        let mut state = DeviceState::default();
+        for preset in MicPreset::ALL {
+            preset.apply_to(&mut state);
+            assert_eq!(MicPreset::matching(&state), Some(preset));
+            // Settings outside the preset don't change the match.
+            state.denoiser_level = 37;
+            state.hpf = HpfFrequency::Hz150;
+            assert_eq!(MicPreset::matching(&state), Some(preset));
+        }
+        // Speech with Popper Stopper off matches none, as the mic reports 0xFF.
+        MicPreset::Speech.apply_to(&mut state);
+        state.popper_stopper_enabled = false;
+        assert_eq!(MicPreset::matching(&state), None);
+    }
+
+    #[test]
+    fn mv6_gen2_get_packets_use_standard_framing() {
+        for (pkt, addr) in [
+            (cmd_get_adaptation_rate(0), MV6_GEN2_FEAT_ADAPTATION_RATE),
+            (cmd_get_denoiser_level(0), MV6_GEN2_FEAT_DENOISER_LEVEL),
+            (cmd_get_tone_mode(0), MV6_GEN2_FEAT_TONE_MODE),
+        ] {
+            assert_eq!(pkt.len(), PACKET_SIZE);
+            assert_eq!(&pkt[10..13], &CMD_GET_FEAT);
+            assert_eq!(pkt[13], 0x00);
+            assert_eq!(pkt[14..16], addr);
+        }
+    }
+
+    #[test]
+    fn mv6_gen2_apply_response_decodes_probe_values() {
+        // Values read from an MV6 Gen 2 (firmware 1.1.0.21) at factory defaults
+        // and after changing each setting in MOTIV.
+        let mut state = DeviceState::default();
+        let set_reply = make_response(0, &RES_GET_FEAT, &MV6_GEN2_FEAT_ADAPTATION_RATE, &[0x01]);
+        let (addr, value) = parse_response(&set_reply).expect("valid reply");
+        assert!(apply_response(addr, &value, &mut state));
+        assert!(state.adaptation_rate_fast);
+
+        assert!(apply_response(
+            MV6_GEN2_FEAT_DENOISER_LEVEL,
+            &[0x25],
+            &mut state
+        ));
+        assert_eq!(state.denoiser_level, 37);
+        assert!(apply_response(MV6_GEN2_FEAT_TONE_MODE, &[0x01], &mut state));
+        assert!(state.tone_advanced, "1 = Advanced");
+        assert!(apply_response(MV6_GEN2_FEAT_TONE_MODE, &[0x00], &mut state));
+        assert!(!state.tone_advanced, "0 = Simple");
+        // EQ bands: 1-byte tenths, as MOTIV wrote them (+2, +4, -6 dB).
+        for (band, byte, tenths) in [(0, 0x14, 20), (2, 0x28, 40), (4, 0xc4, -60)] {
+            assert!(apply_response(EQ_BAND_ADDRS[band].1, &[byte], &mut state));
+            assert_eq!(state.eq_bands[band].gain_db, tenths);
+        }
+        // Target Level is the Gen 1 Gain Environment address: 4 bytes, 2 = High.
+        assert!(apply_response(FEAT_AUTO_GAIN, &[0, 0, 0, 2], &mut state));
+        assert_eq!(state.auto_gain, AutoGain::Loud);
+
+        for addr in [
+            MV6_GEN2_FEAT_ADAPTATION_RATE,
+            MV6_GEN2_FEAT_DENOISER_LEVEL,
+            MV6_GEN2_FEAT_TONE_MODE,
+        ] {
+            assert!(!apply_response(addr, &[], &mut state), "{addr:02x?} empty");
+        }
     }
 
     // ── Gen 2 EQ band gain apply_response ─────────────────────────────────────
@@ -5281,6 +5670,7 @@ mod tests {
     fn only_mv6_and_gen2_have_gain_lock() {
         assert!(DeviceModel::Mv6.has_gain_lock());
         assert!(DeviceModel::Mvx2uGen2.has_gain_lock());
+        assert!(DeviceModel::Mv6Gen2.has_gain_lock());
         assert!(!DeviceModel::Mvx2u.has_gain_lock());
         assert!(!DeviceModel::Mv7.has_gain_lock());
         assert!(!DeviceModel::Mv7Plus.has_gain_lock());

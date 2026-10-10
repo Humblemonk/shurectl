@@ -13,8 +13,8 @@ use crate::app::{App, Focus, Tab};
 use crate::mouse::{HitMap, Target};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
-    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, ReverbType,
-    format_gain,
+    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, MicPreset,
+    ReverbType, format_gain,
 };
 
 /// Keep hit regions beside the layout that draws them, not in a second layout.
@@ -279,6 +279,8 @@ fn draw_main_left(f: &mut UiFrame, app: &App, area: Rect) {
         (DeviceModel::Mv7Plus, InputMode::Auto) => draw_main_left_mv7plus_auto(f, app, area),
         (DeviceModel::Mv6, InputMode::Manual) => draw_main_left_mv6_manual(f, app, area),
         (DeviceModel::Mv6, InputMode::Auto) => draw_main_left_mv6_auto(f, app, area),
+        (DeviceModel::Mv6Gen2, InputMode::Manual) => draw_main_left_mv6_manual(f, app, area),
+        (DeviceModel::Mv6Gen2, InputMode::Auto) => draw_main_left_mv6_gen2_auto(f, app, area),
         (DeviceModel::Mv7, InputMode::Manual) => draw_main_left_mv7_manual(f, app, area),
         (DeviceModel::Mv7, InputMode::Auto) => draw_main_left_mv7_auto(f, app, area),
         (DeviceModel::Mvx2uGen2, InputMode::Manual) => draw_main_left_gen2_manual(f, app, area),
@@ -310,7 +312,7 @@ fn draw_main_left_mv7plus(f: &mut UiFrame, app: &App, area: Rect) {
 
     draw_meter(f, app, rows[3]);
     draw_monitor_mix_gauge(f, app, rows[4]);
-    draw_mv7plus_playback_mix_gauge(f, app, rows[5]);
+    draw_playback_mix_gauge(f, app, rows[5]);
 }
 
 fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
@@ -331,10 +333,13 @@ fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
     draw_mute_block(f, app, rows[1]);
     draw_meter(f, app, rows[2]);
     draw_monitor_mix_gauge(f, app, rows[3]);
-    draw_mv7plus_playback_mix_gauge(f, app, rows[4]);
+    draw_playback_mix_gauge(f, app, rows[4]);
 }
 
-fn draw_mv7plus_playback_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
+/// Playback Mix: the playback level in the headphones, on models with two
+/// monitor levels (MV7+, MV6 Gen 2, MV6). Orange, not Monitor Mix blue, to tell the
+/// two adjacent gauges apart at a glance.
+fn draw_playback_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::PlaybackMix);
     let focused = app.focus == Focus::PlaybackMix;
     let mix = app.device_state.playback_mix;
@@ -359,7 +364,7 @@ fn draw_mv7plus_playback_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
         )
         .gauge_style(Style::default().fg(Color::Rgb(200, 100, 50)).bg(C_SURFACE))
         .ratio(mix as f64 / 100.0)
-        .label(format!("Mic ◄─{:3}%─► Playback", mix));
+        .label(format!("Playback level {mix:3}%"));
     f.render_widget(gauge, area);
 }
 
@@ -405,7 +410,7 @@ fn draw_main_left_mv7_auto(f: &mut UiFrame, app: &App, area: Rect) {
 
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
-    draw_auto_controls(f, app, rows[2], false);
+    draw_auto_controls(f, app, rows[2], &[AutoRow::Position, AutoRow::Tone]);
     draw_meter(f, app, rows[3]);
     draw_monitor_mix_gauge(f, app, rows[4]);
     draw_config_lock_block(f, app, rows[5]);
@@ -421,6 +426,8 @@ fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // gain lock
             Constraint::Length(4), // level meter
             Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // playback mix (MV6 Gen 2)
+            Constraint::Length(3), // mic preset (MV6 Gen 2)
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -435,6 +442,50 @@ fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
 
     draw_meter(f, app, rows[4]);
     draw_monitor_mix_gauge(f, app, rows[5]);
+    if app.device_model.has_playback_mix() {
+        draw_playback_mix_gauge(f, app, rows[6]);
+    }
+    if app.device_model.has_mic_presets() {
+        draw_mic_preset_block(f, app, rows[7]);
+    }
+}
+
+/// MV6 Gen 2 built-in presets. None is highlighted when the mode, Denoiser and
+/// Popper Stopper match none of them, as the mic itself reports.
+fn draw_mic_preset_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::MicPreset);
+    let focused = app.focus == Focus::MicPreset;
+    let current = MicPreset::matching(&app.device_state);
+    let mut spans = vec![Span::styled("Preset:  ", Style::default().fg(C_DIM))];
+    for (i, preset) in MicPreset::ALL.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(segmented_span(
+            preset.label(),
+            current == Some(preset),
+            focused,
+        ));
+    }
+    if current.is_none() {
+        spans.push(Span::styled("  (custom)", Style::default().fg(C_DIM)));
+    }
+    spans.push(Span::styled(
+        if focused { "  [Enter] cycle" } else { "" },
+        Style::default().fg(C_DIM),
+    ));
+    let p = Paragraph::new(Line::from(spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if focused {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .title(Span::styled("  Mic Preset  ", focused_style(focused))),
+    );
+    f.render_widget(p, area);
 }
 
 fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
@@ -445,6 +496,7 @@ fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // mute
             Constraint::Length(4), // level meter
             Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // playback mix
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -454,6 +506,40 @@ fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
     draw_mute_block(f, app, rows[1]);
     draw_meter(f, app, rows[2]);
     draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_playback_mix_gauge(f, app, rows[4]);
+}
+
+// MV6 Gen 2 Auto: the MV6 Auto layout plus its Auto Level controls, placed where
+// the MVX2U Gen 1 has them (between Mute and the meter), the MV7+ Playback Mix, and
+// the Mic Preset last.
+fn draw_main_left_mv6_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // mode
+            Constraint::Length(3), // mute
+            Constraint::Length(4), // auto controls (2 rows + 2 borders)
+            Constraint::Length(4), // level meter
+            Constraint::Length(3), // monitor mix
+            Constraint::Length(3), // playback mix
+            Constraint::Length(3), // mic preset
+            Constraint::Min(0),    // spacer
+        ])
+        .margin(1)
+        .split(area);
+
+    draw_mode_block(f, app, rows[0]);
+    draw_mute_block(f, app, rows[1]);
+    draw_auto_controls(
+        f,
+        app,
+        rows[2],
+        &[AutoRow::TargetLevel, AutoRow::AdaptationRate],
+    );
+    draw_meter(f, app, rows[3]);
+    draw_monitor_mix_gauge(f, app, rows[4]);
+    draw_playback_mix_gauge(f, app, rows[5]);
+    draw_mic_preset_block(f, app, rows[6]);
 }
 
 // Gen 2 Manual: Mode → Mute → Gain → GainLock → Meter → MonitorMix → Phantom
@@ -548,21 +634,84 @@ fn draw_main_left_auto(f: &mut UiFrame, app: &App, area: Rect) {
 
     draw_mode_block(f, app, rows[0]);
     draw_mute_block(f, app, rows[1]);
-    draw_auto_controls(f, app, rows[2], true);
+    draw_auto_controls(
+        f,
+        app,
+        rows[2],
+        &[AutoRow::Position, AutoRow::Tone, AutoRow::Gain],
+    );
     draw_main_shared(f, app, &rows[3..]);
 }
 
-/// Renders the Auto Level sub-controls: Position, Tone, and (when
-/// `show_auto_gain`) Gain. The MV7 has no Auto Gain setting.
+/// One row of the Auto Level controls block. Each model passes the rows it has.
+#[derive(Clone, Copy)]
+enum AutoRow {
+    Position,
+    Tone,
+    /// MVX2U Gen 1 Auto Gain.
+    Gain,
+    /// MV6 Gen 2 Target Level: the same setting as `Gain`, under its own name.
+    TargetLevel,
+    AdaptationRate,
+}
+
+impl AutoRow {
+    fn focus(self) -> Focus {
+        match self {
+            AutoRow::Position => Focus::AutoPosition,
+            AutoRow::Tone => Focus::AutoTone,
+            AutoRow::Gain | AutoRow::TargetLevel => Focus::AutoGain,
+            AutoRow::AdaptationRate => Focus::AdaptationRate,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            AutoRow::Position => "Mic Position:",
+            AutoRow::Tone => "Tone:",
+            AutoRow::Gain => "Gain:",
+            AutoRow::TargetLevel => "Target Level:",
+            AutoRow::AdaptationRate => "Adaptation Rate:",
+        }
+    }
+
+    /// Each option's label and whether it is the current value.
+    fn options(self, app: &App) -> Vec<(&'static str, bool)> {
+        let ds = &app.device_state;
+        match self {
+            AutoRow::Position => vec![
+                ("Near", ds.auto_position == MicPosition::Near),
+                ("Far", ds.auto_position == MicPosition::Far),
+            ],
+            AutoRow::Tone => vec![
+                ("Dark", ds.auto_tone == AutoTone::Dark),
+                ("Natural", ds.auto_tone == AutoTone::Natural),
+                ("Bright", ds.auto_tone == AutoTone::Bright),
+            ],
+            AutoRow::Gain => vec![
+                ("Quiet", ds.auto_gain == AutoGain::Quiet),
+                ("Normal", ds.auto_gain == AutoGain::Normal),
+                ("Loud", ds.auto_gain == AutoGain::Loud),
+            ],
+            AutoRow::TargetLevel => [AutoGain::Quiet, AutoGain::Normal, AutoGain::Loud]
+                .iter()
+                .map(|gain| (gain.target_level_label(), ds.auto_gain == *gain))
+                .collect(),
+            AutoRow::AdaptationRate => vec![
+                ("Slow", !ds.adaptation_rate_fast),
+                ("Fast", ds.adaptation_rate_fast),
+            ],
+        }
+    }
+}
+
+/// Renders the Auto Level sub-controls, one `rows` entry per line.
 ///
 /// Each row shows all options for that setting as a horizontal "segmented
 /// button" strip, with the active value highlighted in the accent colour
 /// and focused rows highlighted with the focus border/colour.
-fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, show_auto_gain: bool) {
-    let pos_focused = app.focus == Focus::AutoPosition;
-    let tone_focused = app.focus == Focus::AutoTone;
-    let gain_focused = app.focus == Focus::AutoGain;
-    let any_focused = pos_focused || tone_focused || gain_focused;
+fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, rows: &[AutoRow]) {
+    let any_focused = rows.iter().any(|row| app.focus == row.focus());
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -583,85 +732,35 @@ fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, show_auto_gain: bo
     let inner_area = block.inner(area);
     f.render_widget(block, area);
 
-    // Mic Position, Tone, and (when shown) Auto Gain: one line each.
-    let row_count = if show_auto_gain { 3 } else { 2 };
     // Horizontal padding only: vertical padding cost two rows and squeezed the
     // Tone row out of 30-row terminals.
     let inner_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1); row_count])
+        .constraints(vec![Constraint::Length(1); rows.len()])
         .horizontal_margin(1)
         .split(inner_area);
+    // Options start in one column: pad every label to the longest plus a space.
+    let label_width = rows.iter().map(|row| row.label().len()).max().unwrap_or(0) + 1;
 
-    f.control(inner_rows[0], Focus::AutoPosition);
-    f.control(inner_rows[1], Focus::AutoTone);
-    if show_auto_gain {
-        f.control(inner_rows[2], Focus::AutoGain);
+    for (row, row_area) in rows.iter().zip(inner_rows.iter()) {
+        let focused = app.focus == row.focus();
+        f.control(*row_area, row.focus());
+        let mut spans = vec![Span::styled(
+            format!("{:<label_width$}", row.label()),
+            Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
+        )];
+        for (i, (label, active)) in row.options(app).into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(segmented_span(label, active, focused));
+        }
+        spans.push(Span::styled(
+            if focused { "  [Enter] cycle" } else { "" },
+            Style::default().fg(C_DIM),
+        ));
+        f.render_widget(Paragraph::new(Line::from(spans)), *row_area);
     }
-
-    // ── Mic Position row ──────────────────────────────────────────────────────
-    let pos = &app.device_state.auto_position;
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Mic Position: ",
-                Style::default().fg(if pos_focused { C_FOCUS } else { C_DIM }),
-            ),
-            segmented_span("Near", pos == &MicPosition::Near, pos_focused),
-            Span::raw("  "),
-            segmented_span("Far", pos == &MicPosition::Far, pos_focused),
-            Span::styled(
-                if pos_focused { "  [Enter] cycle" } else { "" },
-                Style::default().fg(C_DIM),
-            ),
-        ])),
-        inner_rows[0],
-    );
-
-    // ── Tone row ──────────────────────────────────────────────────────────────
-    let tone = &app.device_state.auto_tone;
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Tone:         ",
-                Style::default().fg(if tone_focused { C_FOCUS } else { C_DIM }),
-            ),
-            segmented_span("Dark", tone == &AutoTone::Dark, tone_focused),
-            Span::raw("  "),
-            segmented_span("Natural", tone == &AutoTone::Natural, tone_focused),
-            Span::raw("  "),
-            segmented_span("Bright", tone == &AutoTone::Bright, tone_focused),
-            Span::styled(
-                if tone_focused { "  [Enter] cycle" } else { "" },
-                Style::default().fg(C_DIM),
-            ),
-        ])),
-        inner_rows[1],
-    );
-
-    // ── Auto Gain row ─────────────────────────────────────────────────────────
-    if !show_auto_gain {
-        return;
-    }
-    let gain = &app.device_state.auto_gain;
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Gain:         ",
-                Style::default().fg(if gain_focused { C_FOCUS } else { C_DIM }),
-            ),
-            segmented_span("Quiet", gain == &AutoGain::Quiet, gain_focused),
-            Span::raw("  "),
-            segmented_span("Normal", gain == &AutoGain::Normal, gain_focused),
-            Span::raw("  "),
-            segmented_span("Loud", gain == &AutoGain::Loud, gain_focused),
-            Span::styled(
-                if gain_focused { "  [Enter] cycle" } else { "" },
-                Style::default().fg(C_DIM),
-            ),
-        ])),
-        inner_rows[2],
-    );
 }
 
 /// Render a segmented-button option: active value is bold+accent,
@@ -843,7 +942,12 @@ fn draw_monitor_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
         )
         .gauge_style(Style::default().fg(Color::Rgb(50, 150, 220)).bg(C_SURFACE))
         .ratio(mix as f64 / 100.0)
-        .label(format!("Mic ◄─{:3}%─► Playback", mix));
+        // With a separate Playback Mix, Monitor Mix is the mic level alone.
+        .label(if app.device_model.has_playback_mix() {
+            format!("Mic level {mix:3}%")
+        } else {
+            format!("Mic ◄─{mix:3}%─► Playback")
+        });
     f.render_widget(mix_gauge, area);
 }
 
@@ -1118,9 +1222,11 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
             ]);
             l
         }
-        DeviceModel::Mv6 => {
+        DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => {
             let pct = ds.tone as i32 * 10;
-            let tone_str = if pct < 0 {
+            let tone_str = if app.device_model == DeviceModel::Mv6Gen2 && ds.tone_advanced {
+                "5-band EQ".to_string()
+            } else if pct < 0 {
                 format!("{}% Dark", pct.abs())
             } else if pct > 0 {
                 format!("{}% Bright", pct)
@@ -1138,6 +1244,16 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
                     Span::styled(tone_str, Style::default().fg(C_TEXT)),
                 ]),
             ];
+            if app.device_model.has_mic_presets() {
+                let preset = MicPreset::matching(ds).map_or("Custom", MicPreset::label);
+                l.insert(
+                    2,
+                    Line::from(vec![
+                        Span::styled("Mic Preset  : ", Style::default().fg(C_DIM)),
+                        Span::styled(preset, Style::default().fg(C_TEXT)),
+                    ]),
+                );
+            }
             if ds.mode == InputMode::Manual {
                 l.push(Line::from(vec![
                     Span::styled("Gain        : ", Style::default().fg(C_DIM)),
@@ -1150,6 +1266,25 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
                     } else {
                         Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
                     },
+                ]));
+            } else if app.device_model == DeviceModel::Mv6Gen2 {
+                l.push(Line::from(vec![
+                    Span::styled("Target Lvl  : ", Style::default().fg(C_DIM)),
+                    Span::styled(
+                        ds.auto_gain.target_level_label(),
+                        Style::default().fg(C_TEXT),
+                    ),
+                ]));
+                l.push(Line::from(vec![
+                    Span::styled("Adaptation  : ", Style::default().fg(C_DIM)),
+                    Span::styled(
+                        if ds.adaptation_rate_fast {
+                            "Fast"
+                        } else {
+                            "Slow"
+                        },
+                        Style::default().fg(C_TEXT),
+                    ),
                 ]));
             }
             l.extend([
@@ -1172,10 +1307,13 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("Denoiser    : ", Style::default().fg(C_DIM)),
-                    if ds.denoiser_enabled {
-                        Span::styled("ON", Style::default().fg(C_SUCCESS))
-                    } else {
-                        Span::styled("OFF", Style::default().fg(C_DIM))
+                    match (ds.denoiser_enabled, app.device_model.has_denoiser_level()) {
+                        (true, true) => Span::styled(
+                            format!("ON ({}%)", ds.denoiser_level),
+                            Style::default().fg(C_SUCCESS),
+                        ),
+                        (true, false) => Span::styled("ON", Style::default().fg(C_SUCCESS)),
+                        (false, _) => Span::styled("OFF", Style::default().fg(C_DIM)),
                     },
                 ]),
                 Line::from(vec![
@@ -1671,6 +1809,68 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
 // MV6 EQ Tab — Tone control
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_mv6_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .margin(1)
+        .split(area);
+    draw_tone_gauge(f, app, rows[0]);
+}
+
+// MV6 Gen 2 EQ: Tone Mode on top, then the Tone slider (Simple) or the 5-band
+// editor shared with the MVX2U Gen 2 (Advanced), as MOTIV lays it out.
+fn draw_mv6_gen2_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .margin(1)
+        .split(area);
+    draw_tone_mode_block(f, app, rows[0]);
+    if app.device_state.tone_advanced {
+        draw_eq_bands(f, app, rows[1]);
+    } else {
+        draw_tone_gauge(
+            f,
+            app,
+            rows[1].intersection(Rect {
+                height: 3,
+                ..rows[1]
+            }),
+        );
+    }
+}
+
+/// The MV6 Gen 2 Simple / Advanced switch, styled like the Input Mode block.
+fn draw_tone_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
+    f.control(area, Focus::ToneMode);
+    let focused = app.focus == Focus::ToneMode;
+    let advanced = app.device_state.tone_advanced;
+    let p = Paragraph::new(Line::from(vec![
+        Span::styled("Tone:  ", Style::default().fg(C_DIM)),
+        segmented_span("Simple", !advanced, focused),
+        Span::raw("  "),
+        segmented_span("Advanced (5-band EQ)", advanced, focused),
+        Span::styled(
+            if focused { "  [Enter] toggle" } else { "" },
+            Style::default().fg(C_DIM),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if focused {
+                Style::default().fg(C_FOCUS)
+            } else {
+                Style::default().fg(C_BORDER)
+            })
+            .title(Span::styled("  Tone Mode  ", focused_style(focused))),
+    );
+    f.render_widget(p, area);
+}
+
+/// The Tone slider (Dark ↔ Natural ↔ Bright), drawn into a 3-row `area`.
+fn draw_tone_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
     let tone_foc = app.focus == Focus::Tone;
     let tone = ds.tone;
@@ -1683,12 +1883,6 @@ fn draw_mv6_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
         "Natural".to_string()
     };
     let tone_ratio = (tone as f64 + 10.0) / 20.0;
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .margin(1)
-        .split(area);
 
     let tone_gauge = Gauge::default()
         .block(
@@ -1724,8 +1918,8 @@ fn draw_mv6_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
         )
         .ratio(tone_ratio)
         .label(format!("Dark ◄─{:+}─► Bright", pct));
-    f.control(rows[0], Focus::Tone);
-    f.render_widget(tone_gauge, rows[0]);
+    f.control(area, Focus::Tone);
+    f.render_widget(tone_gauge, area);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1764,27 +1958,49 @@ fn draw_toggle_card(
     description: &[&str],
     area: Rect,
 ) {
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(status_label, Style::default().fg(C_DIM)),
-            bool_span(value),
-        ]),
-        Line::from(""),
-    ];
+    let status = vec![toggle_status_line(status_label, value)];
+    let card = StatusCard {
+        title,
+        status,
+        description,
+        hint: "[Enter] to toggle",
+    };
+    draw_status_card(f, focused, card, area);
+}
+
+fn toggle_status_line(label: &str, value: bool) -> Line<'_> {
+    Line::from(vec![
+        Span::styled(label, Style::default().fg(C_DIM)),
+        bool_span(value),
+    ])
+}
+
+/// The parts of a Dynamics card: its status lines (current values), a dim
+/// description, and the key hint, which takes the focus colour when focused.
+struct StatusCard<'a> {
+    title: &'a str,
+    status: Vec<Line<'a>>,
+    description: &'a [&'a str],
+    hint: &'a str,
+}
+
+fn draw_status_card(f: &mut UiFrame, focused: bool, card: StatusCard, area: Rect) {
+    let mut lines = vec![Line::from("")];
+    lines.extend(card.status);
+    lines.push(Line::from(""));
     lines.extend(
-        description
+        card.description
             .iter()
             .map(|text| Line::from(Span::styled(*text, Style::default().fg(C_DIM)))),
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "[Enter] to toggle",
+        card.hint,
         Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
     )));
 
     f.render_widget(
-        Paragraph::new(lines).block(card_block(title, focused)),
+        Paragraph::new(lines).block(card_block(card.title, focused)),
         area,
     );
 }
@@ -1839,15 +2055,59 @@ fn enum_options<T: PartialEq + ToString>(variants: &[T], current: T) -> Vec<(Str
 
 fn draw_denoiser_card(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::Denoiser);
-    draw_toggle_card(
-        f,
-        app.focus == Focus::Denoiser,
-        "Denoiser",
-        "Status: ",
-        app.device_state.denoiser_enabled,
-        &["Reduces background", "noise in real time."],
-        area,
-    );
+    let ds = &app.device_state;
+    let focused = app.focus == Focus::Denoiser;
+    let description = &["Reduces background", "noise in real time."];
+    if !app.device_model.has_denoiser_level() {
+        draw_toggle_card(
+            f,
+            focused,
+            "Denoiser",
+            "Status: ",
+            ds.denoiser_enabled,
+            description,
+            area,
+        );
+        return;
+    }
+
+    // MV6 Gen 2: ←/→ sets the level. It reads as a value like Status, dimmed
+    // while the Denoiser is off (the mic keeps it for when it is back on).
+    // The 10-cell bar fits the narrowest card (80 columns).
+    let level = ds.denoiser_level.min(100);
+    let filled = usize::from(level.div_ceil(10));
+    let (value_style, bar_style) = if ds.denoiser_enabled {
+        (
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_ACCENT),
+        )
+    } else {
+        (Style::default().fg(C_DIM), Style::default().fg(C_DISABLED))
+    };
+    let status = vec![
+        toggle_status_line("Status: ", ds.denoiser_enabled),
+        Line::from(vec![
+            Span::styled("Level:  ", Style::default().fg(C_DIM)),
+            Span::styled(format!("{level}%"), value_style),
+            // Shown next to the value, like the Tone slider's hint, so it
+            // fits the narrowest card.
+            Span::styled(
+                if focused { " ◄ ►" } else { "" },
+                Style::default().fg(C_FOCUS),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("█".repeat(filled), bar_style),
+            Span::styled("░".repeat(10 - filled), Style::default().fg(C_DISABLED)),
+        ]),
+    ];
+    let card = StatusCard {
+        title: "Denoiser",
+        status,
+        description,
+        hint: "[Enter] to toggle",
+    };
+    draw_status_card(f, focused, card, area);
 }
 
 fn draw_popper_stopper_card(f: &mut UiFrame, app: &App, area: Rect) {
@@ -1957,14 +2217,18 @@ fn draw_gen2_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
         draw_mv6_eq_tab(f, app, area);
         return;
     }
+    draw_eq_bands(f, app, area.inner(Margin::new(1, 1)));
+}
 
+/// The 5-band EQ editor (band selector + one column per band) without master or
+/// per-band enables. Shared by the MVX2U Gen 2 and the MV6 Gen 2 (Advanced).
+fn draw_eq_bands(f: &mut UiFrame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // band selector header
             Constraint::Min(0),    // band columns
         ])
-        .margin(1)
         .split(area);
 
     f.control(chunks[0], Focus::EqBandSelect);
@@ -2199,7 +2463,11 @@ fn render_notice(f: &mut UiFrame, area: Rect, lines: Vec<Line>) {
 // EQ Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    if app.device_model == DeviceModel::Mv6 || app.device_model == DeviceModel::Mv7Plus {
+    if app.device_model == DeviceModel::Mv6Gen2 {
+        draw_mv6_gen2_eq_tab(f, app, area);
+        return;
+    }
+    if matches!(app.device_model, DeviceModel::Mv6 | DeviceModel::Mv7Plus) {
         draw_mv6_eq_tab(f, app, area);
         return;
     }
@@ -2878,7 +3146,7 @@ fn draw_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
         draw_mv7plus_dynamics_tab(f, app, area);
         return;
     }
-    if app.device_model == DeviceModel::Mv6 {
+    if matches!(app.device_model, DeviceModel::Mv6 | DeviceModel::Mv6Gen2) {
         draw_mv6_dynamics_tab(f, app, area);
         return;
     }
@@ -3149,7 +3417,8 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let (vid_pid, gain_range) = match model {
         DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
         DeviceModel::Mvx2uGen2 => ("14ED:1033", "0–60 dB"),
-        DeviceModel::Mv6 => ("14ED:1026 or 1035 (Gen 2)", "0–36 dB"),
+        DeviceModel::Mv6 => ("14ED:1026", "0–36 dB"),
+        DeviceModel::Mv6Gen2 => ("14ED:1035", "0–36 dB"),
         DeviceModel::Mv7 => ("14ED:1012", "0–36 dB (1.5 dB steps)"),
         DeviceModel::Mv7Plus => ("14ED:1019", "0–36 dB"),
     };
@@ -3283,6 +3552,28 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
+            ("  Monitor Mix  : ", "Mic level 0–100%"),
+            ("  Playback Mix : ", "Playback level 0–100% (unconfirmed)"),
+            ("  Mute Button  : ", "Enable / Disable"),
+        ],
+        DeviceModel::Mv6Gen2 => &[
+            ("  Denoiser     : ", "On / Off, level 1–100%"),
+            ("  Popper Stop. : ", "On / Off"),
+            (
+                "  Tone         : ",
+                "Simple: Dark (−100%) → Natural → Bright (+100%)",
+            ),
+            (
+                "  5-band EQ    : ",
+                "Advanced tone mode, −8 to +6 dB in 2 dB steps",
+            ),
+            ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
+            ("  Auto Level   : ", "On / Off"),
+            ("  Target Level : ", "Low / Med / High (Auto mode)"),
+            ("  Adaptation   : ", "Slow / Fast (Auto mode)"),
+            ("  Mic Preset   : ", "Speech / Singing / Instrument"),
+            ("  Monitor Mix  : ", "Mic level 0–100%"),
+            ("  Playback Mix : ", "Playback level 0–100%"),
             ("  Mute Button  : ", "Enable / Disable"),
         ],
         DeviceModel::Mv7 => &[
@@ -3307,8 +3598,8 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
             ("  Mute Button  : ", "Enable / Disable"),
-            ("  Monitor Mix  : ", "0–100% (mic ↔ playback)"),
-            ("  Playback Mix : ", "0–100% (independent second channel)"),
+            ("  Monitor Mix  : ", "Mic level 0–100%"),
+            ("  Playback Mix : ", "Playback level 0–100%"),
             (
                 "  Reverb       : ",
                 "Plate / Hall / Studio; intensity 0–100%",
@@ -3532,6 +3823,7 @@ mod tests {
             DeviceModel::Mvx2u,
             DeviceModel::Mvx2uGen2,
             DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
             DeviceModel::Mv7,
             DeviceModel::Mv7Plus,
         ];

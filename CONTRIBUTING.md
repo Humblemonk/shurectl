@@ -85,6 +85,7 @@ The probe binary is named `shurectl-probe` and is gated behind the `probe` cargo
 cargo run --bin shurectl-probe --features probe                          # scan the connected device
 cargo run --bin shurectl-probe --features probe -- --pid 0x1013          # MVX2U Gen 1
 cargo run --bin shurectl-probe --features probe -- --pid 0x1026          # MV6
+cargo run --bin shurectl-probe --features probe -- --pid 0x1035          # MV6 Gen 2
 cargo run --bin shurectl-probe --features probe -- --also-mix-class      # also sweep mix-class prefix
 cargo run --bin shurectl-probe --features probe -- --also-lock-class     # also sweep lock-class
 cargo run --bin shurectl-probe --features probe -- --page 0x03           # sweep a specific page only

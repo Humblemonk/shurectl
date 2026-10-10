@@ -89,7 +89,8 @@ impl std::str::FromStr for MuteAction {
 )]
 struct Cli {
     /// Run in demo mode without a real device.
-    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6, mv7, mv7plus.
+    /// Optionally specify which device model to simulate: mvx2u (default), mvx2u-gen2, mv6,
+    /// mv6-gen2, mv7, mv7plus.
     #[arg(long, short, num_args = 0..=1, default_missing_value = "mvx2u", value_name = "MODEL")]
     demo: Option<String>,
 
@@ -323,11 +324,12 @@ fn parse_demo_model(s: &str) -> Result<DeviceModel> {
         "mvx2u" => Ok(DeviceModel::Mvx2u),
         "mvx2u-gen2" | "mvx2ugen2" => Ok(DeviceModel::Mvx2uGen2),
         "mv6" => Ok(DeviceModel::Mv6),
+        "mv6-gen2" | "mv6gen2" => Ok(DeviceModel::Mv6Gen2),
         "mv7" => Ok(DeviceModel::Mv7),
         "mv7plus" | "mv7+" => Ok(DeviceModel::Mv7Plus),
         other => {
             anyhow::bail!(
-                "unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6, mv7, mv7plus"
+                "unknown demo model \"{other}\". Valid options: mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7, mv7plus"
             )
         }
     }
@@ -665,7 +667,11 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                 .and_then(|()| resync_mv7_state(app, device))
         }
         DeviceAction::SetAutoGain(gain) => {
-            app.set_ok(format!("Auto Gain → {}", gain));
+            app.set_ok(if app.device_model == DeviceModel::Mv6Gen2 {
+                format!("Target Level → {}", gain.target_level_label())
+            } else {
+                format!("Auto Gain → {gain}")
+            });
             send_if_connected(device, |d| d.set_auto_gain(gain))
         }
         DeviceAction::SetMute(m) => {
@@ -733,6 +739,29 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
         DeviceAction::SetMv6Denoiser(en) => {
             app.set_ok(format!("Denoiser → {}", if *en { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_mv6_denoiser(*en))
+        }
+        DeviceAction::SetAdaptationRate(fast) => {
+            app.set_ok(format!(
+                "Adaptation Rate → {}",
+                if *fast { "Fast" } else { "Slow" }
+            ));
+            send_if_connected(device, |d| d.set_adaptation_rate(*fast))
+        }
+        DeviceAction::SetMicPreset(preset) => {
+            app.set_ok(format!("Mic Preset → {preset}"));
+            send_if_connected(device, |d| d.set_mic_preset(*preset))
+        }
+        DeviceAction::SetToneMode(advanced) => {
+            app.set_ok(if *advanced {
+                "Tone → Advanced (5-band EQ)"
+            } else {
+                "Tone → Simple"
+            });
+            send_if_connected(device, |d| d.set_tone_mode(*advanced))
+        }
+        DeviceAction::SetDenoiserLevel(level) => {
+            app.set_ok(format!("Denoiser Level → {level}%"));
+            send_if_connected(device, |d| d.set_denoiser_level(*level))
         }
         DeviceAction::SetMv6PopperStopper(en) => {
             app.set_ok(format!(
@@ -1185,13 +1214,23 @@ fn apply_preset_to_device(
                     d.set_eq_band_gain(band, eq.gain_db)?;
                 }
             }
-            DeviceModel::Mv6 => {
+            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => {
                 d.set_mv6_denoiser(state.denoiser_enabled)?;
                 d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
                 d.set_mv6_tone(state.tone)?;
                 d.set_mv6_gain_lock(state.mv6_gain_locked)?;
                 d.set_mv6_monitor_mix(state.monitor_mix)?;
+                d.set_mv7_playback_mix(state.playback_mix)?;
+                if model == DeviceModel::Mv6Gen2 {
+                    d.set_auto_gain(&state.auto_gain)?;
+                    d.set_adaptation_rate(state.adaptation_rate_fast)?;
+                    d.set_denoiser_level(state.denoiser_level)?;
+                    for (band, eq) in state.eq_bands.iter().enumerate() {
+                        d.set_eq_band_gain(band, eq.gain_db)?;
+                    }
+                    d.set_tone_mode(state.tone_advanced)?;
+                }
             }
             DeviceModel::Mv7 => {
                 if state.mode == InputMode::Manual {

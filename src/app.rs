@@ -10,7 +10,7 @@ use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, HpfFrequency,
     InputMode, LedBehavior, LedBrightness, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
-    MicPosition, ReverbType,
+    MicPosition, MicPreset, ReverbType,
 };
 
 /// Which top-level tab/panel is active.
@@ -86,6 +86,8 @@ pub enum Focus {
     AutoPosition,
     AutoTone,
     AutoGain,
+    // Main tab — MV6 Gen 2 Auto Level (Target Level reuses AutoGain)
+    AdaptationRate,
     // EQ tab — MVX2U bands
     EqEnable,
     EqBandSelect,
@@ -93,6 +95,8 @@ pub enum Focus {
     EqGain(usize),
     // EQ tab — MV6 tone
     Tone,
+    // EQ tab — MV6 Gen 2 Simple (Tone slider) / Advanced (5 bands)
+    ToneMode,
     // EQ tab — MV7 EQ preset
     EqPreset,
     // Dynamics tab — MVX2U
@@ -107,6 +111,8 @@ pub enum Focus {
     GainLock,
     // Main tab — MV7+ playback mix (independent from monitor mix)
     PlaybackMix,
+    // Main tab — MV6 Gen 2 built-in preset (Speech / Singing / Instrument)
+    MicPreset,
     // Dynamics tab — MV7+ reverb controls
     ReverbOutput,
     ReverbMonitor,
@@ -234,10 +240,17 @@ impl App {
             (tab, self.device_model),
             (
                 Tab::Reverb,
-                DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7
+                DeviceModel::Mv6
+                    | DeviceModel::Mv6Gen2
+                    | DeviceModel::Mvx2u
+                    | DeviceModel::Mvx2uGen2
+                    | DeviceModel::Mv7
             ) | (
                 Tab::Led,
-                DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2
+                DeviceModel::Mv6
+                    | DeviceModel::Mv6Gen2
+                    | DeviceModel::Mvx2u
+                    | DeviceModel::Mvx2uGen2
             )
         )
     }
@@ -253,30 +266,31 @@ impl App {
 
     pub fn supports_factory_reset(&self) -> bool {
         match self.device_model {
-            DeviceModel::Mv7Plus => true,
+            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 => true,
             DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
                 false
             }
         }
     }
 
-    /// Returns true when the EQ tab has the 5 parametric bands that `f` (Flatten
-    /// EQ) zeroes. The MV6 and MV7+ have a tone slider and the MV7 a four-way
-    /// preset instead, so `f` does nothing on them.
-    pub fn has_eq_bands(&self) -> bool {
+    /// Returns true when the EQ tab shows the 5 parametric bands. MVX2U Gen 1
+    /// and Gen 2 show them in Manual mode (Gen 2 Auto shows the tone slider, Gen 1
+    /// Auto locks the tab); the MV6 Gen 2 in its Advanced tone mode. The MV6 and
+    /// MV7+ have only a tone slider and the MV7 a four-way preset.
+    pub fn eq_bands_shown(&self) -> bool {
         match self.device_model {
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => {
+                self.device_state.mode == InputMode::Manual
+            }
+            DeviceModel::Mv6Gen2 => self.device_state.tone_advanced,
             DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
         }
     }
 
     /// Returns true when `f` flattens the EQ: on the EQ tab, with the 5 bands on
-    /// screen. Gen 2 in Auto mode shows the tone slider instead, and Gen 1 in
-    /// Auto locks the tab, so the bands are only editable in Manual mode.
+    /// screen.
     pub fn can_flatten_eq(&self) -> bool {
-        self.active_tab == Tab::Eq
-            && self.has_eq_bands()
-            && self.device_state.mode == InputMode::Manual
+        self.active_tab == Tab::Eq && self.eq_bands_shown()
     }
 
     /// Returns true when Gain Lock is on and the model has one. A lock flag from
@@ -288,15 +302,22 @@ impl App {
 
     /// Keep the view valid after the device state changed underneath it, such as
     /// a refresh that finds the mode switched. Leave a tab that is now locked, and
-    /// re-pick focus when the mode changed on a tab whose controls depend on it.
-    /// Without this, ←/→ would still adjust controls no longer on screen. The
-    /// Presets tab keeps its focus, so loading a preset leaves you on its slot.
+    /// re-pick focus when the mode changed on a tab whose controls depend on it,
+    /// or when the EQ tab swapped the Tone slider for the bands (MV6 Gen 2 tone
+    /// mode). Without this, ←/→ would still adjust controls no longer on screen.
+    /// The Presets tab keeps its focus, so loading a preset leaves you on its slot.
     pub fn settle_focus(&mut self, mode_before: InputMode) {
+        let eq_focus_hidden = match self.focus {
+            Focus::Tone => self.eq_bands_shown(),
+            Focus::EqBandSelect | Focus::EqGain(_) => !self.eq_bands_shown(),
+            _ => false,
+        };
         if self.is_tab_locked(self.active_tab) {
             self.active_tab = Tab::Main;
             self.reset_focus_for_tab();
-        } else if self.device_state.mode != mode_before
-            && matches!(self.active_tab, Tab::Main | Tab::Eq | Tab::Dynamics)
+        } else if (self.device_state.mode != mode_before
+            && matches!(self.active_tab, Tab::Main | Tab::Eq | Tab::Dynamics))
+            || (self.active_tab == Tab::Eq && eq_focus_hidden)
         {
             self.reset_focus_for_tab();
         }
@@ -306,7 +327,7 @@ impl App {
     ///
     /// MVX2U Gen 1 and MV7: EQ and Dynamics are locked in Auto Level mode — the
     /// device manages those parameters itself (the MV7 resets them on entering Auto).
-    /// MVX2U Gen 2 and MV6: EQ and Dynamics are always accessible regardless of mode.
+    /// MVX2U Gen 2 and the MV6s: EQ and Dynamics are always accessible regardless of mode.
     /// Hidden tabs count as locked so tab cycling skips them.
     pub fn is_tab_locked(&self, tab: Tab) -> bool {
         self.is_tab_hidden(tab)
@@ -355,7 +376,7 @@ impl App {
 
     fn reset_focus_for_tab(&mut self) {
         self.focus = match (self.active_tab, self.device_model) {
-            (Tab::Main, DeviceModel::Mv6) => match self.device_state.mode {
+            (Tab::Main, DeviceModel::Mv6 | DeviceModel::Mv6Gen2) => match self.device_state.mode {
                 InputMode::Manual => Focus::Gain,
                 InputMode::Auto => Focus::Mode,
             },
@@ -376,13 +397,14 @@ impl App {
                 InputMode::Auto => Focus::Mode,
             },
             (Tab::Eq, DeviceModel::Mv6 | DeviceModel::Mv7Plus) => Focus::Tone,
+            (Tab::Eq, DeviceModel::Mv6Gen2) => Focus::ToneMode,
             (Tab::Eq, DeviceModel::Mvx2u) => Focus::EqEnable,
             (Tab::Eq, DeviceModel::Mv7) => Focus::EqPreset,
             (Tab::Eq, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
                 InputMode::Auto => Focus::Tone,
                 InputMode::Manual => Focus::EqBandSelect,
             },
-            (Tab::Dynamics, DeviceModel::Mv6) => Focus::Denoiser,
+            (Tab::Dynamics, DeviceModel::Mv6 | DeviceModel::Mv6Gen2) => Focus::Denoiser,
             (Tab::Dynamics, DeviceModel::Mv7Plus) => Focus::Limiter,
             (Tab::Dynamics, DeviceModel::Mvx2u) => Focus::Limiter,
             (Tab::Dynamics, DeviceModel::Mv7) => Focus::Compressor,
@@ -419,12 +441,19 @@ impl App {
     //   Note: if mode switches while Focus is on Limiter/Compressor (Manual-only),
     //   the next focus_next/prev call self-corrects to Denoiser via the catchall arm.
     //
-    // MV6 Main cycles:
-    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → (wrap)
-    //   Auto:   Mode → Mute → MonitorMix → (wrap)
+    // MV6 Main cycles (Playback Mix unconfirmed on hardware, see has_playback_mix):
+    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → (wrap)
     //
     // MV6 EQ:      Tone (slider only, no bands)
     // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
+    //
+    // MV6 Gen 2: as MV6, plus Playback Mix after Monitor Mix (as on the MV7+), Mic
+    // Preset last (a device extra), and in Auto its Auto Level controls (Gen 1 order):
+    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → MicPreset → (wrap)
+    //   Auto:   Mode → Mute → AutoGain (Target Level) → AdaptationRate → MonitorMix
+    //           → PlaybackMix → MicPreset → (wrap)
+    //   EQ:     ToneMode → Tone (Simple) or EqBandSelect → EqGain(band) (Advanced)
     //
     // MV7 Main cycles (Gen 1 order, minus Auto Gain and Phantom which it lacks):
     //   Manual: Mode → Mute → Gain → MonitorMix → Lock → (wrap)
@@ -437,16 +466,53 @@ impl App {
             &self.device_model,
             &self.device_state.mode,
         ) {
+            // ── MV6 Gen 2 Playback Mix (after Monitor Mix, as on the MV7+) ────
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6Gen2, _) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6Gen2, _) => Focus::MicPreset,
+            (Tab::Main, Focus::MicPreset, DeviceModel::Mv6Gen2, _) => Focus::Mode,
+            // ── MV6 Gen 2 Auto Level controls ─────────────────────────────────
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6Gen2, InputMode::Auto) => Focus::AutoGain,
+            (Tab::Main, Focus::AutoGain, DeviceModel::Mv6Gen2, InputMode::Auto) => {
+                Focus::AdaptationRate
+            }
+            (Tab::Main, Focus::AdaptationRate, DeviceModel::Mv6Gen2, InputMode::Auto) => {
+                Focus::MonitorMix
+            }
             // ── MV6 Main cycle ────────────────────────────────────────────────
-            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
-            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::Gain, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
-            (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::MonitorMix,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
-            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
+            (
+                Tab::Main,
+                Focus::Mode,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::Mute,
+            (
+                Tab::Main,
+                Focus::Mute,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::Gain,
+            (
+                Tab::Main,
+                Focus::Gain,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::GainLock,
+            (
+                Tab::Main,
+                Focus::GainLock,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::MonitorMix,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Manual) => {
+                Focus::PlaybackMix
+            }
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, InputMode::Auto) => {
+                Focus::Mute
+            }
             (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::MonitorMix,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
-            (Tab::Main, _, DeviceModel::Mv6, _) => Focus::Mode,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Auto) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6, _) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => Focus::Mode,
 
             // ── MVX2U Manual cycle ────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Mute,
@@ -468,6 +534,18 @@ impl App {
 
             // ── MV6 / MV7+ EQ (Tone only) ────────────────────────────────────
             (Tab::Eq, _, DeviceModel::Mv6 | DeviceModel::Mv7Plus, _) => Focus::Tone, // Tone is the only EQ control
+
+            // ── MV6 Gen 2 EQ: ToneMode → Tone (Simple) or bands (Advanced) ───
+            (Tab::Eq, Focus::ToneMode, DeviceModel::Mv6Gen2, _)
+                if self.device_state.tone_advanced =>
+            {
+                Focus::EqBandSelect
+            }
+            (Tab::Eq, Focus::ToneMode, DeviceModel::Mv6Gen2, _) => Focus::Tone,
+            (Tab::Eq, Focus::EqBandSelect, DeviceModel::Mv6Gen2, _) => {
+                Focus::EqGain(self.eq_selected_band)
+            }
+            (Tab::Eq, _, DeviceModel::Mv6Gen2, _) => Focus::ToneMode,
 
             // ── MVX2U Gen 2 Main cycle ────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mute,
@@ -530,11 +608,19 @@ impl App {
             (Tab::Eq, _, DeviceModel::Mvx2u, _) => Focus::EqEnable,
 
             // ── MV6 Dynamics ──────────────────────────────────────────────────
-            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv6, _) => Focus::PopperStopper,
-            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv6, _) => Focus::MuteBtnDisable,
-            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv6, _) => Focus::Hpf,
-            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6, _) => Focus::Denoiser,
-            (Tab::Dynamics, _, DeviceModel::Mv6, _) => Focus::Denoiser,
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::PopperStopper
+            }
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::MuteBtnDisable
+            }
+            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::Hpf
+            }
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::Denoiser
+            }
+            (Tab::Dynamics, _, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => Focus::Denoiser,
 
             // ── MV7+ Main cycle
             (Tab::Main, Focus::Mode, DeviceModel::Mv7Plus, _) => Focus::Mute,
@@ -630,16 +716,51 @@ impl App {
             &self.device_model,
             &self.device_state.mode,
         ) {
+            // ── MV6 Gen 2 Playback Mix reverse ────────────────────────────────
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6Gen2, _) => Focus::MicPreset,
+            (Tab::Main, Focus::MicPreset, DeviceModel::Mv6Gen2, _) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6Gen2, _) => Focus::MonitorMix,
+            // ── MV6 Gen 2 Auto Level controls reverse ─────────────────────────
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6Gen2, InputMode::Auto) => {
+                Focus::AdaptationRate
+            }
+            (Tab::Main, Focus::AdaptationRate, DeviceModel::Mv6Gen2, InputMode::Auto) => {
+                Focus::AutoGain
+            }
+            (Tab::Main, Focus::AutoGain, DeviceModel::Mv6Gen2, InputMode::Auto) => Focus::Mute,
             // ── MV6 Main reverse ──────────────────────────────────────────────
-            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::MonitorMix,
-            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Manual) => Focus::Mode,
-            (Tab::Main, Focus::Gain, DeviceModel::Mv6, InputMode::Manual) => Focus::Mute,
-            (Tab::Main, Focus::GainLock, DeviceModel::Mv6, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Manual) => Focus::GainLock,
-            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::MonitorMix,
-            (Tab::Main, Focus::Mute, DeviceModel::Mv6, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Manual) => Focus::PlaybackMix,
+            (
+                Tab::Main,
+                Focus::Mute,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::Mode,
+            (
+                Tab::Main,
+                Focus::Gain,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::Mute,
+            (
+                Tab::Main,
+                Focus::GainLock,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::Gain,
+            (
+                Tab::Main,
+                Focus::MonitorMix,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
+            ) => Focus::GainLock,
+            (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6, _) => Focus::MonitorMix,
+            (Tab::Main, Focus::Mute, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, InputMode::Auto) => {
+                Focus::Mode
+            }
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, _, DeviceModel::Mv6, _) => Focus::Mode,
+            (Tab::Main, _, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => Focus::Mode,
 
             // ── MVX2U Manual reverse ──────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Lock,
@@ -662,6 +783,16 @@ impl App {
 
             // ── MV6 / MV7+ EQ ────────────────────────────────────────────────
             (Tab::Eq, _, DeviceModel::Mv6 | DeviceModel::Mv7Plus, _) => Focus::Tone,
+
+            // ── MV6 Gen 2 EQ reverse ──────────────────────────────────────────
+            (Tab::Eq, Focus::ToneMode, DeviceModel::Mv6Gen2, _)
+                if self.device_state.tone_advanced =>
+            {
+                Focus::EqGain(self.eq_selected_band)
+            }
+            (Tab::Eq, Focus::ToneMode, DeviceModel::Mv6Gen2, _) => Focus::Tone,
+            (Tab::Eq, Focus::EqGain(_), DeviceModel::Mv6Gen2, _) => Focus::EqBandSelect,
+            (Tab::Eq, _, DeviceModel::Mv6Gen2, _) => Focus::ToneMode,
 
             // ── MVX2U Gen 2 Main reverse ──────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Phantom,
@@ -724,11 +855,19 @@ impl App {
             (Tab::Eq, _, DeviceModel::Mvx2u, _) => Focus::EqEnable,
 
             // ── MV6 Dynamics reverse ──────────────────────────────────────────
-            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv6, _) => Focus::Hpf,
-            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv6, _) => Focus::Denoiser,
-            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv6, _) => Focus::PopperStopper,
-            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6, _) => Focus::MuteBtnDisable,
-            (Tab::Dynamics, _, DeviceModel::Mv6, _) => Focus::Denoiser,
+            (Tab::Dynamics, Focus::Denoiser, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::Hpf
+            }
+            (Tab::Dynamics, Focus::PopperStopper, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::Denoiser
+            }
+            (Tab::Dynamics, Focus::MuteBtnDisable, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::PopperStopper
+            }
+            (Tab::Dynamics, Focus::Hpf, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => {
+                Focus::MuteBtnDisable
+            }
+            (Tab::Dynamics, _, DeviceModel::Mv6 | DeviceModel::Mv6Gen2, _) => Focus::Denoiser,
 
             // ── MV7+ Main reverse
             (Tab::Main, Focus::Mode, DeviceModel::Mv7Plus, _) => Focus::PlaybackMix,
@@ -872,6 +1011,7 @@ impl App {
                 let mix = self.device_state.monitor_mix;
                 match self.device_model {
                     DeviceModel::Mv6
+                    | DeviceModel::Mv6Gen2
                     | DeviceModel::Mvx2uGen2
                     | DeviceModel::Mv7
                     | DeviceModel::Mv7Plus => Some(DeviceAction::SetMv6MonitorMix(mix)),
@@ -898,6 +1038,14 @@ impl App {
                 }
                 Some(DeviceAction::SetMv7ReverbIntensity(
                     self.device_state.reverb_intensity,
+                ))
+            }
+            // Enter toggles the Denoiser; ←/→ sets its level where it has one.
+            Focus::Denoiser if self.device_model.has_denoiser_level() => {
+                let level = i32::from(self.device_state.denoiser_level) + delta;
+                self.device_state.denoiser_level = level.clamp(1, 100) as u8;
+                Some(DeviceAction::SetDenoiserLevel(
+                    self.device_state.denoiser_level,
                 ))
             }
             Focus::Tone => {
@@ -1043,6 +1191,7 @@ impl App {
                 };
                 self.focus = match (self.device_model, self.device_state.mode) {
                     (DeviceModel::Mvx2u | DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
+                    (DeviceModel::Mv6Gen2, InputMode::Auto) => Focus::AutoGain,
                     (_, InputMode::Manual) => Focus::Gain,
                     (_, InputMode::Auto) => Focus::Mute,
                 };
@@ -1061,6 +1210,24 @@ impl App {
             Focus::AutoGain => {
                 self.device_state.auto_gain = self.device_state.auto_gain.cycle_next();
                 Some(DeviceAction::SetAutoGain(self.device_state.auto_gain))
+            }
+            // The mic sets the preset's mode, Denoiser and Popper Stopper itself;
+            // mirror that so the screen matches without a refresh.
+            Focus::MicPreset => {
+                let next = MicPreset::matching(&self.device_state)
+                    .map_or(MicPreset::Speech, MicPreset::cycle_next);
+                next.apply_to(&mut self.device_state);
+                Some(DeviceAction::SetMicPreset(next))
+            }
+            Focus::ToneMode => {
+                self.device_state.tone_advanced = !self.device_state.tone_advanced;
+                Some(DeviceAction::SetToneMode(self.device_state.tone_advanced))
+            }
+            Focus::AdaptationRate => {
+                self.device_state.adaptation_rate_fast = !self.device_state.adaptation_rate_fast;
+                Some(DeviceAction::SetAdaptationRate(
+                    self.device_state.adaptation_rate_fast,
+                ))
             }
             Focus::Mute => {
                 self.device_state.muted = !self.device_state.muted;
@@ -1237,6 +1404,15 @@ pub enum DeviceAction {
     /// Monitor mix: 0 = full mic, 100 = full playback. MV6 and MVX2U Gen 2.
     /// Uses the same 0–100 encoding as MVX2U Gen 1 but requires HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
+    // ── MV6 Gen 2 actions ─────────────────────────────────────────────────────
+    /// Auto Level Adaptation Rate: false = Slow, true = Fast.
+    SetAdaptationRate(bool),
+    /// Denoiser level, 1–100%.
+    SetDenoiserLevel(u8),
+    /// Tone mode: false = Simple (Tone slider), true = Advanced (5-band EQ).
+    SetToneMode(bool),
+    /// Select a built-in preset; the mic applies its settings.
+    SetMicPreset(MicPreset),
     // ── MV7+ exclusive actions ────────────────────────────────────────────────
     /// Playback mix: 0 = full mic, 100 = full playback. MV7+ independent channel.
     SetMv7PlaybackMix(u8),
@@ -1272,7 +1448,7 @@ pub enum DeviceAction {
     /// Open the device again after it was unplugged and plugged back in, and
     /// load its state. Sent by main's presence poll rather than a key.
     Reconnect,
-    /// Send a factory reset command to the MV7+. Device disconnects immediately after.
+    /// Send a factory reset command (MV7+, MV6 Gen 2). Device disconnects immediately after.
     FactoryReset,
 }
 
@@ -1558,13 +1734,14 @@ mod tests {
 
     #[test]
     fn mv6_main_tab_manual_mode_focus_cycles_forward_and_back() {
-        // MV6 Manual: Mode → Mute → Gain → GainLock → MonitorMix → Mode
+        // MV6 Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → Mode
         let forward = [
             Focus::Mode,
             Focus::Mute,
             Focus::Gain,
             Focus::GainLock,
             Focus::MonitorMix,
+            Focus::PlaybackMix,
             Focus::Mode, // wrap
         ];
         let mut app = App::default();
@@ -1578,19 +1755,19 @@ mod tests {
             assert_eq!(app.focus, *expected, "focus_next: expected {expected:?}");
         }
 
-        // Backward from Mode wraps to MonitorMix
+        // Backward from Mode wraps to PlaybackMix, then MonitorMix, then GainLock
         app.focus = Focus::Mode;
         app.focus_prev();
+        assert_eq!(app.focus, Focus::PlaybackMix);
+        app.focus_prev();
         assert_eq!(app.focus, Focus::MonitorMix);
-
-        // Backward from MonitorMix goes to GainLock
         app.focus_prev();
         assert_eq!(app.focus, Focus::GainLock);
     }
 
     #[test]
     fn mv6_main_tab_auto_mode_focus_cycles_forward_and_back() {
-        // MV6 Auto: Mode → Mute → MonitorMix → Mode
+        // MV6 Auto: Mode → Mute → MonitorMix → PlaybackMix → Mode
         let mut app = App::default();
         app.device_model = DeviceModel::Mv6;
         app.active_tab = Tab::Main;
@@ -1602,13 +1779,180 @@ mod tests {
         app.focus_next();
         assert_eq!(app.focus, Focus::MonitorMix);
         app.focus_next();
+        assert_eq!(app.focus, Focus::PlaybackMix);
+        app.focus_next();
         assert_eq!(app.focus, Focus::Mode); // wrap
 
-        // Backward from Mode wraps to MonitorMix
+        // Backward from Mode wraps to PlaybackMix, then MonitorMix
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::PlaybackMix);
         app.focus_prev();
         assert_eq!(app.focus, Focus::MonitorMix);
         app.focus_prev();
         assert_eq!(app.focus, Focus::Mute);
+    }
+
+    #[test]
+    fn mv6_gen2_auto_mode_focus_visits_its_auto_level_controls() {
+        // MV6 Gen 2 Auto: Mode → Mute → Target Level → Adaptation Rate → MonitorMix
+        // → PlaybackMix
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            active_tab: Tab::Main,
+            focus: Focus::Mode,
+            ..App::default()
+        };
+        app.device_state.mode = InputMode::Auto;
+        let order = [
+            Focus::Mute,
+            Focus::AutoGain,
+            Focus::AdaptationRate,
+            Focus::MonitorMix,
+            Focus::PlaybackMix,
+            Focus::MicPreset,
+            Focus::Mode,
+        ];
+        for expected in order {
+            app.focus_next();
+            assert_eq!(app.focus, expected);
+        }
+        for expected in order.iter().rev().skip(1) {
+            app.focus_prev();
+            assert_eq!(app.focus, *expected);
+        }
+
+        // Manual matches the MV6 (no Auto Level controls) plus Playback Mix.
+        app.device_state.mode = InputMode::Manual;
+        app.focus = Focus::Mode;
+        let order = [
+            Focus::Mute,
+            Focus::Gain,
+            Focus::GainLock,
+            Focus::MonitorMix,
+            Focus::PlaybackMix,
+            Focus::MicPreset,
+            Focus::Mode,
+        ];
+        for expected in order {
+            app.focus_next();
+            assert_eq!(app.focus, expected);
+        }
+        app.focus_prev();
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::PlaybackMix);
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetMv7PlaybackMix(1))
+        ));
+    }
+
+    #[test]
+    fn mv6_gen2_mic_preset_cycles_and_applies_its_settings() {
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            focus: Focus::MicPreset,
+            ..App::default()
+        };
+        // Matching no preset, Enter starts at Speech.
+        app.device_state.denoiser_enabled = false;
+        app.device_state.mode = InputMode::Auto;
+        let expected = [
+            (MicPreset::Speech, InputMode::Auto, true, true),
+            (MicPreset::Singing, InputMode::Manual, false, true),
+            (MicPreset::Instrument, InputMode::Manual, false, false),
+            (MicPreset::Speech, InputMode::Auto, true, true),
+        ];
+        for (preset, mode, denoiser, popper) in expected {
+            assert!(
+                matches!(app.toggle_focused(), Some(DeviceAction::SetMicPreset(p)) if p == preset)
+            );
+            let ds = &app.device_state;
+            assert_eq!(
+                (ds.mode, ds.denoiser_enabled, ds.popper_stopper_enabled),
+                (mode, denoiser, popper)
+            );
+            assert_eq!(
+                app.focus,
+                Focus::MicPreset,
+                "focus stays when the mode changes"
+            );
+        }
+    }
+
+    #[test]
+    fn mv6_gen2_adaptation_rate_toggles_and_denoiser_level_adjusts() {
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            focus: Focus::AdaptationRate,
+            ..App::default()
+        };
+        assert!(matches!(
+            app.toggle_focused(),
+            Some(DeviceAction::SetAdaptationRate(true))
+        ));
+
+        app.focus = Focus::Denoiser;
+        app.device_state.denoiser_level = 100;
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetDenoiserLevel(100))
+        ));
+        app.device_state.denoiser_level = 1;
+        assert!(matches!(
+            app.adjust_focused(-1),
+            Some(DeviceAction::SetDenoiserLevel(1))
+        ));
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetDenoiserLevel(2))
+        ));
+
+        // The MV6 Denoiser has no level, so ←/→ does nothing there.
+        app.device_model = DeviceModel::Mv6;
+        assert!(app.adjust_focused(1).is_none());
+    }
+
+    #[test]
+    fn mv6_gen2_eq_tab_switches_between_tone_slider_and_bands() {
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            ..App::default()
+        };
+        app.select_tab(Tab::Eq);
+        assert_eq!(app.focus, Focus::ToneMode);
+        assert!(!app.can_flatten_eq(), "Simple shows the Tone slider");
+
+        // Simple: ToneMode ↔ Tone.
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Tone);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::ToneMode);
+
+        // Enter switches to Advanced: ToneMode → band select → band gain.
+        assert!(matches!(
+            app.toggle_focused(),
+            Some(DeviceAction::SetToneMode(true))
+        ));
+        assert!(app.can_flatten_eq());
+        app.focus_next();
+        assert_eq!(app.focus, Focus::EqBandSelect);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::EqGain(0));
+        // MOTIV steps the bands in 2 dB.
+        assert!(matches!(
+            app.adjust_focused(1),
+            Some(DeviceAction::SetEqBandGain(0, 20))
+        ));
+        app.focus_prev();
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::ToneMode);
+
+        // A refresh that finds Simple while a band is focused re-picks focus.
+        app.focus = Focus::EqGain(0);
+        app.device_state.tone_advanced = false;
+        app.settle_focus(app.device_state.mode);
+        assert_eq!(app.focus, Focus::ToneMode);
+        assert!(!app.is_tab_locked(Tab::Eq));
     }
 
     #[test]
@@ -2468,14 +2812,16 @@ mod tests {
             (DeviceModel::Mvx2u, true),
             (DeviceModel::Mvx2uGen2, true),
             (DeviceModel::Mv6, false),
+            (DeviceModel::Mv6Gen2, false),
             (DeviceModel::Mv7, false),
             (DeviceModel::Mv7Plus, false),
         ] {
-            let app = App {
+            let mut app = App {
                 device_model: model,
                 ..App::default()
             };
-            assert_eq!(app.has_eq_bands(), bands, "{model:?}");
+            app.device_state.mode = InputMode::Manual;
+            assert_eq!(app.eq_bands_shown(), bands, "{model:?}");
         }
     }
 

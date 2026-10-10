@@ -1,14 +1,14 @@
 //! Device I/O: wraps hidapi for Shure USB microphones.
 //!
-//! Supports five devices:
+//! Supports six devices:
 //!   - Shure MVX2U       (VID 0x14ED, PID 0x1013) — XLR-to-USB interface (Gen 1)
 //!   - Shure MVX2U Gen 2 (VID 0x14ED, PID 0x1033) — XLR-to-USB interface (Gen 2)
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
-//!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — treated as the MV6 (unverified)
+//!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — USB gaming microphone (Gen 2)
 //!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
 //!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
 //!
-//! All five devices expose a USB HID configuration interface alongside their
+//! All six devices expose a USB HID configuration interface alongside their
 //! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
 //! and \\.\HID#VID_... paths on Windows, bypassing the audio driver entirely.
 //!
@@ -47,21 +47,22 @@ use hidapi::{HidApi, HidDevice};
 use crate::protocol::{
     self, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, MV6_GEN2_PID, MV6_PID,
     MV7_PID, MV7_PLUS_PID, MVX2U_GEN2_PID, MicPosition, PACKET_SIZE, PID, VID, apply_response,
-    cmd_confirm, cmd_factory_reset, cmd_get_auto_gain, cmd_get_auto_position, cmd_get_auto_tone,
-    cmd_get_compressor, cmd_get_device_name, cmd_get_eq_band_enable, cmd_get_eq_band_gain,
-    cmd_get_eq_enable, cmd_get_firmware_version, cmd_get_gain, cmd_get_hpf, cmd_get_limiter,
-    cmd_get_lock, cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser,
-    cmd_get_mv6_gain_lock, cmd_get_mv6_mix, cmd_get_mv6_mute_btn_disable,
-    cmd_get_mv6_popper_stopper, cmd_get_mv6_tone, cmd_get_mv7_led_behavior,
-    cmd_get_mv7_led_brightness, cmd_get_mv7_led_live_edge, cmd_get_mv7_led_live_interior,
-    cmd_get_mv7_led_live_middle, cmd_get_mv7_led_live_theme, cmd_get_mv7_led_pulsing_color,
-    cmd_get_mv7_led_solid_color, cmd_get_mv7_led_solid_theme, cmd_get_mv7_playback_mix,
-    cmd_get_mv7_reverb_intensity, cmd_get_mv7_reverb_monitor, cmd_get_mv7_reverb_output,
-    cmd_get_mv7_reverb_type, cmd_get_phantom, cmd_get_serial, cmd_set_lock, cmd_set_mv7_gain,
-    cmd_set_mv7_led_behavior, cmd_set_mv7_led_brightness, cmd_set_mv7_led_live_edge,
-    cmd_set_mv7_led_live_interior, cmd_set_mv7_led_live_middle, cmd_set_mv7_led_live_theme,
-    cmd_set_mv7_led_pulsing_color, cmd_set_mv7_led_pulsing_theme, cmd_set_mv7_led_solid_color,
-    cmd_set_mv7_led_solid_theme, mv7_text, parse_response, parse_response_with_prefix,
+    cmd_confirm, cmd_factory_reset, cmd_get_adaptation_rate, cmd_get_auto_gain,
+    cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor, cmd_get_denoiser_level,
+    cmd_get_device_name, cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable,
+    cmd_get_firmware_version, cmd_get_gain, cmd_get_hpf, cmd_get_limiter, cmd_get_lock,
+    cmd_get_mix, cmd_get_mode, cmd_get_mute, cmd_get_mv6_denoiser, cmd_get_mv6_gain_lock,
+    cmd_get_mv6_mix, cmd_get_mv6_mute_btn_disable, cmd_get_mv6_popper_stopper, cmd_get_mv6_tone,
+    cmd_get_mv7_led_behavior, cmd_get_mv7_led_brightness, cmd_get_mv7_led_live_edge,
+    cmd_get_mv7_led_live_interior, cmd_get_mv7_led_live_middle, cmd_get_mv7_led_live_theme,
+    cmd_get_mv7_led_pulsing_color, cmd_get_mv7_led_solid_color, cmd_get_mv7_led_solid_theme,
+    cmd_get_mv7_playback_mix, cmd_get_mv7_reverb_intensity, cmd_get_mv7_reverb_monitor,
+    cmd_get_mv7_reverb_output, cmd_get_mv7_reverb_type, cmd_get_phantom, cmd_get_serial,
+    cmd_get_tone_mode, cmd_set_lock, cmd_set_mv7_gain, cmd_set_mv7_led_behavior,
+    cmd_set_mv7_led_brightness, cmd_set_mv7_led_live_edge, cmd_set_mv7_led_live_interior,
+    cmd_set_mv7_led_live_middle, cmd_set_mv7_led_live_theme, cmd_set_mv7_led_pulsing_color,
+    cmd_set_mv7_led_pulsing_theme, cmd_set_mv7_led_solid_color, cmd_set_mv7_led_solid_theme,
+    mv7_text, parse_response, parse_response_with_prefix,
 };
 
 #[cfg(target_os = "linux")]
@@ -276,6 +277,7 @@ impl ShureDevice {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => Ok(()),
         }
     }
@@ -419,6 +421,7 @@ impl ShureDevice {
             DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),
             DeviceModel::Mv6 => self.get_state_mv6(&mut readback),
+            DeviceModel::Mv6Gen2 => self.get_state_mv6_gen2(&mut readback),
             DeviceModel::Mv7 => self.get_state_mv7(&mut readback),
             DeviceModel::Mv7Plus => self.get_state_mv7_plus(&mut readback),
         }?;
@@ -507,7 +510,24 @@ impl ShureDevice {
             cmd_get_serial,
         ];
 
-        self.run_getters(getters, readback)
+        self.run_getters(getters, readback)?;
+        // Unconfirmed on the MV6; see DeviceModel::has_playback_mix().
+        self.fetch_playback_mix(readback)
+    }
+
+    fn get_state_mv6_gen2(&self, readback: &mut Readback) -> Result<()> {
+        // The MV6 set (including Playback Mix) plus Target Level (the Gen 1 Auto
+        // Gain address), Adaptation Rate, Denoiser level, Tone mode and the MVX2U
+        // Gen 2 EQ bands.
+        self.get_state_mv6(readback)?;
+        let getters: &[fn(u8) -> Vec<u8>] = &[
+            cmd_get_auto_gain,
+            cmd_get_adaptation_rate,
+            cmd_get_denoiser_level,
+            cmd_get_tone_mode,
+        ];
+        self.run_getters(getters, readback)?;
+        self.fetch_eq_band_gains(readback)
     }
 
     fn get_state_mv7_plus(&self, readback: &mut Readback) -> Result<()> {
@@ -543,9 +563,14 @@ impl ShureDevice {
             cmd_get_serial,
         ];
         self.run_getters(getters, readback)?;
+        self.fetch_playback_mix(readback)
+    }
 
-        // Playback mix uses the same FEAT_MIX address as mic mix but with prefix=0x03.
-        // We issued the request so we know the response is the playback mix channel.
+    /// Read Playback Mix (MV7+, MV6 Gen 2, MV6). Its reply carries the same FEAT_MIX
+    /// address as Monitor Mix, so it can't go through `run_getters()`:
+    /// `apply_response()` would write it into `monitor_mix`. We issued the
+    /// request, so the reply is the playback channel.
+    fn fetch_playback_mix(&self, readback: &mut Readback) -> Result<()> {
         let pmix_pkt = cmd_get_mv7_playback_mix(self.next_seq());
         if let Some((_prefix, _feat, value)) = self.send_get_with_prefix(&pmix_pkt)?
             && let Some(&mix) = value.first()
@@ -580,9 +605,10 @@ impl ShureDevice {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set_gain(clamped),
             DeviceModel::Mv7Plus => cmd_set_mv7_gain(self.next_seq(), clamped),
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
-                protocol::cmd_set_gain(self.next_seq(), clamped)
-            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_gain(self.next_seq(), clamped),
         };
         self.send_set(&pkt)
     }
@@ -600,9 +626,10 @@ impl ShureDevice {
                 return self.send_text_set(&mv7_text::set_dsp_mode(mode, position, tone));
             }
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mode(self.next_seq(), auto),
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
-                protocol::cmd_set_mode(self.next_seq(), auto)
-            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_mode(self.next_seq(), auto),
         };
         self.send_set(&pkt)
     }
@@ -611,9 +638,10 @@ impl ShureDevice {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_mute(muted)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mute(self.next_seq(), muted),
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
-                protocol::cmd_set_mute(self.next_seq(), muted)
-            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_mute(self.next_seq(), muted),
         };
         self.send_set(&pkt)
     }
@@ -636,6 +664,7 @@ impl ShureDevice {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
                 self.send_set(&protocol::cmd_set_auto_position(self.next_seq(), &position))
             }
@@ -650,6 +679,7 @@ impl ShureDevice {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
                 self.send_set(&protocol::cmd_set_auto_tone(self.next_seq(), &tone))
             }
@@ -685,9 +715,10 @@ impl ShureDevice {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_compressor(*preset)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_compressor(self.next_seq(), preset),
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
-                protocol::cmd_set_compressor(self.next_seq(), preset)
-            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_compressor(self.next_seq(), preset),
         };
         self.send_set(&pkt)
     }
@@ -719,6 +750,7 @@ impl ShureDevice {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => self.send_set(&cmd_set_lock(self.next_seq(), locked)),
         }
     }
@@ -731,6 +763,22 @@ impl ShureDevice {
             _ => protocol::cmd_set_mv6_denoiser(self.next_seq(), enabled),
         };
         self.send_set(&pkt)
+    }
+
+    pub fn set_adaptation_rate(&self, fast: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_adaptation_rate(self.next_seq(), fast))
+    }
+
+    pub fn set_mic_preset(&self, preset: protocol::MicPreset) -> Result<()> {
+        self.send_set(&protocol::cmd_set_mic_preset(self.next_seq(), preset))
+    }
+
+    pub fn set_tone_mode(&self, advanced: bool) -> Result<()> {
+        self.send_set(&protocol::cmd_set_tone_mode(self.next_seq(), advanced))
+    }
+
+    pub fn set_denoiser_level(&self, level: u8) -> Result<()> {
+        self.send_set(&protocol::cmd_set_denoiser_level(self.next_seq(), level))
     }
 
     pub fn set_mv6_popper_stopper(&self, enabled: bool) -> Result<()> {
@@ -760,9 +808,10 @@ impl ShureDevice {
     /// Set the user-set device name. The MV7 has none.
     pub fn set_device_name(&self, name: &str) -> Result<()> {
         let pkt = match self.model {
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
-                protocol::cmd_set_device_name(self.next_seq(), name)
-            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_device_name(self.next_seq(), name),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_device_name(self.next_seq(), name),
             DeviceModel::Mv7 => {
                 return Err(anyhow!(
@@ -783,9 +832,10 @@ impl ShureDevice {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mic_mix(self.next_seq(), mix),
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 => {
-                protocol::cmd_set_mv6_mix(self.next_seq(), mix)
-            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_mv6_mix(self.next_seq(), mix),
         };
         self.send_set(&pkt)
     }
@@ -814,6 +864,7 @@ impl ShureDevice {
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => Err(anyhow!(
                 "This setting is only available on the MV7, not the {}",
                 self.model.display_name()
@@ -925,7 +976,11 @@ impl ShureDevice {
     /// MV7 has no factory reset.
     pub fn factory_reset(&self) -> Result<()> {
         match self.model {
-            DeviceModel::Mv7Plus => self.write(&cmd_factory_reset(self.next_seq())),
+            // The MV6 Gen 2 takes the same packet (captured from MOTIV's Reset to
+            // defaults).
+            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 => {
+                self.write(&cmd_factory_reset(self.next_seq()))
+            }
             DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
                 Err(anyhow!(
                     "Factory reset is not available on the {}",

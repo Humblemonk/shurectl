@@ -75,6 +75,16 @@ pub struct PresetSlot {
     #[serde(default)]
     pub mv6_gain_locked: bool,
 
+    // ── MV6 Gen 2-specific (Target Level is `auto_gain`) ─────────────────────
+    #[serde(default)]
+    pub adaptation_rate_fast: bool,
+    /// Denoiser level, 1–100%.
+    #[serde(default = "default_denoiser_level")]
+    pub denoiser_level: u8,
+    /// Advanced tone (the 5-band `eq_bands`) instead of the Tone slider.
+    #[serde(default)]
+    pub tone_advanced: bool,
+
     // ── MV7+-specific ────────────────────────────────────────────────────────
     /// Independent playback mix channel: 0 = full mic, 100 = full playback.
     #[serde(default)]
@@ -148,6 +158,10 @@ fn default_led_live_edge_rgb() -> [u8; 3] {
     [0xFF, 0xFF, 0xFF]
 }
 
+fn default_denoiser_level() -> u8 {
+    50
+}
+
 fn default_led_live_middle_rgb() -> [u8; 3] {
     [0x1F, 0x1F, 0x1F]
 }
@@ -179,6 +193,9 @@ impl PresetSlot {
             mute_btn_disabled: state.mute_btn_disabled,
             tone: state.tone,
             mv6_gain_locked: state.mv6_gain_locked,
+            adaptation_rate_fast: state.adaptation_rate_fast,
+            denoiser_level: state.denoiser_level,
+            tone_advanced: state.tone_advanced,
             playback_mix: state.playback_mix,
             reverb_on_output: state.reverb_on_output,
             reverb_monitoring: state.reverb_monitoring,
@@ -225,6 +242,9 @@ impl PresetSlot {
         state.mute_btn_disabled = self.mute_btn_disabled;
         state.tone = self.tone.clamp(-10, 10);
         state.mv6_gain_locked = self.mv6_gain_locked;
+        state.adaptation_rate_fast = self.adaptation_rate_fast;
+        state.denoiser_level = self.denoiser_level.clamp(1, 100);
+        state.tone_advanced = self.tone_advanced;
         state.playback_mix = self.playback_mix.min(100);
         state.reverb_on_output = self.reverb_on_output;
         state.reverb_monitoring = self.reverb_monitoring;
@@ -289,6 +309,35 @@ impl PresetSlot {
         };
 
         match model {
+            DeviceModel::Mv6Gen2 => {
+                // Auto shows the Auto Level settings in place of the unused gain.
+                let level_str = match InputMode::from(self.mode) {
+                    InputMode::Auto => format!(
+                        "Auto · Target {} · {}",
+                        AutoGain::from(self.auto_gain).target_level_label(),
+                        if self.adaptation_rate_fast {
+                            "Fast"
+                        } else {
+                            "Slow"
+                        }
+                    ),
+                    InputMode::Manual => self.gain_str(),
+                };
+                let denoiser_str = if self.denoiser_enabled {
+                    format!("Denoiser {}%", self.denoiser_level)
+                } else {
+                    "Denoiser off".to_string()
+                };
+                let tone_str = if self.tone_advanced {
+                    "Tone: 5-band EQ".to_string()
+                } else {
+                    format!("Tone: {}", self.tone_str())
+                };
+                format!(
+                    "{level_str} · {denoiser_str} · {} · {hpf_str} · {tone_str}",
+                    self.popper_str()
+                )
+            }
             DeviceModel::Mv6 => {
                 let denoiser_str = self.denoiser_str();
                 let popper_str = self.popper_str();
@@ -1171,6 +1220,75 @@ mod tests {
         assert!(
             !s.contains("Comp"),
             "MV6 summary must not mention Comp: {s}"
+        );
+    }
+
+    #[test]
+    fn mv6_gen2_settings_roundtrip_and_old_presets_get_defaults() {
+        let state = DeviceState {
+            auto_gain: AutoGain::Loud,
+            adaptation_rate_fast: true,
+            denoiser_level: 37,
+            tone_advanced: true,
+            ..mv6_example_state()
+        };
+        let slot = PresetSlot::from_device_state("G2", &state);
+        let parsed: PresetSlot =
+            toml::from_str(&toml::to_string(&slot).expect("serialize")).expect("parse");
+        let mut restored = DeviceState::default();
+        parsed.apply_to_device_state(&mut restored);
+        assert_eq!(restored.auto_gain, AutoGain::Loud);
+        assert!(restored.adaptation_rate_fast);
+        assert_eq!(restored.denoiser_level, 37);
+        assert!(restored.tone_advanced);
+        assert!(
+            parsed
+                .summary(DeviceModel::Mv6Gen2)
+                .ends_with("Tone: 5-band EQ"),
+            "{}",
+            parsed.summary(DeviceModel::Mv6Gen2)
+        );
+
+        // A preset saved before the MV6 Gen 2 fields existed loads the defaults.
+        let old = toml::to_string(&slot)
+            .expect("serialize")
+            .lines()
+            .filter(|line| {
+                !["adaptation_rate_fast", "denoiser_level", "tone_advanced"]
+                    .iter()
+                    .any(|field| line.starts_with(field))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: PresetSlot = toml::from_str(&old).expect("parse old preset");
+        assert!(!parsed.adaptation_rate_fast);
+        assert_eq!(parsed.denoiser_level, 50);
+        assert!(!parsed.tone_advanced, "older presets keep the Tone slider");
+
+        // A hand-edited level of 0 is clamped onto the 1–100% slider.
+        let mut zero = parsed;
+        zero.denoiser_level = 0;
+        zero.apply_to_device_state(&mut restored);
+        assert_eq!(restored.denoiser_level, 1);
+    }
+
+    #[test]
+    fn summary_mv6_gen2_shows_denoiser_level_and_auto_level_settings() {
+        let mut state = mv6_example_state();
+        state.denoiser_level = 64;
+        let manual = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv6Gen2);
+        assert_eq!(
+            manual,
+            "24 dB · Denoiser 64% · Popper on · HPF 75 Hz · Tone: 50% Bright"
+        );
+
+        state.mode = InputMode::Auto;
+        state.auto_gain = AutoGain::Quiet;
+        state.denoiser_enabled = false;
+        let auto = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv6Gen2);
+        assert!(
+            auto.starts_with("Auto · Target Low · Slow · Denoiser off"),
+            "{auto}"
         );
     }
 
