@@ -3553,7 +3553,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
             ("  Monitor Mix  : ", "Mic level 0–100%"),
-            ("  Playback Mix : ", "Playback level 0–100% (unconfirmed)"),
+            ("  Playback Mix : ", "Playback level 0–100%"),
             ("  Mute Button  : ", "Enable / Disable"),
         ],
         DeviceModel::Mv6Gen2 => &[
