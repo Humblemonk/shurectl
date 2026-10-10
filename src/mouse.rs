@@ -126,10 +126,11 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const MODELS: [DeviceModel; 5] = [
+    const MODELS: [DeviceModel; 6] = [
         DeviceModel::Mvx2u,
         DeviceModel::Mvx2uGen2,
         DeviceModel::Mv6,
+        DeviceModel::Mv6Gen2,
         DeviceModel::Mv7,
         DeviceModel::Mv7Plus,
     ];
