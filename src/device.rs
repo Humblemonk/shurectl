@@ -62,7 +62,7 @@ use crate::protocol::{
     cmd_set_mv7_led_brightness, cmd_set_mv7_led_live_edge, cmd_set_mv7_led_live_interior,
     cmd_set_mv7_led_live_middle, cmd_set_mv7_led_live_theme, cmd_set_mv7_led_pulsing_color,
     cmd_set_mv7_led_pulsing_theme, cmd_set_mv7_led_solid_color, cmd_set_mv7_led_solid_theme,
-    mv7_text, parse_response, parse_response_with_prefix,
+    mv7_text, parse_response, playback_mix_from_reply,
 };
 
 #[cfg(target_os = "linux")]
@@ -301,17 +301,6 @@ impl ShureDevice {
         self.ensure_binary_protocol()?;
         self.write(get_packet)?;
         Ok(self.read()?.and_then(|buf| parse_response(&buf)))
-    }
-
-    /// Like `send_get` but returns `(prefix, feat_addr, value)`.
-    /// Used for MV7+ playback mix which shares a feature address with mic mix.
-    #[allow(clippy::type_complexity)]
-    fn send_get_with_prefix(&self, get_packet: &[u8]) -> Result<Option<(u8, [u8; 2], Vec<u8>)>> {
-        self.ensure_binary_protocol()?;
-        self.write(get_packet)?;
-        Ok(self
-            .read()?
-            .and_then(|buf| parse_response_with_prefix(&buf)))
     }
 
     /// Send one MV7 command line and return its reply line (which may be
@@ -572,11 +561,15 @@ impl ShureDevice {
     /// request, so the reply is the playback channel.
     fn fetch_playback_mix(&self, readback: &mut Readback) -> Result<()> {
         let pmix_pkt = cmd_get_mv7_playback_mix(self.next_seq());
-        if let Some((_prefix, _feat, value)) = self.send_get_with_prefix(&pmix_pkt)?
-            && let Some(&mix) = value.first()
-        {
-            readback.state.playback_mix = mix.min(100);
-            readback.record(true, String::new);
+        if let Some((feat, value)) = self.send_get(&pmix_pkt)? {
+            match playback_mix_from_reply(feat, &value) {
+                Some(mix) => {
+                    readback.state.playback_mix = mix;
+                    readback.record(true, String::new);
+                }
+                // A late reply to an earlier GET: apply it as that setting.
+                None => readback.apply(feat, &value),
+            }
         }
         Ok(())
     }
@@ -649,7 +642,11 @@ impl ShureDevice {
     pub fn set_hpf(&self, freq: &protocol::HpfFrequency) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_hpf(self.next_seq(), freq),
-            _ => protocol::cmd_set_hpf(self.next_seq(), freq),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => protocol::cmd_set_hpf(self.next_seq(), freq),
         };
         self.send_set(&pkt)
     }

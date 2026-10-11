@@ -292,7 +292,7 @@ struct ParsedResponse {
 }
 
 fn parse_response(buf: &[u8]) -> Option<ParsedResponse> {
-    let (_prefix, feat_addr, value_bytes) = protocol::parse_response_with_prefix(buf)?;
+    let (feat_addr, value_bytes) = protocol::parse_response(buf)?;
     Some(ParsedResponse {
         feat_addr,
         value_bytes,

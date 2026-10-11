@@ -216,7 +216,7 @@ fn main() -> Result<()> {
     app.presets = presets::load_all_presets();
 
     let _meter_stream = if !demo_mode {
-        match start_meter(Arc::clone(&app.meter_level), Arc::clone(&app.peak_window)) {
+        match start_meter(Arc::clone(&app.peak_window)) {
             MeterStatus::Running(s) => Some(s),
             MeterStatus::Failed(e) => {
                 app.set_err(format!("Meter unavailable: {e}"));
@@ -953,10 +953,10 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                 app.device_state.device_name.clone_from(name);
                 app.set_ok(format!("Renamed device to \"{name}\"."));
             }),
-        DeviceAction::FactoryReset => {
-            app.set_ok("Factory reset sent — device is restarting. Restart shurectl to reconnect.");
-            send_if_connected(device, |d| d.factory_reset())
-        }
+        DeviceAction::FactoryReset => send_if_connected(device, |d| d.factory_reset()).map(|()| {
+            // The presence poll sees the reboot as an unplug and reconnects.
+            app.set_ok("Factory reset sent — device is restarting and reconnects automatically.");
+        }),
     };
 
     if let Err(e) = result {
@@ -1178,8 +1178,17 @@ fn apply_preset_to_device(
         // The MV7 manages gain itself in Auto Level, so its gain is sent below,
         // in Manual only. Every other model keeps the original order:
         // mode → gain → mute → HPF.
+        // A gain-locked device ignores gain writes (checked on hardware), so
+        // unlock, write the gain, then lock straight away so a later failed
+        // write can't leave the device unlocked behind a locked UI.
+        if model.has_gain_lock() {
+            d.set_mv6_gain_lock(false)?;
+        }
         if model != DeviceModel::Mv7 {
             d.set_gain(state.gain_tenths)?;
+        }
+        if model.has_gain_lock() {
+            d.set_mv6_gain_lock(state.mv6_gain_locked)?;
         }
         d.set_mute(state.muted)?;
         // The MV7 has no HPF.
@@ -1209,7 +1218,6 @@ fn apply_preset_to_device(
                 d.set_mv6_denoiser(state.denoiser_enabled)?;
                 d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
                 d.set_mv6_tone(state.tone)?;
-                d.set_mv6_gain_lock(state.mv6_gain_locked)?;
                 for (band, eq) in state.eq_bands.iter().enumerate() {
                     d.set_eq_band_gain(band, eq.gain_db)?;
                 }
@@ -1219,7 +1227,6 @@ fn apply_preset_to_device(
                 d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
                 d.set_mv6_tone(state.tone)?;
-                d.set_mv6_gain_lock(state.mv6_gain_locked)?;
                 d.set_mv6_monitor_mix(state.monitor_mix)?;
                 d.set_mv7_playback_mix(state.playback_mix)?;
                 if model == DeviceModel::Mv6Gen2 {

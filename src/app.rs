@@ -1,11 +1,10 @@
 //! Application state and navigation logic.
 
-use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crossterm::event::KeyCode;
 
-use crate::meter::{METER_SILENT, PeakWindow};
+use crate::meter::PeakWindow;
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, HpfFrequency,
@@ -181,9 +180,6 @@ pub struct App {
     /// The preset slot and action a first click selected; only a second click on
     /// that same button fires it. Cleared by any other click or any key.
     pub armed_preset_action: Option<(usize, KeyCode)>,
-    /// Instantaneous peak level shared with the cpal capture thread.
-    /// Stores `peak_dbfs * 10` as i32, or `METER_SILENT` when unavailable.
-    pub meter_level: Arc<AtomicI32>,
     /// Rolling peak windows shared with the cpal capture thread.
     /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak marker.
     pub peak_window: Arc<Mutex<PeakWindow>>,
@@ -210,7 +206,6 @@ impl Default for App {
             name_draft: String::new(),
             confirming_factory_reset: false,
             armed_preset_action: None,
-            meter_level: Arc::new(AtomicI32::new(METER_SILENT)),
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
         }
     }
@@ -2550,14 +2545,15 @@ mod tests {
 
     #[test]
     fn app_default_peak_window_is_empty() {
+        use std::time::Instant;
         let app = App::default();
         let pw = app.peak_window.lock().unwrap();
         assert!(
-            pw.short.max().is_none(),
+            pw.short.max(Instant::now()).is_none(),
             "short window must be empty on a fresh App"
         );
         assert!(
-            pw.long.max().is_none(),
+            pw.long.max(Instant::now()).is_none(),
             "long window must be empty on a fresh App"
         );
     }
@@ -2571,7 +2567,7 @@ mod tests {
         let shared = Arc::clone(&app.peak_window);
         shared.lock().unwrap().push(Instant::now(), -200);
         assert_eq!(
-            app.peak_window.lock().unwrap().short.max(),
+            app.peak_window.lock().unwrap().short.max(Instant::now()),
             Some(-200),
             "write through a cloned Arc must be visible via app.peak_window"
         );

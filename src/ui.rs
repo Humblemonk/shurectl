@@ -1670,7 +1670,10 @@ fn build_ruler(inner_width: usize) -> String {
         // Centre the label on its column position.
         let center = (ratio * inner_width as f32).round() as isize;
         let half = label.len() as isize / 2;
-        let col_start = (center - half).max(0) as usize;
+        // Clamp into the row so the end labels ("-60", "0") sit flush with its edges.
+        let col_start = (center - half)
+            .min(inner_width as isize - label.len() as isize)
+            .max(0) as usize;
         let col_end = col_start + label.len();
 
         if col_end > inner_width {
@@ -1694,14 +1697,15 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     // ── Read from rolling windows ─────────────────────────────────────────────
     // Both values come from the shared PeakWindow; fall back to METER_SILENT
     // when the lock is unavailable (should never happen in practice) or the
-    // window is empty (device just connected, no callbacks yet).
+    // window holds nothing recent (no callbacks yet, or the stream stopped).
     let (short_raw, long_raw) = if app.demo_mode {
         (METER_SILENT, METER_SILENT)
     } else {
+        let now = std::time::Instant::now();
         match app.peak_window.try_lock() {
             Ok(pw) => (
-                pw.short.max().unwrap_or(METER_SILENT),
-                pw.long.max().unwrap_or(METER_SILENT),
+                pw.short.max(now).unwrap_or(METER_SILENT),
+                pw.long.max(now).unwrap_or(METER_SILENT),
             ),
             Err(_) => (METER_SILENT, METER_SILENT),
         }
@@ -3988,13 +3992,16 @@ mod tests {
     }
 
     #[test]
-    fn build_ruler_contains_minus_60_at_left_edge() {
-        // At any reasonable width, "-60" must appear near the left edge.
-        let ruler = build_ruler(80);
-        assert!(
-            ruler.starts_with("-60"),
-            "'-60' must appear at the left edge; got: {ruler:?}"
-        );
+    fn build_ruler_end_labels_sit_at_both_edges() {
+        // "-60" at the left edge and "0" at the right (it used to be dropped).
+        for width in [20, 40, 80, 200] {
+            let ruler = build_ruler(width);
+            assert!(
+                ruler.starts_with("-60"),
+                "'-60' not at left edge: {ruler:?}"
+            );
+            assert!(ruler.ends_with(" 0"), "'0' not at right edge: {ruler:?}");
+        }
     }
 
     #[test]
