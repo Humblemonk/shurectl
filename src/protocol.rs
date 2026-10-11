@@ -1492,9 +1492,9 @@ fn build_packet_with_hdr(seq: u8, hdr_constant: u8, cmd: &[u8; 3], payload: &[u8
     pkt
 }
 
-/// Shared validation and field extraction for all HID response buffers.
+/// Validate a received HID report and extract the feature address and value bytes.
 ///
-/// Returns `(prefix, feat_addr, value_bytes)` on success, `None` if the buffer
+/// Returns `(feat_addr, value_bytes)` on success, `None` if the buffer
 /// is malformed, the header magic is wrong, the CRC does not match, or the
 /// response command type carries no feature data (e.g. CONFIRM).
 ///
@@ -1507,7 +1507,8 @@ fn build_packet_with_hdr(seq: u8, hdr_constant: u8, cmd: &[u8; 3], payload: &[u8
 ///   buf[14..16] = 2-byte feature address
 ///   buf[16..total_len] = value bytes
 ///   buf[total_len..total_len+2] = CRC-16/ANSI (covers buf[2..total_len])
-fn parse_response_inner(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
+#[must_use]
+pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
     // Minimum: report_id(1) + total_len(1) + header(2) + seq(1) + hdr_const(1) +
     //          hdr_end(1) + data_len(1) + data_start(1) + data_len(1) +
     //          cmd(3) + prefix(1) + feat(2) + crc(2) = 18 bytes minimum
@@ -1542,31 +1543,10 @@ fn parse_response_inner(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
         return None;
     }
 
-    let prefix = buf[13];
     let feat_addr: [u8; 2] = buf[14..16].try_into().ok()?;
     let value_bytes = buf[16..contents_end].to_vec();
 
-    Some((prefix, feat_addr, value_bytes))
-}
-
-/// Validate a received HID report and extract the feature address and value bytes.
-///
-/// Returns `None` if the buffer is malformed, the header magic is wrong, or
-/// the CRC does not match. On success returns `(feat_addr, value_bytes)`.
-#[must_use]
-pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
-    let (_prefix, feat_addr, value_bytes) = parse_response_inner(buf)?;
     Some((feat_addr, value_bytes))
-}
-
-/// Like `parse_response` but also returns the prefix byte (buf[13]).
-///
-/// Required for MV7+ playback mix, which shares `FEAT_MIX` with mic mix but
-/// uses prefix=0x03 to distinguish the two channels in the response.
-/// Returns `None` on the same conditions as `parse_response`.
-#[must_use]
-pub fn parse_response_with_prefix(buf: &[u8]) -> Option<(u8, [u8; 2], Vec<u8>)> {
-    parse_response_inner(buf)
 }
 
 // ── Command constructors ──────────────────────────────────────────────────────
@@ -1696,10 +1676,19 @@ pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
 
 /// GET for MV7+ playback mix. Uses prefix=0x03 to distinguish from mic monitor mix.
 /// Both share FEAT_MIX [0x01, 0x86] but different prefix bytes select the channel.
-/// Uses parse_response_with_prefix to extract the prefix from the response.
 pub fn cmd_get_mv7_playback_mix(seq: u8) -> Vec<u8> {
     let payload = [0x03, FEAT_MIX[0], FEAT_MIX[1]];
     build_packet(seq, &CMD_GET_FEAT, &payload)
+}
+
+/// Playback Mix from the reply to `cmd_get_mv7_playback_mix()`, or `None` if the
+/// reply is for another address (a stale reply left over from an earlier GET).
+/// The prefix isn't checked: nothing confirms the device echoes 0x03.
+pub fn playback_mix_from_reply(feat: [u8; 2], value: &[u8]) -> Option<u8> {
+    if feat != FEAT_MIX {
+        return None;
+    }
+    value.first().map(|&mix| mix.min(100))
 }
 
 pub fn cmd_get_mv7_reverb_output(seq: u8) -> Vec<u8> {
@@ -2022,8 +2011,8 @@ pub fn cmd_set_adaptation_rate(seq: u8, fast: bool) -> Vec<u8> {
     cmd_set(seq, &MV6_GEN2_FEAT_ADAPTATION_RATE, &[u8::from(fast)])
 }
 
-/// Set the Tone mode: Simple (false, the Tone slider) or Advanced (true, the
-/// 5-band EQ).
+/// Select a Mic Preset (Speech / Singing / Instrument); the mic then sets the
+/// preset's mode, Denoiser and Popper Stopper itself.
 pub fn cmd_set_mic_preset(seq: u8, preset: MicPreset) -> Vec<u8> {
     cmd_set(seq, &MV6_GEN2_FEAT_PRESET_SELECT, &[preset.wire_value()])
 }
@@ -5096,6 +5085,15 @@ mod tests {
     }
 
     #[test]
+    fn playback_mix_from_reply_rejects_other_addresses() {
+        assert_eq!(playback_mix_from_reply(FEAT_MIX, &[70]), Some(70));
+        assert_eq!(playback_mix_from_reply(FEAT_MIX, &[150]), Some(100));
+        assert_eq!(playback_mix_from_reply(FEAT_MIX, &[]), None);
+        // A stale reply from another getter must not land in playback_mix.
+        assert_eq!(playback_mix_from_reply(FEAT_GAIN, &[70]), None);
+    }
+
+    #[test]
     fn mv7_playback_mix_uses_prefix_0x03() {
         // Playback mix uses prefix=0x03 to distinguish from mic mix (prefix=0x00).
         let pkt = cmd_set_mv7_playback_mix(0, 70);
@@ -5268,18 +5266,6 @@ mod tests {
         assert_eq!(&pkt[10..13], &[0x02, 0x02, 0x01], "CMD_SET_LOCK");
         // payload: [page=0x00, 0x00, sub=0x22, value=0x01]
         assert_eq!(&pkt[13..17], &[0x00, 0x00, 0x22, 0x01], "payload");
-    }
-
-    #[test]
-    fn parse_response_with_prefix_extracts_prefix_byte() {
-        // Build a synthetic response with a non-zero prefix to verify extraction.
-        let buf = make_response(0, &RES_GET_FEAT, &FEAT_MIX, &[75]);
-        let result = parse_response_with_prefix(&buf);
-        assert!(result.is_some());
-        let (prefix, feat, value) = result.unwrap();
-        assert_eq!(prefix, 0x00, "default prefix must be 0x00");
-        assert_eq!(feat, FEAT_MIX);
-        assert_eq!(value, vec![75]);
     }
 
     // ── MV7+ LED protocol tests ───────────────────────────────────────────────

@@ -87,6 +87,7 @@ pub struct PresetSlot {
 
     // ── MV7+-specific ────────────────────────────────────────────────────────
     /// Independent playback mix channel: 0 = full mic, 100 = full playback.
+    /// Loading treats 0 as "not saved" and keeps the device's current level.
     #[serde(default)]
     pub playback_mix: u8,
     #[serde(default)]
@@ -245,7 +246,12 @@ impl PresetSlot {
         state.adaptation_rate_fast = self.adaptation_rate_fast;
         state.denoiser_level = self.denoiser_level.clamp(1, 100);
         state.tone_advanced = self.tone_advanced;
-        state.playback_mix = self.playback_mix.min(100);
+        // 0 is what every preset holds that wasn't saved on a model reading
+        // Playback Mix (and MV6 presets from before it did), so it means "not
+        // saved": keep the current level rather than silence headphone playback.
+        if self.playback_mix > 0 {
+            state.playback_mix = self.playback_mix.min(100);
+        }
         state.reverb_on_output = self.reverb_on_output;
         state.reverb_monitoring = self.reverb_monitoring;
         state.reverb_type = ReverbType::from(self.reverb_type);
@@ -1409,6 +1415,24 @@ mod tests {
         state.auto_tone = AutoTone::Dark;
         let s = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv7);
         assert_eq!(s, "Auto · Far · Dark");
+    }
+
+    #[test]
+    fn apply_to_device_state_keeps_playback_mix_for_zero() {
+        let mut slot = PresetSlot::from_device_state("old", &DeviceState::default());
+        let mut state = DeviceState {
+            playback_mix: 60,
+            ..DeviceState::default()
+        };
+        slot.apply_to_device_state(&mut state);
+        assert_eq!(
+            state.playback_mix, 60,
+            "0 must not overwrite the current level"
+        );
+
+        slot.playback_mix = 25;
+        slot.apply_to_device_state(&mut state);
+        assert_eq!(state.playback_mix, 25);
     }
 
     /// Presets are hand-editable; out-of-range values must not reach the UI,

@@ -1,16 +1,12 @@
 //! Real-time input level metering via cpal.
 //!
-//! Opens the system default input device and measures peak dBFS on a
-//! background thread. Two values are published to the render thread:
-//!
-//! * `meter_level: Arc<AtomicI32>` — instantaneous peak from the latest
-//!   audio callback, stored as `peak_dbfs * 10`. Lock-free; safe to read
-//!   from the render loop every 100 ms without blocking the audio thread.
-//!
-//! * `peak_window: Arc<Mutex<PeakWindow>>` — a pair of rolling time windows
-//!   (short: 0.3 s, long: 3.0 s). The audio thread pushes every callback's
-//!   peak into both windows; the render thread reads the rolling maxima to
-//!   drive the bar ratio and the peak-hold marker respectively.
+//! Opens the system default input device and measures sample-peak dBFS on a
+//! background thread. Results reach the render thread through
+//! `peak_window: Arc<Mutex<PeakWindow>>`, a pair of rolling time windows
+//! (short: 0.3 s, long: 3.0 s). The audio thread pushes every callback's peak
+//! into both windows; the render thread reads the rolling maxima to drive the
+//! bar and the peak-hold readout. Readings expire with their window, so a
+//! stalled or failed stream drops to "no data" instead of freezing.
 //!
 //! We deliberately do NOT search for the device by name. On Linux, cpal's
 //! default ALSA host would find the raw `hw:MVX2U` PCM device and open it
@@ -21,17 +17,16 @@
 //! the meter reads it correctly without the exclusivity problem.
 //!
 //! The sentinel value `METER_SILENT` (`i32::MIN`) means no audio data has
-//! arrived yet, or the stream could not be opened.
+//! arrived recently, or the stream could not be opened.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, SizedSample, Stream, StreamConfig};
 
-/// Sentinel stored in the atomic when no data is available.
+/// Sentinel meaning no data is available.
 pub const METER_SILENT: i32 = i32::MIN;
 
 /// Minimum dBFS we display (-60 dB floor).
@@ -42,9 +37,9 @@ pub const METER_FLOOR_DB: f32 = -60.0;
 /// A rolling time-window that tracks the maximum dBFS value seen within the
 /// last `keep_secs` seconds.
 ///
-/// Values are stored as `peak_dbfs * 10` (same integer encoding as
-/// `meter_level`) and timestamped with `std::time::Instant`. Old entries are
-/// evicted lazily on every `push`.
+/// Values are stored as `peak_dbfs * 10` and timestamped with
+/// `std::time::Instant`. Old entries are evicted on every `push` and ignored
+/// by `max`, so the window empties once pushes stop.
 pub struct RollingWindow {
     /// How many seconds of history to keep.
     keep_secs: f32,
@@ -74,9 +69,13 @@ impl RollingWindow {
         }
     }
 
-    /// The maximum value seen in the current window, or `None` if empty.
-    pub fn max(&self) -> Option<i32> {
-        self.samples.iter().map(|&(_, v)| v).max()
+    /// The maximum value pushed within `keep_secs` of `now`, or `None` if none.
+    pub fn max(&self, now: Instant) -> Option<i32> {
+        self.samples
+            .iter()
+            .filter(|&&(ts, _)| now.saturating_duration_since(ts).as_secs_f32() <= self.keep_secs)
+            .map(|&(_, v)| v)
+            .max()
     }
 }
 
@@ -114,7 +113,7 @@ impl Default for PeakWindow {
 
 /// How the meter thread communicates failure back to the UI.
 pub enum MeterStatus {
-    /// Stream is running; reads come via the atomic and the shared window.
+    /// Stream is running; reads come via the shared `PeakWindow`.
     Running(Stream),
     /// cpal could not open a capture stream; message is shown in the UI.
     Failed(String),
@@ -124,14 +123,13 @@ pub enum MeterStatus {
 
 /// Start the capture stream.
 ///
-/// Opens the system default input device via cpal. On every audio callback:
-/// - writes the instantaneous peak as `peak_dbfs * 10` into `level`
-/// - pushes the same value into both rolling windows in `peak_window`
+/// Opens the system default input device via cpal. Every audio callback pushes
+/// its peak, as `peak_dbfs * 10`, into both rolling windows in `peak_window`.
 ///
 /// Returns `MeterStatus::Running(stream)` on success. The caller **must**
 /// keep the returned `Stream` alive for as long as metering is desired —
 /// dropping it stops the audio capture.
-pub fn start_meter(level: Arc<AtomicI32>, peak_window: Arc<Mutex<PeakWindow>>) -> MeterStatus {
+pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>) -> MeterStatus {
     // cpal probes JACK, OSS, dmix, and dsnoop during host/device enumeration.
     // These C libraries print directly to stderr when their backends are
     // unavailable — there is no way to intercept them from Rust. We suppress
@@ -163,25 +161,27 @@ pub fn start_meter(level: Arc<AtomicI32>, peak_window: Arc<Mutex<PeakWindow>>) -
 
     let stream_config: StreamConfig = config.into();
 
-    // Error callback: write METER_SILENT so the UI shows no reading.
-    let level_err = Arc::clone(&level);
-    let err_fn = move |_e: cpal::Error| {
-        level_err.store(METER_SILENT, Ordering::Relaxed);
-    };
+    // Stream errors need no handling: once callbacks stop, the windows expire
+    // and the UI shows no reading.
+    let err_fn = |_e: cpal::Error| {};
 
     use cpal::SampleFormat;
     let stream = match config.sample_format() {
-        SampleFormat::F32 => {
-            build_stream::<f32>(&device, &stream_config, level, peak_window, err_fn)
+        SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::I8 => build_stream::<i8>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::U8 => build_stream::<u8>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::I24 => {
+            build_stream::<cpal::I24>(&device, &stream_config, peak_window, err_fn)
         }
-        SampleFormat::I16 => {
-            build_stream::<i16>(&device, &stream_config, level, peak_window, err_fn)
-        }
-        SampleFormat::U16 => {
-            build_stream::<u16>(&device, &stream_config, level, peak_window, err_fn)
-        }
-        // Fallback for any other sample formats.
-        _ => build_stream::<f32>(&device, &stream_config, level, peak_window, err_fn),
+        SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::U32 => build_stream::<u32>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::F64 => build_stream::<f64>(&device, &stream_config, peak_window, err_fn),
+        // Rare formats (64-bit ints, U24, DSD): ask for f32. That works where the
+        // host converts (ALSA's default plug, PipeWire); elsewhere it fails and
+        // the UI shows "Meter unavailable".
+        _ => build_stream::<f32>(&device, &stream_config, peak_window, err_fn),
     };
 
     match stream {
@@ -261,17 +261,30 @@ impl Drop for StderrSuppressor {
 
 // ── Stream builder ────────────────────────────────────────────────────────────
 
-/// Build a typed input stream for sample type `S`.
-///
-/// On each callback:
-/// 1. Compute the peak absolute sample value across all channels.
-/// 2. Convert to dBFS, clamped to `METER_FLOOR_DB`.
-/// 3. Store as `(dbfs * 10.0) as i32` in the atomic (instantaneous).
-/// 4. Push the same value into both rolling windows under the shared Mutex.
+/// Sample-peak level of one callback buffer (all channels) as `dbfs * 10`,
+/// rounded and floored at `METER_FLOOR_DB`.
+fn peak_dbfs_x10<S>(data: &[S]) -> i32
+where
+    S: SizedSample,
+    f32: FromSample<S>,
+{
+    let peak: f32 = data
+        .iter()
+        .map(|&s| <f32 as FromSample<S>>::from_sample_(s).abs())
+        .fold(0.0_f32, f32::max);
+    let dbfs = if peak > 0.0 {
+        (20.0 * peak.log10()).max(METER_FLOOR_DB)
+    } else {
+        METER_FLOOR_DB
+    };
+    (dbfs * 10.0).round() as i32
+}
+
+/// Build a typed input stream for sample type `S` that pushes each callback's
+/// `peak_dbfs_x10()` into both rolling windows.
 fn build_stream<S>(
     device: &Device,
     config: &StreamConfig,
-    level: Arc<AtomicI32>,
     peak_window: Arc<Mutex<PeakWindow>>,
     err_fn: impl FnMut(cpal::Error) + Send + 'static,
 ) -> Result<Stream, cpal::Error>
@@ -279,32 +292,18 @@ where
     S: SizedSample + Send + 'static,
     f32: FromSample<S>,
 {
+    // Peak of callbacks that couldn't take the lock, carried into the next
+    // push so a brief transient (or clip) is never dropped.
+    let mut pending = METER_SILENT;
     device.build_input_stream(
         *config,
         move |data: &[S], _info: &cpal::InputCallbackInfo| {
-            // Find the peak absolute sample value in this callback buffer.
-            let peak: f32 = data
-                .iter()
-                .map(|&s| <f32 as FromSample<S>>::from_sample_(s).abs())
-                .fold(0.0_f32, f32::max);
-
-            // Convert to dBFS; clamp to our display floor.
-            let dbfs = if peak > 0.0 {
-                (20.0 * peak.log10()).max(METER_FLOOR_DB)
-            } else {
-                METER_FLOOR_DB
-            };
-
-            let encoded = (dbfs * 10.0) as i32;
-
-            // Publish instantaneous level lock-free.
-            level.store(encoded, Ordering::Relaxed);
-
-            // Push into rolling windows. try_lock avoids blocking the audio
-            // thread if the render thread is mid-read (extremely rare).
-            let now = Instant::now();
+            pending = pending.max(peak_dbfs_x10(data));
+            // try_lock avoids blocking the audio thread while the render
+            // thread reads the windows.
             if let Ok(mut pw) = peak_window.try_lock() {
-                pw.push(now, encoded);
+                pw.push(Instant::now(), pending);
+                pending = METER_SILENT;
             }
         },
         err_fn,
@@ -324,7 +323,7 @@ mod tests {
     #[test]
     fn rolling_window_empty_returns_none() {
         let w = RollingWindow::new(1.0);
-        assert!(w.max().is_none());
+        assert!(w.max(Instant::now()).is_none());
     }
 
     #[test]
@@ -334,7 +333,7 @@ mod tests {
         w.push(t, -300);
         w.push(t, -100);
         w.push(t, -200);
-        assert_eq!(w.max(), Some(-100));
+        assert_eq!(w.max(Instant::now()), Some(-100));
     }
 
     #[test]
@@ -349,7 +348,7 @@ mod tests {
         w.push(now, -400);
 
         assert_eq!(
-            w.max(),
+            w.max(Instant::now()),
             Some(-400),
             "expired sample must be evicted, leaving only the recent low value"
         );
@@ -362,7 +361,7 @@ mod tests {
         w.push(t, -200);
         w.push(t, -150);
         // Both are within the 2-second window; max should be -150 (i.e. -15.0 dBFS).
-        assert_eq!(w.max(), Some(-150));
+        assert_eq!(w.max(Instant::now()), Some(-150));
     }
 
     #[test]
@@ -377,7 +376,7 @@ mod tests {
         w.push(now, -400);
 
         assert_eq!(
-            w.max(),
+            w.max(Instant::now()),
             Some(-200),
             "sample within the window boundary must be retained"
         );
@@ -390,8 +389,8 @@ mod tests {
         let mut pw = PeakWindow::new();
         let t = Instant::now();
         pw.push(t, -200);
-        assert_eq!(pw.short.max(), Some(-200));
-        assert_eq!(pw.long.max(), Some(-200));
+        assert_eq!(pw.short.max(Instant::now()), Some(-200));
+        assert_eq!(pw.long.max(Instant::now()), Some(-200));
     }
 
     #[test]
@@ -407,12 +406,12 @@ mod tests {
         pw.push(now, -500);
 
         assert_eq!(
-            pw.short.max(),
+            pw.short.max(Instant::now()),
             Some(-500),
             "short window must evict the 500ms-old sample"
         );
         assert_eq!(
-            pw.long.max(),
+            pw.long.max(Instant::now()),
             Some(-100),
             "long window must still hold the 500ms-old sample"
         );
@@ -421,7 +420,36 @@ mod tests {
     #[test]
     fn peak_window_both_empty_initially() {
         let pw = PeakWindow::new();
-        assert!(pw.short.max().is_none());
-        assert!(pw.long.max().is_none());
+        assert!(pw.short.max(Instant::now()).is_none());
+        assert!(pw.long.max(Instant::now()).is_none());
+    }
+
+    #[test]
+    fn rolling_window_expires_without_new_pushes() {
+        // A stalled stream must not leave the last reading frozen on screen.
+        let mut w = RollingWindow::new(0.3);
+        let t = Instant::now();
+        w.push(t, -100);
+        assert_eq!(w.max(t + Duration::from_millis(200)), Some(-100));
+        assert!(w.max(t + Duration::from_millis(400)).is_none());
+    }
+
+    // ── peak_dbfs_x10 ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn peak_dbfs_x10_matches_reference_levels() {
+        // Full scale in either polarity is 0 dBFS.
+        assert_eq!(peak_dbfs_x10(&[0.0_f32, -1.0, 0.5]), 0);
+        assert_eq!(peak_dbfs_x10(&[i16::MIN, 0]), 0);
+        // Half scale is -6.0 dBFS; a tenth is -20.0 dBFS.
+        assert_eq!(peak_dbfs_x10(&[0.5_f32]), -60);
+        assert_eq!(peak_dbfs_x10(&[0.1_f32]), -200);
+        assert_eq!(peak_dbfs_x10(&[16384_i16]), -60);
+        // u16 midpoint is silence; anything below the floor clamps to it.
+        assert_eq!(peak_dbfs_x10(&[32768_u16]), -600);
+        assert_eq!(peak_dbfs_x10(&[0.0001_f32]), -600);
+        assert_eq!(peak_dbfs_x10::<f32>(&[]), -600);
+        // Rounds rather than truncates: -2.96 dB is -3.0, not -2.9.
+        assert_eq!(peak_dbfs_x10(&[10f32.powf(-2.96 / 20.0)]), -30);
     }
 }
