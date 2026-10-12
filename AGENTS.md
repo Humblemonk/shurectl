@@ -30,7 +30,7 @@ cargo clippy --features probe -- -D warnings && cargo build --all-targets --feat
   compiles. Read the `cargo test` output for warnings; don't just grep for `test result`.
 - Clippy isn't run with `--all-targets` yet because of pre-existing
   `field_reassign_with_default` warnings in `app.rs` tests. Fold them into struct literals before tightening.
-- CI runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~4.3% actual). Check with
+- CI runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual). Check with
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared helper;
   don't raise the threshold.
 
@@ -107,8 +107,9 @@ Follow this sequence without skipping steps:
 A user owns one device but reads one readme, one help overlay, and one set of screenshots.
 If "Gain Lock" on the Gen 2 is "Lock" on the MV6, the docs stop matching reality. Divergence
 is also the largest maintenance cost here: `ui.rs` has eleven `draw_main_left_*` variants and
-six-way `DeviceModel` matches in `draw_main_right()` and `draw_info_tab()`, and `app.rs`
-matches on `DeviceModel` in `reset_focus_for_tab()`, `focus_next()`, and `focus_prev()`.
+a six-way `DeviceModel` match in `draw_info_tab()`, and `app.rs` matches on `DeviceModel` in
+`reset_focus_for_tab()`, `focus_next()`, and `focus_prev()`. The Main tab's Summary is one
+ordered `SummaryRow` list; a model picks its rows in `summary_rows()` but can't reorder them.
 
 **The rule:** any control that exists on more than one model has identical label, units,
 value formatting, keybinding, and position relative to its neighbours on all of them. Only
@@ -134,7 +135,7 @@ Shared across all models unless the hardware makes it impossible:
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
 
 - Permanently unsupported on this hardware → hide it (Reverb on non-MV7+, LED on models
-  without LED settings, Factory Reset except on the MV7+ and MV6 Gen 2)
+  without LED settings, Factory Reset except on the MV7+, MV6 Gen 2 and MVX2U Gen 2)
 - Supported but currently unavailable → show it with 🔒 and a notice (EQ/Dynamics on Gen 1
   in Auto mode, via `draw_tab_locked_notice()`)
 - Never leave a control visible and focusable but inert. It reads as a bug
@@ -146,9 +147,9 @@ Shared across all models unless the hardware makes it impossible:
 2. Can an existing shared helper render it? Extend the helper.
 3. If a per-model `draw_*` fork is genuinely required, keep block order, borders, and spacing
    identical to its siblings.
-4. Update *every* `DeviceModel` match: focus fns, both `draw_main_*`, `draw_info_tab()`, and
-   preset serialization. Wherever `_` was used, a missing arm is a silent UX divergence
-   rather than a compile error.
+4. Update *every* `DeviceModel` match: focus fns, `draw_main_left()`, `summary_rows()`,
+   `draw_info_tab()`, and preset serialization. Wherever `_` was used, a missing arm is a
+   silent UX divergence rather than a compile error.
 5. Verify with `--demo mvx2u`, `--demo mvx2u-gen2`, `--demo mv6`, `--demo mv6-gen2`, `--demo mv7`,
    and `--demo mv7plus`.
 
@@ -198,7 +199,7 @@ is unchanged; a changed golden file lists the screens to look at.
 
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
-  byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed only on the MV6 Gen 2.
+  byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
 - **Gain Lock**: a locked device ignores gain writes. `apply_preset_to_device()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must

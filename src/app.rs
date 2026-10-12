@@ -250,21 +250,20 @@ impl App {
         )
     }
 
-    /// Returns true when the Info tab offers Factory Reset. Only the MV7+ reset
-    /// packet is known; the original MV7 has no factory reset at all (MOTIV
-    /// doesn't offer one either). The UI hides the button and the Enter handler
-    /// ignores it on every other model.
     /// Whether a preset or device name is being typed.
     pub fn editing_name(&self) -> bool {
         self.editing_preset_name || self.editing_device_name
     }
 
+    /// Returns true when the Info tab offers Factory Reset: the models whose
+    /// reset packet was captured from MOTIV (`cmd_factory_reset`). The original
+    /// MV7 has no factory reset (MOTIV doesn't offer one); the MVX2U Gen 1 and
+    /// MV6 are uncaptured. The UI hides the button and the Enter handler ignores
+    /// it on every other model.
     pub fn supports_factory_reset(&self) -> bool {
         match self.device_model {
-            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 => true,
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
-                false
-            }
+            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 => false,
         }
     }
 
@@ -423,8 +422,8 @@ impl App {
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
     // MVX2U Gen 2 Main cycles:
-    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → Phantom → (wrap)
-    //   Auto:   Mode → Mute → MonitorMix → Phantom → (wrap)
+    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → Phantom → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → Phantom → (wrap)
     //
     // MVX2U Gen 2 EQ cycles:
     //   Auto:   Tone (slider only)
@@ -549,16 +548,11 @@ impl App {
             (Tab::Main, Focus::GainLock, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
                 Focus::MonitorMix
             }
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
-                Focus::Phantom
-            }
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mode,
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::MonitorMix,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
-                Focus::Phantom
-            }
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, _) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mvx2uGen2, _) => Focus::Phantom,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
             (Tab::Main, _, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
 
             // ── MVX2U Gen 2 EQ (Tone in Auto, 5-band in Manual) ──────────────
@@ -797,15 +791,11 @@ impl App {
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
                 Focus::GainLock
             }
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
-                Focus::MonitorMix
-            }
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Phantom,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mode,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
-                Focus::MonitorMix
-            }
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mvx2uGen2, _) => Focus::MonitorMix,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, _) => Focus::PlaybackMix,
             (Tab::Main, _, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
 
             // ── MVX2U Gen 2 EQ reverse ────────────────────────────────────────
@@ -1444,7 +1434,7 @@ pub enum DeviceAction {
     /// Open the device again after it was unplugged and plugged back in, and
     /// load its state. Sent by main's presence poll rather than a key.
     Reconnect,
-    /// Send a factory reset command (MV7+, MV6 Gen 2). Device disconnects immediately after.
+    /// Send a factory reset command (MV7+, MV6 Gen 2, MVX2U Gen 2). Device disconnects immediately after.
     FactoryReset,
 }
 
@@ -2823,11 +2813,12 @@ mod tests {
     }
 
     #[test]
-    fn factory_reset_is_mv7_plus_only() {
+    fn factory_reset_only_on_captured_models() {
         for (model, supported) in [
             (DeviceModel::Mvx2u, false),
-            (DeviceModel::Mvx2uGen2, false),
+            (DeviceModel::Mvx2uGen2, true),
             (DeviceModel::Mv6, false),
+            (DeviceModel::Mv6Gen2, true),
             (DeviceModel::Mv7, false),
             (DeviceModel::Mv7Plus, true),
         ] {

@@ -31,6 +31,10 @@ pub const PRESET_COUNT: usize = 4;
 pub struct PresetSlot {
     /// Human-readable name shown in the TUI (editable in-app or by hand in TOML).
     pub name: String,
+    /// The device's own name (Info tab), restored on load. Empty when it wasn't
+    /// read, on the MV7 (which has none), and in presets saved before this field.
+    #[serde(default)]
+    pub device_name: String,
 
     // ── Shared ───────────────────────────────────────────────────────────────
     /// Manual gain in dB, e.g. `19.5` (the MV7 steps 1.5 dB). Presets saved
@@ -176,6 +180,12 @@ impl PresetSlot {
     pub fn from_device_state(name: impl Into<String>, state: &DeviceState) -> Self {
         Self {
             name: name.into(),
+            // "Unknown" is the placeholder for a name that wasn't read.
+            device_name: if state.device_name == "Unknown" {
+                String::new()
+            } else {
+                state.device_name.clone()
+            },
             gain_db: f32::from(state.gain_tenths) / 10.0,
             mode: SerInputMode::from(state.mode),
             muted: state.muted,
@@ -220,7 +230,8 @@ impl PresetSlot {
 
     /// Apply this preset's settings onto a `DeviceState`, preserving
     /// hardware-identity fields (`serial_number`). Presets are hand-editable, so
-    /// bounded values are clamped to the range the controls work in.
+    /// bounded values are clamped to the range the controls work in. The device
+    /// name is left to the caller, which knows whether the model has one.
     pub fn apply_to_device_state(&self, state: &mut DeviceState) {
         state.gain_tenths = gain_db_to_tenths(self.gain_db);
         state.mode = InputMode::from(self.mode);
@@ -314,7 +325,7 @@ impl PresetSlot {
             freq => format!("HPF {freq}"),
         };
 
-        match model {
+        let settings = match model {
             DeviceModel::Mv6Gen2 => {
                 // Auto shows the Auto Level settings in place of the unused gain.
                 let level_str = match InputMode::from(self.mode) {
@@ -434,6 +445,11 @@ impl PresetSlot {
                     }
                 }
             }
+        };
+        if model.has_device_rename() && !self.device_name.is_empty() {
+            format!("{settings} · Name: {}", self.device_name)
+        } else {
+            settings
         }
     }
 }
@@ -1344,6 +1360,38 @@ mod tests {
         let mut target = DeviceState::default();
         loaded.apply_to_device_state(&mut target);
         assert_eq!(target.gain_tenths, 360);
+    }
+
+    #[test]
+    fn preset_saves_device_name_but_not_the_unknown_placeholder() {
+        let named = DeviceState {
+            device_name: "Desk mic".to_string(),
+            ..DeviceState::default()
+        };
+        let slot = PresetSlot::from_device_state("Named", &named);
+        assert_eq!(slot.device_name, "Desk mic");
+        assert_eq!(toml_roundtrip(&slot).device_name, "Desk mic");
+        let unread = PresetSlot::from_device_state("Unread", &DeviceState::default());
+        assert_eq!(
+            unread.device_name, "",
+            "\"Unknown\" is a placeholder, not a name"
+        );
+
+        // Presets saved before the field existed load without a name.
+        let text = toml::to_string(&slot)
+            .expect("serialise")
+            .lines()
+            .filter(|line| !line.starts_with("device_name"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let old: PresetSlot = toml::from_str(&text).expect("old format must parse");
+        assert_eq!(old.device_name, "");
+
+        assert!(
+            slot.summary(DeviceModel::Mvx2uGen2)
+                .ends_with(" · Name: Desk mic")
+        );
+        assert!(!slot.summary(DeviceModel::Mv7).contains("Name:"));
     }
 
     #[test]

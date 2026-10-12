@@ -457,13 +457,14 @@ impl ShureDevice {
     fn get_state_mvx2u_gen2(&self, readback: &mut Readback) -> Result<()> {
         // Gen 2 shares most getters with Gen 1 but has no config lock, no EQ master
         // enable, and no per-band enable. It adds denoiser, popper stopper, gain lock,
-        // tone, and uses the MV6-style monitor mix framing.
+        // tone, and the MV6 Gen 2's two monitor levels (Mic Level, Playback Level).
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
             cmd_get_mute,
             cmd_get_phantom,
             cmd_get_mode,
             cmd_get_mv6_mix, // same address as Gen 1 mix; GET uses standard framing
+            cmd_get_mv7_playback_mix, // replies echo prefix 0x03 (captured)
             cmd_get_hpf,
             cmd_get_limiter,
             cmd_get_compressor,
@@ -951,25 +952,23 @@ impl ShureDevice {
         ))
     }
 
-    /// Send a factory reset to the MV7+.
+    /// Send a factory reset to the MV7+, MV6 Gen 2 or MVX2U Gen 2.
     ///
     /// The device disconnects and re-enumerates immediately; no CONFIRM is sent.
     /// After this call succeeds the device handle is stale — do not use it again.
-    /// Refuses every other model: the packet is MV7+-specific, and the original
-    /// MV7 has no factory reset.
+    /// Refuses every other model: the packet is only captured on these three, and
+    /// the original MV7 has no factory reset.
     pub fn factory_reset(&self) -> Result<()> {
         match self.model {
-            // The MV6 Gen 2 takes the same packet (captured from MOTIV's Reset to
-            // defaults).
-            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 => {
+            // The MV6 Gen 2 and MVX2U Gen 2 take the same packet (captured from
+            // MOTIV's Reset to defaults).
+            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 | DeviceModel::Mvx2uGen2 => {
                 self.write(&cmd_factory_reset(self.next_seq()))
             }
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
-                Err(anyhow!(
-                    "Factory reset is not available on the {}",
-                    self.model.display_name()
-                ))
-            }
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 => Err(anyhow!(
+                "Factory reset is not available on the {}",
+                self.model.display_name()
+            )),
         }
     }
 }

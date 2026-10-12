@@ -82,7 +82,10 @@
 //!   Compressor:     [0x01, 0x5C]  — same as Gen 1
 //!   Phantom (48V):  [0x01, 0x66]  — same as Gen 1
 //!   Auto level:     [0x01, 0x85]  — same as Gen 1: 0=manual, 1=auto
-//!   Monitor mix:    [0x01, 0x86]  — same address; SET uses HDR_CONSTANT=0x00 (like MV6)
+//!   Monitor mix:    [0x01, 0x86]  — MOTIV's Mic Level (prefix 0x00) and Playback Level
+//!                                   (prefix 0x03), each 0–100%, as on the MV6 Gen 2. SET uses
+//!                                   HDR_CONSTANT=0x00, GET standard framing, and replies echo
+//!                                   the prefix. Confirmed by capture of MOTIV Mix, fw 1.2.0.6
 //!   Gain lock:      [0x01, 0xF3]  — same as MV6 (confirmed by probe diff)
 //!   Tone slider:    [0x02, 0x04]  — same as MV6: 16-bit signed BE, units: percent
 //!                                   Range: -100 (Dark) to +100 (Bright), steps of 10.
@@ -276,14 +279,17 @@ impl DeviceModel {
     /// level in the headphones and Playback Mix the playback level. Elsewhere
     /// Monitor Mix is one mic ↔ playback balance.
     ///
-    /// The MV6 is included because MOTIV shows it with Mic Level and Playback
-    /// Level sliders and its mic level already uses the MV6 Gen 2 packet.
-    /// Unconfirmed on MV6 hardware: that its playback level is FEAT_MIX prefix
-    /// 0x03 like the MV6 Gen 2 and MV7+ (issue #99).
+    /// Captured on the MV6 Gen 2, MV7+ and MVX2U Gen 2. The MV6 is included
+    /// because MOTIV shows it with Mic Level and Playback Level sliders and its
+    /// mic level already uses the MV6 Gen 2 packet. Unconfirmed on MV6 hardware:
+    /// that its playback level is FEAT_MIX prefix 0x03 too (issue #99).
     pub fn has_playback_mix(&self) -> bool {
         match self {
-            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => true,
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7 => false,
+            DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus
+            | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mvx2u | DeviceModel::Mv7 => false,
         }
     }
 
@@ -580,9 +586,11 @@ const MV7_FEAT_LED_BEHAVIOR_RESP: [u8; 2] = [0x00, 0xA4];
 const MV7_FEAT_LED_SOLID_THEME_RESP: [u8; 2] = [0x00, 0xA5];
 const MV7_FEAT_LED_PULSING_THEME_RESP: [u8; 2] = [0x00, 0xA6];
 
-// ── MV7+ factory reset ────────────────────────────────────────────────────────
+// ── Factory reset (MV7+, MV6 Gen 2, MVX2U Gen 2) ──────────────────────────────
 //
-// Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
+// Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6, then
+// the MV6 Gen 2, and the MVX2U Gen 2 on firmware 1.2.0.6 (MOTIV Mix's Reset to
+// defaults, 2026-10-12; it also clears the device name).
 // Single CMD_SET_LOCK packet with HDR_CONSTANT=0x00; no CONFIRM is sent because
 // the device disconnects and re-enumerates immediately (~5 s) after receipt.
 const MV7_FACTORY_RESET_PAGE: u8 = 0x00;
@@ -611,7 +619,8 @@ pub struct DeviceState {
     pub muted: bool,
     /// 48V phantom power. MVX2U Gen 1 and Gen 2 only (XLR input).
     pub phantom_power: bool,
-    /// Monitor mix: 0 = 100% mic, 100 = 100% playback. MVX2U Gen 1, Gen 2, and MV6.
+    /// Monitor mix: one balance, 0 = 100% mic, 100 = 100% playback, on the MVX2U
+    /// Gen 1 and MV7. On models with `has_playback_mix()` it is the mic level.
     pub monitor_mix: u8,
     /// Limiter. MVX2U Gen 1 and Gen 2 only.
     pub limiter_enabled: bool,
@@ -650,8 +659,8 @@ pub struct DeviceState {
     pub tone_advanced: bool,
 
     // ── MV7+ exclusive fields ────────────────────────────────────────────────
-    /// Playback level in the headphones, 0–100%. MV7+, MV6 Gen 2 and (unconfirmed)
-    /// MV6, where `monitor_mix` is the mic level. Same FEAT_MIX address as
+    /// Playback level in the headphones, 0–100%. MV7+, MV6 Gen 2, MVX2U Gen 2 and
+    /// (unconfirmed) MV6, where `monitor_mix` is the mic level. Same FEAT_MIX address as
     /// `monitor_mix`, with prefix=0x03 on the wire.
     pub playback_mix: u8,
     /// Reverb applied to speaker/headphone output.
@@ -5327,6 +5336,59 @@ mod tests {
         assert_eq!(&pkt[10..13], &[0x02, 0x02, 0x01], "CMD_SET_LOCK");
         // payload: [page=0x00, 0x00, sub=0x22, value=0x01]
         assert_eq!(&pkt[13..17], &[0x00, 0x00, 0x22, 0x01], "payload");
+    }
+
+    /// A captured packet: the bytes up to the CRC, zero-padded to 64.
+    fn captured(bytes: &[u8]) -> Vec<u8> {
+        let mut pkt = bytes.to_vec();
+        pkt.resize(PACKET_SIZE, 0x00);
+        pkt
+    }
+
+    #[test]
+    fn mvx2u_gen2_monitor_levels_match_capture() {
+        // MOTIV Mix on the MVX2U Gen 2 (firmware 1.2.0.6): Mic Level and
+        // Playback Level writes, a Playback Level read, and its reply.
+        let mic_set = [
+            0x01, 0x11, 0x11, 0x22, 0xef, 0x00, 0x08, 0x09, 0x70, 0x09, 0x02, 0x02, 0x02, 0x00,
+            0x01, 0x86, 0x63, 0xcc, 0xee,
+        ];
+        assert_eq!(cmd_set_mv6_mix(0xef, 99), captured(&mic_set));
+        let playback_set = [
+            0x01, 0x11, 0x11, 0x22, 0xf3, 0x00, 0x08, 0x09, 0x70, 0x09, 0x02, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x63, 0xd4, 0xc1,
+        ];
+        assert_eq!(cmd_set_mv7_playback_mix(0xf3, 99), captured(&playback_set));
+        let playback_get = [
+            0x01, 0x10, 0x11, 0x22, 0xf5, 0x03, 0x08, 0x08, 0x70, 0x08, 0x01, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x2f, 0x48,
+        ];
+        assert_eq!(cmd_get_mv7_playback_mix(0xf5), captured(&playback_get));
+
+        // The reply echoes prefix 0x03, which routes it to Playback Level.
+        let reply = parse_response(&captured(&[
+            0x01, 0x11, 0x11, 0x22, 0x6b, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x1e, 0x28, 0xcb,
+        ]))
+        .expect("captured reply parses");
+        let mut state = DeviceState {
+            monitor_mix: 50,
+            ..DeviceState::default()
+        };
+        assert!(apply_reply(&reply, &mut state));
+        assert_eq!(state.playback_mix, 30);
+        assert_eq!(state.monitor_mix, 50, "Mic Level untouched");
+    }
+
+    #[test]
+    fn factory_reset_matches_mvx2u_gen2_capture() {
+        // MOTIV Mix's Reset to defaults on the MVX2U Gen 2 (firmware 1.2.0.6),
+        // sequence 0x72: the whole packet, CRC and padding included.
+        let reset = [
+            0x01, 0x11, 0x11, 0x22, 0x72, 0x00, 0x08, 0x09, 0x70, 0x09, 0x02, 0x02, 0x01, 0x00,
+            0x00, 0x22, 0x01, 0x39, 0xd2,
+        ];
+        assert_eq!(cmd_factory_reset(0x72), captured(&reset));
     }
 
     // ── MV7+ LED protocol tests ───────────────────────────────────────────────
