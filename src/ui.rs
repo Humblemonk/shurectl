@@ -60,6 +60,82 @@ fn focused_style(focused: bool) -> Style {
     }
 }
 
+/// A rounded block whose border lights up when its control has focus. Gauges
+/// that show their value in the title add their own.
+fn focus_border(focused: bool) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if focused { C_FOCUS } else { C_BORDER }))
+}
+
+/// A rounded block whose title and border light up when one of its controls has focus.
+fn focus_block(title: &str, focused: bool) -> Block<'static> {
+    alert_block(title, focused, false)
+}
+
+/// `focus_block()` that turns red while `alert` holds (muted, locked) and it
+/// isn't focused.
+fn alert_block(title: &str, focused: bool, alert: bool) -> Block<'static> {
+    let alerting = alert && !focused;
+    let title_style = if alerting {
+        Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
+    } else {
+        focused_style(focused)
+    };
+    let block = focus_border(focused).title(Span::styled(format!("  {title}  "), title_style));
+    if alerting {
+        block.border_style(Style::default().fg(C_ERROR))
+    } else {
+        block
+    }
+}
+
+/// A slider: its label, the value in bold accent and the adjust hint (while
+/// focused) in the title, and a `color` bar that turns bold on focus. Callers
+/// add the ratio and label.
+fn slider_gauge(label: &str, value: &str, focused: bool, color: Color) -> Gauge<'static> {
+    let block = focus_border(focused).title(Line::from(vec![
+        Span::styled(format!("  {label}  "), focused_style(focused)),
+        Span::styled(
+            format!(" {value} "),
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if focused { "  ◄ ► to adjust" } else { "" },
+            Style::default().fg(C_DIM),
+        ),
+    ]));
+    let bar_style = Style::default().fg(color).bg(C_SURFACE);
+    Gauge::default().block(block).gauge_style(if focused {
+        bar_style.add_modifier(Modifier::BOLD)
+    } else {
+        bar_style
+    })
+}
+
+/// Make a whole multi-row block clickable: each row's control owns the block
+/// from its row down (the first also takes the title), and later regions win.
+/// Rows squeezed out of a short terminal take nothing.
+fn control_rows(
+    f: &mut UiFrame,
+    block_area: Rect,
+    rows: &[Rect],
+    focuses: impl Iterator<Item = Focus>,
+) {
+    for (i, (row, focus)) in rows.iter().zip(focuses).enumerate() {
+        if row.height == 0 {
+            continue;
+        }
+        let top = if i == 0 { block_area.y } else { row.y };
+        let height = block_area.bottom().saturating_sub(top);
+        f.control(
+            Rect::new(block_area.x, top, block_area.width, height),
+            focus,
+        );
+    }
+}
+
 fn bool_span(val: bool) -> Span<'static> {
     if val {
         Span::styled(
@@ -298,8 +374,7 @@ fn draw_main_left_mv7plus(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // mute
             Constraint::Length(3), // gain
             Constraint::Length(4), // level meter
-            Constraint::Length(3), // monitor mix
-            Constraint::Length(3), // playback mix
+            Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -312,7 +387,6 @@ fn draw_main_left_mv7plus(f: &mut UiFrame, app: &App, area: Rect) {
 
     draw_meter(f, app, rows[3]);
     draw_monitor_mix_gauge(f, app, rows[4]);
-    draw_playback_mix_gauge(f, app, rows[5]);
 }
 
 fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
@@ -322,8 +396,7 @@ fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // mode
             Constraint::Length(3), // mute
             Constraint::Length(4), // level meter
-            Constraint::Length(3), // monitor mix
-            Constraint::Length(3), // playback mix
+            Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -333,39 +406,6 @@ fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
     draw_mute_block(f, app, rows[1]);
     draw_meter(f, app, rows[2]);
     draw_monitor_mix_gauge(f, app, rows[3]);
-    draw_playback_mix_gauge(f, app, rows[4]);
-}
-
-/// Playback Mix: the playback level in the headphones, on models with two
-/// monitor levels (MV7+, MV6 Gen 2, MV6). Orange, not Monitor Mix blue, to tell the
-/// two adjacent gauges apart at a glance.
-fn draw_playback_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
-    f.control(area, Focus::PlaybackMix);
-    let focused = app.focus == Focus::PlaybackMix;
-    let mix = app.device_state.playback_mix;
-    let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    "  Playback Mix  ",
-                    if focused {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_TEXT)
-                    },
-                ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(Style::default().fg(Color::Rgb(200, 100, 50)).bg(C_SURFACE))
-        .ratio(mix as f64 / 100.0)
-        .label(format!("Playback level {mix:3}%"));
-    f.render_widget(gauge, area);
 }
 
 // MV7 Manual: Mode → Mute → Gain → Meter → MonitorMix → Lock
@@ -425,8 +465,7 @@ fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // gain gauge
             Constraint::Length(3), // gain lock
             Constraint::Length(4), // level meter
-            Constraint::Length(3), // monitor mix
-            Constraint::Length(3), // playback mix (MV6 Gen 2)
+            Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Length(3), // mic preset (MV6 Gen 2)
             Constraint::Min(0),    // spacer
         ])
@@ -442,11 +481,8 @@ fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
 
     draw_meter(f, app, rows[4]);
     draw_monitor_mix_gauge(f, app, rows[5]);
-    if app.device_model.has_playback_mix() {
-        draw_playback_mix_gauge(f, app, rows[6]);
-    }
     if app.device_model.has_mic_presets() {
-        draw_mic_preset_block(f, app, rows[7]);
+        draw_mic_preset_block(f, app, rows[6]);
     }
 }
 
@@ -474,17 +510,7 @@ fn draw_mic_preset_block(f: &mut UiFrame, app: &App, area: Rect) {
         if focused { "  [Enter] cycle" } else { "" },
         Style::default().fg(C_DIM),
     ));
-    let p = Paragraph::new(Line::from(spans)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled("  Mic Preset  ", focused_style(focused))),
-    );
+    let p = Paragraph::new(Line::from(spans)).block(focus_block("Mic Preset", focused));
     f.render_widget(p, area);
 }
 
@@ -495,8 +521,7 @@ fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // mode
             Constraint::Length(3), // mute
             Constraint::Length(4), // level meter
-            Constraint::Length(3), // monitor mix
-            Constraint::Length(3), // playback mix
+            Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Min(0),    // spacer
         ])
         .margin(1)
@@ -506,12 +531,11 @@ fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
     draw_mute_block(f, app, rows[1]);
     draw_meter(f, app, rows[2]);
     draw_monitor_mix_gauge(f, app, rows[3]);
-    draw_playback_mix_gauge(f, app, rows[4]);
 }
 
 // MV6 Gen 2 Auto: the MV6 Auto layout plus its Auto Level controls, placed where
-// the MVX2U Gen 1 has them (between Mute and the meter), the MV7+ Playback Mix, and
-// the Mic Preset last.
+// the MVX2U Gen 1 has them (between Mute and the meter), the MV7+ Mic Level and
+// Playback Level, and the Mic Preset last.
 fn draw_main_left_mv6_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -520,8 +544,7 @@ fn draw_main_left_mv6_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
             Constraint::Length(3), // mute
             Constraint::Length(4), // auto controls (2 rows + 2 borders)
             Constraint::Length(4), // level meter
-            Constraint::Length(3), // monitor mix
-            Constraint::Length(3), // playback mix
+            Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Length(3), // mic preset
             Constraint::Min(0),    // spacer
         ])
@@ -538,8 +561,7 @@ fn draw_main_left_mv6_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
     );
     draw_meter(f, app, rows[3]);
     draw_monitor_mix_gauge(f, app, rows[4]);
-    draw_playback_mix_gauge(f, app, rows[5]);
-    draw_mic_preset_block(f, app, rows[6]);
+    draw_mic_preset_block(f, app, rows[5]);
 }
 
 // Gen 2 Manual: Mode → Mute → Gain → GainLock → Meter → MonitorMix → Phantom
@@ -712,23 +734,7 @@ impl AutoRow {
 /// and focused rows highlighted with the focus border/colour.
 fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, rows: &[AutoRow]) {
     let any_focused = rows.iter().any(|row| app.focus == row.focus());
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(if any_focused {
-            Style::default().fg(C_FOCUS)
-        } else {
-            Style::default().fg(C_BORDER)
-        })
-        .title(Span::styled(
-            "  Auto Level Controls  ",
-            if any_focused {
-                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(C_TEXT)
-            },
-        ));
+    let block = focus_block("Auto Level Controls", any_focused);
     let inner_area = block.inner(area);
     f.render_widget(block, area);
 
@@ -739,12 +745,12 @@ fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, rows: &[AutoRow]) 
         .constraints(vec![Constraint::Length(1); rows.len()])
         .horizontal_margin(1)
         .split(inner_area);
+    control_rows(f, area, &inner_rows, rows.iter().map(|row| row.focus()));
     // Options start in one column: pad every label to the longest plus a space.
     let label_width = rows.iter().map(|row| row.label().len()).max().unwrap_or(0) + 1;
 
     for (row, row_area) in rows.iter().zip(inner_rows.iter()) {
         let focused = app.focus == row.focus();
-        f.control(*row_area, row.focus());
         let mut spans = vec![Span::styled(
             format!("{:<label_width$}", row.label()),
             Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
@@ -785,36 +791,27 @@ fn draw_gain_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     let gain = app.device_state.gain_tenths;
     let max = app.device_model.max_gain_tenths();
     let gain_locked = app.gain_locked();
+    let title = Line::from(vec![
+        Span::styled("  GAIN  ", focused_style(gain_focused)),
+        Span::styled(
+            format!(" {} ", format_gain(gain)),
+            Style::default()
+                .fg(if gain_locked { C_DIM } else { C_ACCENT })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if gain_focused && !gain_locked {
+                "  ◄ ► or ←→ to adjust"
+            } else if gain_focused && gain_locked {
+                "  🔒 locked"
+            } else {
+                ""
+            },
+            Style::default().fg(C_DIM),
+        ),
+    ]);
     let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled("  GAIN  ", focused_style(gain_focused)),
-                    Span::styled(
-                        format!(" {} ", format_gain(gain)),
-                        Style::default()
-                            .fg(if gain_locked { C_DIM } else { C_ACCENT })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if gain_focused && !gain_locked {
-                            "  ◄ ► or ←→ to adjust"
-                        } else if gain_focused && gain_locked {
-                            "  🔒 locked"
-                        } else {
-                            ""
-                        },
-                        Style::default().fg(C_DIM),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if gain_focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
+        .block(focus_border(gain_focused).title(title))
         .gauge_style(
             Style::default()
                 .fg(if gain_locked { C_DISABLED } else { C_ACCENT })
@@ -854,24 +851,7 @@ fn draw_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled(
-                "  Input Mode  ",
-                if focused {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            )),
-    );
+    .block(focus_block("Input Mode", focused));
     f.render_widget(p, area);
 }
 
@@ -890,66 +870,84 @@ fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if focused {
-                Style::default().fg(C_FOCUS)
-            } else if muted {
-                Style::default().fg(C_ERROR)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled(
-                "  Mute  ",
-                if focused {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else if muted {
-                    Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            )),
-    );
+    .block(alert_block("Mute", focused, muted));
     f.render_widget(p, area);
 }
 
-/// Renders the monitor mix gauge. Used by both MVX2U (via draw_main_shared)
-/// and MV6 (directly in draw_main_left_mv6_manual / draw_main_left_mv6_auto).
+const C_MONITOR_MIX: Color = Color::Rgb(50, 150, 220);
+// Orange, not Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
+const C_PLAYBACK_LEVEL: Color = Color::Rgb(200, 100, 50);
+
+/// Renders the Monitor Mix block. Models with two monitor levels (MV7+, MV6
+/// Gen 2, MV6) get MOTIV's Mic Level and Playback Level rows and need 4 rows of
+/// `area`; the rest get one mic ↔ playback balance gauge in 3.
 fn draw_monitor_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
+    if app.device_model.has_playback_mix() {
+        draw_monitor_levels(f, app, area);
+        return;
+    }
     f.control(area, Focus::MonitorMix);
-    let mm_focused = app.focus == Focus::MonitorMix;
     let mix = app.device_state.monitor_mix;
     let mix_gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    "  Monitor Mix  ",
-                    if mm_focused {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(C_TEXT)
-                    },
-                ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if mm_focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(Style::default().fg(Color::Rgb(50, 150, 220)).bg(C_SURFACE))
+        .block(focus_block(
+            MONITOR_MIX_TITLE,
+            app.focus == Focus::MonitorMix,
+        ))
+        .gauge_style(Style::default().fg(C_MONITOR_MIX).bg(C_SURFACE))
         .ratio(mix as f64 / 100.0)
-        // With a separate Playback Mix, Monitor Mix is the mic level alone.
-        .label(if app.device_model.has_playback_mix() {
-            format!("Mic level {mix:3}%")
-        } else {
-            format!("Mic ◄─{mix:3}%─► Playback")
-        });
+        .label(format!("Mic ◄─{mix:3}%─► Playback"));
     f.render_widget(mix_gauge, area);
 }
+
+/// Mic Level and Playback Level rows in one block, laid out as in MOTIV.
+fn draw_monitor_levels(f: &mut UiFrame, app: &App, area: Rect) {
+    let levels = [
+        (
+            "Mic Level",
+            Focus::MonitorMix,
+            app.device_state.monitor_mix,
+            C_MONITOR_MIX,
+        ),
+        (
+            "Playback Level",
+            Focus::PlaybackMix,
+            app.device_state.playback_mix,
+            C_PLAYBACK_LEVEL,
+        ),
+    ];
+    let block = focus_block(
+        MONITOR_MIX_TITLE,
+        levels.iter().any(|level| app.focus == level.1),
+    );
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1); 2])
+        .horizontal_margin(1)
+        .split(inner_area);
+    // The whole block takes clicks, as the single-gauge Monitor Mix does.
+    control_rows(f, area, &rows, levels.iter().map(|level| level.1));
+    let label_width = levels.iter().map(|level| level.0.len()).max().unwrap_or(0) as u16 + 2;
+    for ((label, focus, level, color), row_area) in levels.into_iter().zip(rows.iter()) {
+        let [label_area, gauge_area] =
+            Layout::horizontal([Constraint::Length(label_width), Constraint::Min(0)])
+                .areas(*row_area);
+        let label_color = if app.focus == focus { C_FOCUS } else { C_DIM };
+        f.render_widget(
+            Paragraph::new(Span::styled(label, Style::default().fg(label_color))),
+            label_area,
+        );
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(color).bg(C_SURFACE))
+            .ratio(level as f64 / 100.0)
+            .label(format!("{level:3}%"));
+        f.render_widget(gauge, gauge_area);
+    }
+}
+
+const MONITOR_MIX_TITLE: &str = "Monitor Mix";
 
 /// Renders the Phantom Power block as a standalone control.
 /// Used by Gen 2 main tab and MVX2U via draw_main_shared.
@@ -968,24 +966,7 @@ fn draw_phantom_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_WARN),
         ),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if ph_focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled(
-                "  Phantom Power  ",
-                if ph_focused {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            )),
-    );
+    .block(focus_block("Phantom Power", ph_focused));
     f.render_widget(phantom_p, area);
 }
 
@@ -1013,28 +994,7 @@ fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if lock_focused {
-                Style::default().fg(C_FOCUS)
-            } else if gain_locked {
-                Style::default().fg(C_ERROR)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled(
-                "  Gain Lock  ",
-                if lock_focused {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else if gain_locked {
-                    Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            )),
-    );
+    .block(alert_block("Gain Lock", lock_focused, gain_locked));
     f.render_widget(gain_lock_p, area);
 }
 
@@ -1098,28 +1058,7 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
             Span::raw("")
         },
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if lock_focused {
-                Style::default().fg(C_FOCUS)
-            } else if locked {
-                Style::default().fg(C_ERROR)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled(
-                "  Config Lock  ",
-                if lock_focused {
-                    Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                } else if locked {
-                    Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(C_TEXT)
-                },
-            )),
-    );
+    .block(alert_block("Config Lock", lock_focused, locked));
     f.render_widget(lock_p, area);
 }
 
@@ -1613,14 +1552,7 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
     };
 
     let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(Span::styled("  Summary  ", Style::default().fg(C_TEXT)))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(C_BORDER))
-                .padding(Padding::horizontal(1)),
-        )
+        .block(card_block("Summary", false))
         .style(Style::default().bg(C_BG));
     f.render_widget(p, area);
 }
@@ -1715,13 +1647,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     if short_raw == METER_SILENT {
         let label = if app.demo_mode { "no device" } else { "---" };
         let empty = Gauge::default()
-            .block(
-                Block::default()
-                    .title(Span::styled("  Level  ", Style::default().fg(C_TEXT)))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(C_BORDER)),
-            )
+            .block(focus_block("Level", false))
             .gauge_style(Style::default().fg(C_DISABLED).bg(C_SURFACE))
             .ratio(0.0)
             .label(label);
@@ -1760,13 +1686,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     // ── Bar gauge ─────────────────────────────────────────────────────────────
     let bar_color = meter_color(short_db);
     let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Span::styled("  Level  ", Style::default().fg(C_TEXT)))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(C_BORDER)),
-        )
+        .block(focus_block("Level", false))
         .gauge_style(Style::default().fg(bar_color).bg(C_SURFACE))
         .ratio(bar_ratio)
         .label(format!("{short_db:+.1} dBFS"));
@@ -1785,12 +1705,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(hold_color).add_modifier(Modifier::BOLD),
         ),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(C_BORDER)),
-    );
+    .block(focus_border(false));
     f.render_widget(readout, cols[1]);
 
     // ── dB ruler ─────────────────────────────────────────────────────────────
@@ -1859,17 +1774,7 @@ fn draw_tone_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .title(Span::styled("  Tone Mode  ", focused_style(focused))),
-    );
+    .block(focus_block("Tone Mode", focused));
     f.render_widget(p, area);
 }
 
@@ -1888,38 +1793,7 @@ fn draw_tone_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     };
     let tone_ratio = (tone as f64 + 10.0) / 20.0;
 
-    let tone_gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled("  TONE  ", focused_style(tone_foc)),
-                    Span::styled(
-                        format!(" {} ", tone_label),
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if tone_foc { "  ◄ ► to adjust" } else { "" },
-                        Style::default().fg(C_DIM),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if tone_foc {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(
-            Style::default()
-                .fg(Color::Rgb(50, 150, 220))
-                .bg(C_SURFACE)
-                .add_modifier(if tone_foc {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        )
+    let tone_gauge = slider_gauge("TONE", &tone_label, tone_foc, Color::Rgb(50, 150, 220))
         .ratio(tone_ratio)
         .label(format!("Dark ◄─{:+}─► Bright", pct));
     f.control(area, Focus::Tone);
@@ -1936,17 +1810,8 @@ fn draw_tone_gauge(f: &mut UiFrame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The bordered frame shared by every Dynamics/Reverb card.
-fn card_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
-    Block::default()
-        .title(Span::styled(format!("  {title}  "), focused_style(focused)))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(if focused {
-            Style::default().fg(C_FOCUS)
-        } else {
-            Style::default().fg(C_BORDER)
-        })
-        .padding(Padding::horizontal(1))
+fn card_block(title: &str, focused: bool) -> Block<'static> {
+    focus_block(title, focused).padding(Padding::horizontal(1))
 }
 
 /// Card for a boolean control toggled with Enter.
@@ -2224,6 +2089,141 @@ fn draw_gen2_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     draw_eq_bands(f, app, area.inner(Margin::new(1, 1)));
 }
 
+/// The "Selected Band: Band N (freq)" header text shared by both EQ layouts.
+fn selected_band_spans(app: &App, focused: bool) -> Vec<Span<'static>> {
+    let freq_label = format_band_freq(app.eq_selected_band);
+    vec![
+        Span::styled(
+            "Selected Band:  ",
+            Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
+        ),
+        Span::styled(
+            format!("Band {} ", app.eq_selected_band + 1),
+            Style::default()
+                .fg(if focused { C_FOCUS } else { C_ACCENT })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("({freq_label})"), Style::default().fg(C_DIM)),
+        Span::styled(
+            if focused {
+                "  ◄ ► to change band"
+            } else {
+                ""
+            },
+            Style::default().fg(C_DIM),
+        ),
+    ]
+}
+
+fn format_band_freq(band: usize) -> String {
+    let freq = EQ_BAND_FREQS[band];
+    if freq >= 1000 {
+        format!("{}k Hz", freq / 1000)
+    } else {
+        format!("{freq} Hz")
+    }
+}
+
+/// Rows above an EQ band's text: the gain bar (8) and a blank row.
+const EQ_BAR_ROWS: u16 = 9;
+
+/// One EQ band column: gain bar, frequency, the On row when `enabled` is given
+/// (the MVX2U Gen 1, at row `EQ_BAR_ROWS + 1`), and gain.
+fn eq_band_column(
+    app: &App,
+    band: usize,
+    enabled: Option<bool>,
+    focused: bool,
+) -> Paragraph<'static> {
+    let eq = &app.device_state.eq_bands[band];
+    let gain_foc = app.focus == Focus::EqGain(band);
+    let cut_color = Color::Rgb(50, 150, 220);
+
+    // Vertical gain bar: −8.0 dB = bottom (row 0), +6.0 dB = top (row 7).
+    // gain_db is in tenths, so the 14 dB span is −80..+60.
+    let bar_height = EQ_BAR_ROWS as i32 - 2;
+    let bar_pos = ((eq.gain_db as i32 + 80) * bar_height / 140).clamp(0, bar_height);
+    let mut lines: Vec<Line> = (0..=bar_height)
+        .rev()
+        .map(|row| {
+            Line::from(if row == bar_pos {
+                Span::styled(
+                    "━━━━",
+                    Style::default().fg(if eq.gain_db > 0 { C_ACCENT } else { cut_color }),
+                )
+            } else if row == bar_height / 2 {
+                Span::styled("────", Style::default().fg(C_BORDER))
+            } else {
+                Span::styled("    ", Style::default())
+            })
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Freq: ", Style::default().fg(C_DIM)),
+        Span::styled(format_band_freq(band), Style::default().fg(C_DIM)),
+    ]));
+    if let Some(enabled) = enabled {
+        let en_foc = app.focus == Focus::EqBandEnable(band);
+        lines.push(Line::from(vec![
+            Span::styled(
+                "On:   ",
+                Style::default().fg(if en_foc { C_FOCUS } else { C_DIM }),
+            ),
+            bool_span(enabled),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(
+            "Gain: ",
+            Style::default().fg(if gain_foc { C_FOCUS } else { C_DIM }),
+        ),
+        Span::styled(
+            format!("{:+.1} dB", eq.gain_db as f32 / 10.0),
+            if gain_foc {
+                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
+            } else if eq.gain_db > 0 {
+                Style::default().fg(C_ACCENT)
+            } else if eq.gain_db < 0 {
+                Style::default().fg(cut_color)
+            } else {
+                Style::default().fg(C_DIM)
+            },
+        ),
+    ]));
+    Paragraph::new(lines)
+        .block(eq_band_block(band, band == app.eq_selected_band, focused))
+        .style(Style::default().bg(C_BG))
+}
+
+/// One EQ band column's frame; the selected band gets a thick border.
+fn eq_band_block(band: usize, selected: bool, focused: bool) -> Block<'static> {
+    let border_color = if focused {
+        C_FOCUS
+    } else if selected {
+        C_ACCENT
+    } else {
+        C_BORDER
+    };
+    Block::default()
+        .title(Span::styled(
+            format!(" Band {} ", band + 1),
+            if selected {
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(C_DIM)
+            },
+        ))
+        .borders(Borders::ALL)
+        .border_type(if selected {
+            BorderType::Thick
+        } else {
+            BorderType::Rounded
+        })
+        .border_style(Style::default().fg(border_color))
+        .padding(Padding::horizontal(1))
+}
+
 /// The 5-band EQ editor (band selector + one column per band) without master or
 /// per-band enables. Shared by the MVX2U Gen 2 and the MV6 Gen 2 (Advanced).
 fn draw_eq_bands(f: &mut UiFrame, app: &App, area: Rect) {
@@ -2238,46 +2238,9 @@ fn draw_eq_bands(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(chunks[0], Focus::EqBandSelect);
 
     // ── Header: band selector only (no master enable) ─────────────────────────
-    let selected_freq = EQ_BAND_FREQS[app.eq_selected_band];
-    let freq_label = if selected_freq >= 1000 {
-        format!("{}k Hz", selected_freq / 1000)
-    } else {
-        format!("{} Hz", selected_freq)
-    };
     let band_sel_focused = app.focus == Focus::EqBandSelect;
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Selected Band:  ",
-            Style::default().fg(if band_sel_focused { C_FOCUS } else { C_DIM }),
-        ),
-        Span::styled(
-            format!("Band {} ", app.eq_selected_band + 1),
-            if band_sel_focused {
-                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-            },
-        ),
-        Span::styled(format!("({})", freq_label), Style::default().fg(C_DIM)),
-        Span::styled(
-            if band_sel_focused {
-                "  ◄ ► to change band"
-            } else {
-                ""
-            },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if band_sel_focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            }),
-    );
+    let header = Paragraph::new(Line::from(selected_band_spans(app, band_sel_focused)))
+        .block(focus_border(band_sel_focused));
     f.render_widget(header, chunks[0]);
 
     // ── Band columns ──────────────────────────────────────────────────────────
@@ -2286,104 +2249,10 @@ fn draw_eq_bands(f: &mut UiFrame, app: &App, area: Rect) {
         .constraints(vec![Constraint::Percentage(20); 5])
         .split(chunks[1]);
 
-    for (i, band) in app.device_state.eq_bands.iter().enumerate() {
-        let selected = i == app.eq_selected_band;
-        let gain_foc = app.focus == Focus::EqGain(i);
-        f.control(band_cols[i], Focus::EqGain(i));
-
-        let border_color = if gain_foc {
-            C_FOCUS
-        } else if selected {
-            C_ACCENT
-        } else {
-            C_BORDER
-        };
-
-        // Vertical gain bar: −8.0 dB = bottom, +6.0 dB = top. Total span = 14.0 dB.
-        // gain_db is in tenths, so range is −80..+60. bar_pos = (gain_db + 80) * 7 / 140.
-        let bar_height: i32 = 7;
-        let bar_pos = ((band.gain_db as i32 + 80) * bar_height / 140)
-            .max(0)
-            .min(bar_height);
-
-        let mut bar_lines: Vec<Line> = Vec::new();
-        for row in (0..=bar_height).rev() {
-            let ch = if row == bar_pos {
-                Span::styled(
-                    "━━━━",
-                    Style::default().fg(if band.gain_db > 0 {
-                        C_ACCENT
-                    } else {
-                        Color::Rgb(50, 150, 220)
-                    }),
-                )
-            } else if row == bar_height / 2 {
-                Span::styled("────", Style::default().fg(C_BORDER))
-            } else {
-                Span::styled("    ", Style::default())
-            };
-            bar_lines.push(Line::from(ch));
-        }
-
-        let freq = EQ_BAND_FREQS[i];
-        let freq_str = if freq >= 1000 {
-            format!("{}k Hz", freq / 1000)
-        } else {
-            format!("{} Hz", freq)
-        };
-
-        let gain_db_f = band.gain_db as f32 / 10.0;
-        let detail_lines = vec![
-            Line::from(vec![
-                Span::styled("Freq: ", Style::default().fg(C_DIM)),
-                Span::styled(freq_str, Style::default().fg(C_DIM)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "Gain: ",
-                    Style::default().fg(if gain_foc { C_FOCUS } else { C_DIM }),
-                ),
-                Span::styled(
-                    format!("{:+.1} dB", gain_db_f),
-                    if gain_foc {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else if band.gain_db > 0 {
-                        Style::default().fg(C_ACCENT)
-                    } else if band.gain_db < 0 {
-                        Style::default().fg(Color::Rgb(50, 150, 220))
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ]),
-        ];
-
-        let mut all_lines = bar_lines;
-        all_lines.push(Line::from(""));
-        all_lines.extend(detail_lines);
-
-        let block = Paragraph::new(all_lines)
-            .block(
-                Block::default()
-                    .title(Span::styled(
-                        format!(" Band {} ", i + 1),
-                        if selected {
-                            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(C_DIM)
-                        },
-                    ))
-                    .borders(Borders::ALL)
-                    .border_type(if selected {
-                        BorderType::Thick
-                    } else {
-                        BorderType::Rounded
-                    })
-                    .border_style(Style::default().fg(border_color))
-                    .padding(Padding::horizontal(1)),
-            )
-            .style(Style::default().bg(C_BG));
-        f.render_widget(block, band_cols[i]);
+    for (i, band_area) in band_cols.iter().enumerate() {
+        f.control(*band_area, Focus::EqGain(i));
+        let focused = app.focus == Focus::EqGain(i);
+        f.render_widget(eq_band_column(app, i, None, focused), *band_area);
     }
 }
 
@@ -2506,49 +2375,15 @@ fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
 
     // ── EQ master enable header ───────────────────────────────────────────────
     let eq_en_focused = app.focus == Focus::EqEnable;
-    let selected_freq = EQ_BAND_FREQS[app.eq_selected_band];
-    let freq_label = if selected_freq >= 1000 {
-        format!("{}k Hz", selected_freq / 1000)
-    } else {
-        format!("{} Hz", selected_freq)
-    };
     let band_sel_focused = app.focus == Focus::EqBandSelect;
-    let header = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled("EQ:  ", Style::default().fg(C_DIM)),
         bool_span(app.device_state.eq_enabled),
         Span::styled("   ", Style::default()),
-        Span::styled(
-            "Selected Band:  ",
-            Style::default().fg(if band_sel_focused { C_FOCUS } else { C_DIM }),
-        ),
-        Span::styled(
-            format!("Band {} ", app.eq_selected_band + 1),
-            if band_sel_focused {
-                Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-            },
-        ),
-        Span::styled(format!("({})", freq_label), Style::default().fg(C_DIM)),
-        Span::styled(
-            if band_sel_focused {
-                "  ◄ ► to change band"
-            } else {
-                ""
-            },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if eq_en_focused || band_sel_focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            }),
-    );
+    ];
+    spans.extend(selected_band_spans(app, band_sel_focused));
+    let header =
+        Paragraph::new(Line::from(spans)).block(focus_border(eq_en_focused || band_sel_focused));
     f.render_widget(header, chunks[0]);
 
     // ── Band columns ──────────────────────────────────────────────────────────
@@ -2557,120 +2392,25 @@ fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
         .constraints(vec![Constraint::Percentage(20); 5])
         .split(chunks[1]);
 
-    for (i, band) in app.device_state.eq_bands.iter().enumerate() {
-        let selected = i == app.eq_selected_band;
-        let en_foc = app.focus == Focus::EqBandEnable(i);
-        let gain_foc = app.focus == Focus::EqGain(i);
-        let any_foc = en_foc || gain_foc;
-        f.control(band_cols[i], Focus::EqGain(i));
-
-        let border_color = if any_foc {
-            C_FOCUS
-        } else if selected {
-            C_ACCENT
-        } else {
-            C_BORDER
-        };
-
-        // Vertical gain bar: −8.0 dB = bottom (row 0), +6.0 dB = top (row 7).
-        // Total span = 14.0 dB. gain_db is in tenths, so range is −80..+60.
-        // bar_pos = (gain_db + 80) * 7 / 140.
-        let bar_height: i32 = 7;
-        let bar_pos = ((band.gain_db as i32 + 80) * bar_height / 140)
-            .max(0)
-            .min(bar_height);
-
-        let mut bar_lines: Vec<Line> = Vec::new();
-        for row in (0..=bar_height).rev() {
-            let ch = if row == bar_pos {
-                Span::styled(
-                    "━━━━",
-                    Style::default().fg(if band.gain_db > 0 {
-                        C_ACCENT
-                    } else {
-                        Color::Rgb(50, 150, 220)
-                    }),
-                )
-            } else if row == bar_height / 2 {
-                Span::styled("────", Style::default().fg(C_BORDER))
-            } else {
-                Span::styled("    ", Style::default())
-            };
-            bar_lines.push(Line::from(ch));
-        }
-
-        // Fixed frequency label for this band
-        let freq = EQ_BAND_FREQS[i];
-        let freq_str = if freq >= 1000 {
-            format!("{}k Hz", freq / 1000)
-        } else {
-            format!("{} Hz", freq)
-        };
-
-        // The enable row follows the bar, a blank row, and frequency.
-        let band_inner = band_cols[i].inner(Margin::new(2, 1));
+    for (i, (band, band_area)) in app
+        .device_state
+        .eq_bands
+        .iter()
+        .zip(band_cols.iter())
+        .enumerate()
+    {
+        f.control(*band_area, Focus::EqGain(i));
+        // The enable row sits below the bar and the frequency.
+        let band_inner = band_area.inner(Margin::new(2, 1));
         f.control(
-            text_row(band_inner, bar_lines.len() as u16 + 2),
+            text_row(band_inner, EQ_BAR_ROWS + 1),
             Focus::EqBandEnable(i),
         );
-        let detail_lines = vec![
-            Line::from(vec![
-                Span::styled("Freq: ", Style::default().fg(C_DIM)),
-                Span::styled(freq_str, Style::default().fg(C_DIM)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "On:   ",
-                    Style::default().fg(if en_foc { C_FOCUS } else { C_DIM }),
-                ),
-                bool_span(band.enabled),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "Gain: ",
-                    Style::default().fg(if gain_foc { C_FOCUS } else { C_DIM }),
-                ),
-                Span::styled(
-                    format!("{:+.1} dB", band.gain_db as f32 / 10.0),
-                    if gain_foc {
-                        Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
-                    } else if band.gain_db > 0 {
-                        Style::default().fg(C_ACCENT)
-                    } else if band.gain_db < 0 {
-                        Style::default().fg(Color::Rgb(50, 150, 220))
-                    } else {
-                        Style::default().fg(C_DIM)
-                    },
-                ),
-            ]),
-        ];
-
-        let mut all_lines = bar_lines;
-        all_lines.push(Line::from(""));
-        all_lines.extend(detail_lines);
-
-        let block = Paragraph::new(all_lines)
-            .block(
-                Block::default()
-                    .title(Span::styled(
-                        format!(" Band {} ", i + 1),
-                        if selected {
-                            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(C_DIM)
-                        },
-                    ))
-                    .borders(Borders::ALL)
-                    .border_type(if selected {
-                        BorderType::Thick
-                    } else {
-                        BorderType::Rounded
-                    })
-                    .border_style(Style::default().fg(border_color))
-                    .padding(Padding::horizontal(1)),
-            )
-            .style(Style::default().bg(C_BG));
-        f.render_widget(block, band_cols[i]);
+        let focused = app.focus == Focus::EqBandEnable(i) || app.focus == Focus::EqGain(i);
+        f.render_widget(
+            eq_band_column(app, i, Some(band.enabled), focused),
+            *band_area,
+        );
     }
 }
 
@@ -2749,40 +2489,14 @@ fn draw_reverb_tab(f: &mut UiFrame, app: &App, area: Rect) {
     // Reverb Intensity — full-width bar across the bottom
     let rint_foc = app.focus == Focus::ReverbIntensity;
     let intensity = ds.reverb_intensity;
-    let rint_gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled("  Reverb Intensity  ", focused_style(rint_foc)),
-                    Span::styled(
-                        format!(" {}% ", intensity),
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if rint_foc { "  ◄ ► to adjust" } else { "" },
-                        Style::default().fg(C_DIM),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if rint_foc {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(
-            Style::default()
-                .fg(Color::Rgb(150, 100, 200))
-                .bg(C_SURFACE)
-                .add_modifier(if rint_foc {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        )
-        .ratio(intensity as f64 / 100.0)
-        .label(format!("Dry ◄─{:3}%─► Wet", intensity));
+    let rint_gauge = slider_gauge(
+        "Reverb Intensity",
+        &format!("{intensity}%"),
+        rint_foc,
+        Color::Rgb(150, 100, 200),
+    )
+    .ratio(intensity as f64 / 100.0)
+    .label(format!("Dry ◄─{:3}%─► Wet", intensity));
     f.render_widget(rint_gauge, rows[1]);
 }
 
@@ -2801,38 +2515,7 @@ fn draw_led_color_gauge(
 ) {
     f.control(area, focus);
     let focused = app.focus == focus;
-    let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled(format!("  {label}  "), focused_style(focused)),
-                    Span::styled(
-                        format!(" {} ", value),
-                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if focused { "  ◄ ► to adjust" } else { "" },
-                        Style::default().fg(C_DIM),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if focused {
-                    Style::default().fg(C_FOCUS)
-                } else {
-                    Style::default().fg(C_BORDER)
-                }),
-        )
-        .gauge_style(
-            Style::default()
-                .fg(color)
-                .bg(C_SURFACE)
-                .add_modifier(if focused {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        )
+    let gauge = slider_gauge(label, &value.to_string(), focused, color)
         .ratio(value as f64 / 255.0)
         .label(format!("0 ◄─{:3}─► 255", value));
     f.render_widget(gauge, area);
@@ -2861,18 +2544,7 @@ fn draw_led_cycle_row(
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(
-        Block::default()
-            .title(Span::styled(format!("  {label}  "), focused_style(focused)))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if focused {
-                Style::default().fg(C_FOCUS)
-            } else {
-                Style::default().fg(C_BORDER)
-            })
-            .padding(Padding::horizontal(1)),
-    );
+    .block(card_block(label, focused));
     f.render_widget(p, area);
 }
 
@@ -3412,11 +3084,7 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
 fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
     let model = app.device_model;
-    let border = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(C_BORDER))
-        .padding(Padding::horizontal(1));
+    let border = focus_border(false).padding(Padding::horizontal(1));
 
     let (vid_pid, gain_range) = match model {
         DeviceModel::Mvx2u => ("14ED:1013", "0–60 dB"),
@@ -3556,8 +3224,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
-            ("  Monitor Mix  : ", "Mic level 0–100%"),
-            ("  Playback Mix : ", "Playback level 0–100%"),
+            ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             ("  Mute Button  : ", "Enable / Disable"),
         ],
         DeviceModel::Mv6Gen2 => &[
@@ -3576,8 +3243,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  Target Level : ", "Low / Med / High (Auto mode)"),
             ("  Adaptation   : ", "Slow / Fast (Auto mode)"),
             ("  Mic Preset   : ", "Speech / Singing / Instrument"),
-            ("  Monitor Mix  : ", "Mic level 0–100%"),
-            ("  Playback Mix : ", "Playback level 0–100%"),
+            ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             ("  Mute Button  : ", "Enable / Disable"),
         ],
         DeviceModel::Mv7 => &[
@@ -3602,8 +3268,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
             ("  Mute Button  : ", "Enable / Disable"),
-            ("  Monitor Mix  : ", "Mic level 0–100%"),
-            ("  Playback Mix : ", "Playback level 0–100%"),
+            ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             (
                 "  Reverb       : ",
                 "Plate / Hall / Studio; intensity 0–100%",

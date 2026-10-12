@@ -46,7 +46,7 @@ use hidapi::{HidApi, HidDevice};
 
 use crate::protocol::{
     self, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, MV6_GEN2_PID, MV6_PID,
-    MV7_PID, MV7_PLUS_PID, MVX2U_GEN2_PID, MicPosition, PACKET_SIZE, PID, VID, apply_response,
+    MV7_PID, MV7_PLUS_PID, MVX2U_GEN2_PID, MicPosition, PACKET_SIZE, PID, Reply, VID, apply_reply,
     cmd_confirm, cmd_factory_reset, cmd_get_adaptation_rate, cmd_get_auto_gain,
     cmd_get_auto_position, cmd_get_auto_tone, cmd_get_compressor, cmd_get_denoiser_level,
     cmd_get_device_name, cmd_get_eq_band_enable, cmd_get_eq_band_gain, cmd_get_eq_enable,
@@ -62,7 +62,7 @@ use crate::protocol::{
     cmd_set_mv7_led_brightness, cmd_set_mv7_led_live_edge, cmd_set_mv7_led_live_interior,
     cmd_set_mv7_led_live_middle, cmd_set_mv7_led_live_theme, cmd_set_mv7_led_pulsing_color,
     cmd_set_mv7_led_pulsing_theme, cmd_set_mv7_led_solid_color, cmd_set_mv7_led_solid_theme,
-    mv7_text, parse_response, playback_mix_from_reply,
+    mv7_text, parse_response,
 };
 
 #[cfg(target_os = "linux")]
@@ -297,7 +297,7 @@ impl ShureDevice {
         Ok(())
     }
 
-    fn send_get(&self, get_packet: &[u8]) -> Result<Option<([u8; 2], Vec<u8>)>> {
+    fn send_get(&self, get_packet: &[u8]) -> Result<Option<Reply>> {
         self.ensure_binary_protocol()?;
         self.write(get_packet)?;
         Ok(self.read()?.and_then(|buf| parse_response(&buf)))
@@ -381,8 +381,8 @@ impl ShureDevice {
     /// Send one GET and apply its reply to `readback`. A failed write or read is
     /// an error (the device is gone); a timeout or an unrecognised reply is not.
     fn query(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
-        if let Some((feat, value)) = self.send_get(pkt)? {
-            readback.apply(feat, &value);
+        if let Some(reply) = self.send_get(pkt)? {
+            readback.apply(&reply);
         }
         Ok(())
     }
@@ -493,15 +493,15 @@ impl ShureDevice {
             cmd_get_mv6_tone,
             cmd_get_mv6_gain_lock,
             cmd_get_mv6_mix,
+            // Unconfirmed on the MV6; see DeviceModel::has_playback_mix().
+            cmd_get_mv7_playback_mix,
             cmd_get_mv6_mute_btn_disable,
             cmd_get_device_name,
             cmd_get_firmware_version,
             cmd_get_serial,
         ];
 
-        self.run_getters(getters, readback)?;
-        // Unconfirmed on the MV6; see DeviceModel::has_playback_mix().
-        self.fetch_playback_mix(readback)
+        self.run_getters(getters, readback)
     }
 
     fn get_state_mv6_gen2(&self, readback: &mut Readback) -> Result<()> {
@@ -533,6 +533,7 @@ impl ShureDevice {
             cmd_get_mv6_tone,
             cmd_get_mv6_mute_btn_disable,
             cmd_get_mv6_mix, // mic monitor mix (prefix=0x00)
+            cmd_get_mv7_playback_mix,
             cmd_get_mv7_reverb_output,
             cmd_get_mv7_reverb_type,
             cmd_get_mv7_reverb_intensity,
@@ -551,27 +552,7 @@ impl ShureDevice {
             cmd_get_firmware_version,
             cmd_get_serial,
         ];
-        self.run_getters(getters, readback)?;
-        self.fetch_playback_mix(readback)
-    }
-
-    /// Read Playback Mix (MV7+, MV6 Gen 2, MV6). Its reply carries the same FEAT_MIX
-    /// address as Monitor Mix, so it can't go through `run_getters()`:
-    /// `apply_response()` would write it into `monitor_mix`. We issued the
-    /// request, so the reply is the playback channel.
-    fn fetch_playback_mix(&self, readback: &mut Readback) -> Result<()> {
-        let pmix_pkt = cmd_get_mv7_playback_mix(self.next_seq());
-        if let Some((feat, value)) = self.send_get(&pmix_pkt)? {
-            match playback_mix_from_reply(feat, &value) {
-                Some(mix) => {
-                    readback.state.playback_mix = mix;
-                    readback.record(true, String::new);
-                }
-                // A late reply to an earlier GET: apply it as that setting.
-                None => readback.apply(feat, &value),
-            }
-        }
-        Ok(())
+        self.run_getters(getters, readback)
     }
 
     /// Read just the factory serial number (the serial printed on the device,
@@ -585,9 +566,9 @@ impl ShureDevice {
             return mv7_text::apply_reply(&reply, &mut state).then_some(state.factory_serial);
         }
         let pkt = cmd_get_serial(self.next_seq());
-        let (feat, value) = self.send_get(&pkt).ok()??;
+        let reply = self.send_get(&pkt).ok()??;
         let mut state = DeviceState::default();
-        apply_response(feat, &value, &mut state).then_some(state.factory_serial)
+        apply_reply(&reply, &mut state).then_some(state.factory_serial)
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────
@@ -641,12 +622,17 @@ impl ShureDevice {
 
     pub fn set_hpf(&self, freq: &protocol::HpfFrequency) -> Result<()> {
         let pkt = match self.model {
+            DeviceModel::Mv7 => {
+                return Err(anyhow!(
+                    "HPF is not available on the {}",
+                    self.model.display_name()
+                ));
+            }
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_hpf(self.next_seq(), freq),
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
-            | DeviceModel::Mv6Gen2
-            | DeviceModel::Mv7 => protocol::cmd_set_hpf(self.next_seq(), freq),
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_hpf(self.next_seq(), freq),
         };
         self.send_set(&pkt)
     }
@@ -1002,10 +988,13 @@ pub struct Readback {
 
 impl Readback {
     /// Apply one binary GET reply, noting it if no setting matches.
-    fn apply(&mut self, feat: [u8; 2], value: &[u8]) {
-        let applied = apply_response(feat, value, &mut self.state);
+    fn apply(&mut self, reply: &Reply) {
+        let applied = apply_reply(reply, &mut self.state);
         self.record(applied, || {
-            format!("feature {:#04x} {:#04x}", feat[0], feat[1])
+            format!(
+                "feature {:#04x} {:#04x} (prefix {:#04x})",
+                reply.feat[0], reply.feat[1], reply.prefix
+            )
         });
     }
 
@@ -1093,22 +1082,33 @@ pub fn list_devices() -> Vec<DeviceInfo> {
 mod tests {
     use super::*;
 
+    fn unknown_reply() -> Reply {
+        Reply {
+            prefix: 0x00,
+            feat: [0x7F, 0x7F],
+            value: vec![1],
+        }
+    }
+
     #[test]
     fn readback_notes_unrecognised_replies_instead_of_printing_them() {
         let mut readback = Readback::default();
-        readback.apply([0x7F, 0x7F], &[1]);
-        assert_eq!(readback.unrecognised, vec!["feature 0x7f 0x7f"]);
+        readback.apply(&unknown_reply());
+        assert_eq!(
+            readback.unrecognised,
+            vec!["feature 0x7f 0x7f (prefix 0x00)"]
+        );
     }
 
     #[test]
     fn readback_with_no_applied_reply_is_an_error() {
         let mut readback = Readback::default();
-        readback.apply([0x7F, 0x7F], &[1]);
+        readback.apply(&unknown_reply());
         assert!(readback.finish().is_err());
 
         let mut readback = Readback::default();
         readback.record(true, String::new);
-        readback.apply([0x7F, 0x7F], &[1]);
+        readback.apply(&unknown_reply());
         let readback = readback.finish().expect("one reply applied");
         assert_eq!(readback.unrecognised.len(), 1);
     }
