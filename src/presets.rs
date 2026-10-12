@@ -1,6 +1,7 @@
 //! Host-side preset storage for shurectl.
 //!
-//! Presets are TOML files stored in `~/.config/shurectl/presets/`.
+//! Presets are TOML files in `shurectl/presets/` under the platform config
+//! directory (`~/.config` on Linux; the README lists the others).
 //! There are 4 fixed slots, numbered 0–3, stored as `preset_1.toml`–`preset_4.toml`.
 //!
 //! Each file is human-readable and hand-editable. The preset captures all
@@ -25,7 +26,7 @@ pub const PRESET_COUNT: usize = 4;
 
 /// A serializable snapshot of all configurable device settings.
 ///
-/// Fields from both MVX2U and MV6 are included. Fields irrelevant to a given
+/// Fields from every model are included. Fields irrelevant to a given
 /// device model remain at their serde defaults and are not applied to the device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresetSlot {
@@ -40,7 +41,7 @@ pub struct PresetSlot {
     pub muted: bool,
     pub hpf: SerHpfFrequency,
 
-    // ── MVX2U-specific ───────────────────────────────────────────────────────
+    // ── MVX2U-first (several shared with other models; see DeviceState) ─────
     #[serde(default)]
     pub auto_position: SerMicPosition,
     #[serde(default)]
@@ -67,7 +68,7 @@ pub struct PresetSlot {
     #[serde(default)]
     pub eq_bands: [SerEqBand; 5],
 
-    // ── MV6-specific ─────────────────────────────────────────────────────────
+    // ── MV6-first (also MVX2U Gen 2, MV6 Gen 2, MV7+; see DeviceState) ───────
     #[serde(default)]
     pub denoiser_enabled: bool,
     #[serde(default = "default_popper_stopper")]
@@ -77,7 +78,7 @@ pub struct PresetSlot {
     /// Tone: -10 (100% Dark) to +10 (100% Bright), 0 = Natural.
     #[serde(default)]
     pub tone: i8,
-    /// Gain lock (Manual mode only). MV6 only.
+    /// Gain lock (Manual mode only), on models with `has_gain_lock()`.
     #[serde(default)]
     pub mv6_gain_locked: bool,
 
@@ -307,9 +308,9 @@ impl PresetSlot {
 
     /// One-line summary of the key settings for display in the TUI.
     ///
-    /// The model is needed because MVX2U and MV6 have different configurable
-    /// fields — showing EQ/phantom for an MV6 preset (or denoiser for an MVX2U
-    /// preset) would be misleading.
+    /// The model is needed because models have different configurable fields —
+    /// showing phantom power on an MV6 (or reverb on an MVX2U) would be
+    /// misleading.
     pub fn summary(&self, model: DeviceModel) -> String {
         let hpf_str = match HpfFrequency::from(self.hpf) {
             HpfFrequency::Off => "HPF off".to_string(),
@@ -442,7 +443,7 @@ impl PresetSlot {
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
-/// Returns `~/.config/shurectl/`, creating it if absent.
+/// Returns `shurectl/` under the platform config directory, creating it if absent.
 fn config_dir() -> Result<PathBuf> {
     let base = dirs_next::config_dir()
         .or_else(|| {
@@ -457,7 +458,7 @@ fn config_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Returns `~/.config/shurectl/presets/`, creating it if absent.
+/// Returns the `presets/` directory inside `config_dir()`, creating it if absent.
 fn presets_dir() -> Result<PathBuf> {
     let dir = config_dir()?.join("presets");
     std::fs::create_dir_all(&dir)

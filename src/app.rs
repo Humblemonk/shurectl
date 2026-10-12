@@ -73,7 +73,8 @@ impl Tab {
 /// Which control within the current tab has focus.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
-    // Main tab — shared
+    // Main tab — Mode, Mute and Monitor Mix everywhere; Phantom (MVX2U) and
+    // Lock (MVX2U Gen 1, MV7) where the model has them
     Mode,
     Mute,
     Phantom,
@@ -87,32 +88,32 @@ pub enum Focus {
     AutoGain,
     // Main tab — MV6 Gen 2 Auto Level (Target Level reuses AutoGain)
     AdaptationRate,
-    // EQ tab — MVX2U bands
+    // EQ tab — 5 bands (MVX2U; MV6 Gen 2 in Advanced); band enables are Gen 1 only
     EqEnable,
     EqBandSelect,
     EqBandEnable(usize),
     EqGain(usize),
-    // EQ tab — MV6 tone
+    // EQ tab — Tone slider (MV6, MV6 Gen 2 in Simple, MVX2U Gen 2 in Auto, MV7+)
     Tone,
     // EQ tab — MV6 Gen 2 Simple (Tone slider) / Advanced (5 bands)
     ToneMode,
     // EQ tab — MV7 EQ preset
     EqPreset,
-    // Dynamics tab — MVX2U
+    // Dynamics tab — Limiter, Compressor, HPF
     Limiter,
     Compressor,
     Hpf,
-    // Dynamics tab — MV6 extra controls
+    // Dynamics tab — MV6-family controls (also MVX2U Gen 2, MV7+)
     Denoiser,
     PopperStopper,
     MuteBtnDisable,
-    // Main tab — MV6 gain lock (Manual mode only)
+    // Main tab — Gain Lock (`has_gain_lock()`, Manual mode only)
     GainLock,
     // Main tab — Playback Level, the second row of Monitor Mix (`has_playback_mix()`)
     PlaybackMix,
     // Main tab — MV6 Gen 2 built-in preset (Speech / Singing / Instrument)
     MicPreset,
-    // Dynamics tab — MV7+ reverb controls
+    // Reverb tab — MV7+
     ReverbOutput,
     ReverbMonitor,
     ReverbPreset,
@@ -181,7 +182,7 @@ pub struct App {
     /// that same button fires it. Cleared by any other click or any key.
     pub armed_preset_action: Option<(usize, KeyCode)>,
     /// Rolling peak windows shared with the cpal capture thread.
-    /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak marker.
+    /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak-hold readout.
     pub peak_window: Arc<Mutex<PeakWindow>>,
 }
 
@@ -432,8 +433,7 @@ impl App {
     // MVX2U Gen 2 Dynamics cycles:
     //   Manual: Limiter → Compressor → Denoiser → PopperStopper → Hpf → (wrap)
     //   Auto:   Denoiser → PopperStopper → Hpf → (wrap)
-    //   Note: if mode switches while Focus is on Limiter/Compressor (Manual-only),
-    //   the next focus_next/prev call self-corrects to Denoiser via the catchall arm.
+    //   (A mode change while on Limiter/Compressor is fixed up by settle_focus().)
     //
     // MV6 Main cycles (Playback Level unconfirmed on hardware, see has_playback_mix):
     //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → (wrap)
@@ -453,6 +453,12 @@ impl App {
     //   Manual: Mode → Mute → Gain → MonitorMix → Lock → (wrap)
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → MonitorMix → Lock → (wrap)
     // MV7 EQ: EqPreset. MV7 Dynamics: Compressor. MV7 LED: LedLiveMeter → LedNightMode.
+    //
+    // MV7+ Main cycles:
+    //   Manual: Mode → Mute → Gain → MonitorMix → PlaybackMix → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → (wrap)
+    // MV7+ EQ: Tone. MV7+ Dynamics: Limiter → Compressor → Denoiser → PopperStopper
+    //   → MuteBtnDisable → Hpf → (wrap). Reverb and LED tabs: MV7+ only.
     pub fn focus_next(&mut self) {
         self.focus = match (
             &self.active_tab,
@@ -686,7 +692,7 @@ impl App {
             }
             (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
-            // Info: Device Name ↔ Factory Reset where both exist (MV7+).
+            // Info: Device Name ↔ Factory Reset where both exist.
             (Tab::Info, Focus::DeviceName, _, _) if self.supports_factory_reset() => {
                 Focus::FactoryReset
             }
@@ -928,7 +934,7 @@ impl App {
             (Tab::Presets, Focus::PresetActions(i), _, _) => Focus::PresetName(*i),
             (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
-            // Info: Device Name ↔ Factory Reset where both exist (MV7+).
+            // Info: Device Name ↔ Factory Reset where both exist.
             (Tab::Info, Focus::DeviceName, _, _) if self.supports_factory_reset() => {
                 Focus::FactoryReset
             }
@@ -1249,7 +1255,7 @@ impl App {
                 self.device_state.hpf = self.device_state.hpf.cycle_next();
                 Some(DeviceAction::SetHpf(self.device_state.hpf))
             }
-            // ── MV6 Dynamics controls ─────────────────────────────────────────
+            // ── MV6-family Dynamics controls (also MVX2U Gen 2, MV7+) ─────────
             Focus::Denoiser => {
                 self.device_state.denoiser_enabled = !self.device_state.denoiser_enabled;
                 Some(DeviceAction::SetMv6Denoiser(
@@ -1377,9 +1383,9 @@ pub enum DeviceAction {
     /// `usize` is band index 0–4.
     SetEqBandEnable(usize, bool),
     /// `usize` is band index 0–4; `i16` is gain in tenths of dB (−80..+60).
-    /// Gen 1 steps: multiples of 20. Gen 2 steps: multiples of 5.
+    /// On the model's `eq_step_tenths()` grid.
     SetEqBandGain(usize, i16),
-    // ── MV6-specific actions ──────────────────────────────────────────────────
+    // ── MV6-first actions (also MVX2U Gen 2, MV6 Gen 2, MV7+) ─────────────────
     SetMv6Denoiser(bool),
     SetMv6PopperStopper(bool),
     SetMv6MuteBtnDisable(bool),
@@ -1807,7 +1813,7 @@ mod tests {
             assert_eq!(app.focus, *expected);
         }
 
-        // Manual matches the MV6 (no Auto Level controls) plus Playback Mix.
+        // Manual matches the MV6 (no Auto Level controls) plus Mic Preset.
         app.device_state.mode = InputMode::Manual;
         app.focus = Focus::Mode;
         let order = [

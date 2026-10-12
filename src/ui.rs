@@ -965,7 +965,7 @@ fn draw_phantom_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.render_widget(phantom_p, area);
 }
 
-/// Renders the Gain Lock block. Used by MV6 and Gen 2.
+/// Renders the Gain Lock block, on models with `has_gain_lock()`.
 fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::GainLock);
     let lock_focused = app.focus == Focus::GainLock;
@@ -1573,7 +1573,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MV6 EQ Tab — Tone control
+// MV6 / MV7+ EQ Tab — Tone control
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_mv6_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
@@ -1910,7 +1910,7 @@ fn draw_hpf_card(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MV6 Dynamics Tab — Denoiser, Popper Stopper, Mute Button, HPF
+// MV6 / MV6 Gen 2 Dynamics Tab — Denoiser, Popper Stopper, Mute Button, HPF
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_mv6_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cols = Layout::default()
@@ -2138,7 +2138,7 @@ fn draw_gen2_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
 // Tab locked / not-available notices
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Shown on EQ/Dynamics when MVX2U is in Auto Level mode.
+/// Shown on EQ/Dynamics when an MVX2U Gen 1 or MV7 is in Auto Level mode.
 fn draw_tab_locked_notice(f: &mut UiFrame, area: Rect, tab_name: &str) {
     let lines = vec![
         Line::from(""),
@@ -2257,7 +2257,7 @@ fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MV7+ Dynamics Tab — Standard controls + Reverb section
+// MV7+ Dynamics Tab — Limiter, Compressor, Denoiser, Popper Stopper, Mute Button, HPF
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_mv7plus_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cols = Layout::default()

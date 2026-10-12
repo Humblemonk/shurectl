@@ -4,6 +4,7 @@
 //!   - Shure MVX2U Gen 1 (XLR-to-USB audio interface)
 //!   - Shure MVX2U Gen 2 (XLR-to-USB interface with updated DSP)
 //!   - Shure MV6          (USB gaming microphone)
+//!   - Shure MV6 Gen 2    (USB gaming microphone, Gen 2)
 //!   - Shure MV7          (USB/XLR dynamic microphone, original)
 //!   - Shure MV7+         (USB/XLR dynamic microphone)
 //!
@@ -18,6 +19,8 @@
 //!   shurectl --mute            # Toggle mute (no TUI)
 //!   shurectl --mute on         # Mute (no TUI)
 //!   shurectl --mute off        # Unmute (no TUI)
+//!   shurectl --mute status     # Print on/off (no TUI)
+//!   shurectl --preset 1        # Load preset slot 1 (no TUI)
 
 mod app;
 mod device;
@@ -99,7 +102,7 @@ struct Cli {
     list: bool,
 
     /// Open a specific device by its HID path.
-    /// Without this flag, the first detected device is opened (error if multiple found).
+    /// Without this flag, the only detected device is opened (error if multiple found).
     /// Use --list to see available paths.
     #[arg(long, short = 'D')]
     device: Option<String>,
@@ -475,8 +478,8 @@ fn run_event_loop(
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {
     // ── Preset or device name editing mode ────────────────────────────────────
-    // Handled before the quit keys so `q` can be typed in a name. Ctrl+C is
-    // ignored while editing, as before.
+    // Handled before the quit keys so `q` can be typed in a name, and Ctrl+C
+    // doesn't quit while editing.
     if app.editing_name() {
         let (max_len, device_name) = if app.editing_device_name {
             (protocol::DEVICE_NAME_MAX_LEN, true)
@@ -735,7 +738,7 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                 Ok(())
             })
         }
-        // ── MV6 actions ───────────────────────────────────────────────────────
+        // ── MV6-first actions (also MVX2U Gen 2, MV6 Gen 2, MV7+) ─────────────
         DeviceAction::SetMv6Denoiser(en) => {
             app.set_ok(format!("Denoiser → {}", if *en { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_mv6_denoiser(*en))
@@ -805,11 +808,11 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
             });
             send_if_connected(device, |d| d.set_mv6_monitor_mix(*m))
         }
-        // ── MV7+ exclusive actions ────────────────────────────────────────────
         DeviceAction::SetMv7PlaybackMix(m) => {
             app.set_ok(format!("Playback Level → {m}%"));
             send_if_connected(device, |d| d.set_mv7_playback_mix(*m))
         }
+        // ── MV7+ exclusive actions ────────────────────────────────────────────
         DeviceAction::SetMv7ReverbOutput(en) => {
             app.set_ok(format!(
                 "Reverb output → {}",
@@ -1168,7 +1171,8 @@ fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, m
 
 /// Writes a preset's Playback Level, except 0. A preset's 0 means "not saved" (so
 /// the state still holds the device's level), and a 0 in the state can be a
-/// level that was never read back, which written would silence playback.
+/// level that was never read (demo mode, a failed readback), which written
+/// would silence playback.
 fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
     if level > 0 {
         d.set_mv7_playback_mix(level)?;

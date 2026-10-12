@@ -19,6 +19,7 @@
 //!   [total_len]         Length of everything that follows (excluding report ID byte)
 //!   [0x11] [0x22]       Fixed header magic
 //!   [seq]  [0x03]       Sequence number (increments per packet) + constant 0x03
+//!                       (0x00 for some SETs; see `build_packet_hdr0()`)
 //!   [0x08]              Header end marker
 //!   [data_len]          Length of data section (repeated at offset +2)
 //!   [0x70]              Data start marker
@@ -123,7 +124,7 @@
 //!                                    parse_response sees feat_addr=[0x00, 0x60] because
 //!                                    the address bytes land at payload[0..2] (0x00, 0x60).
 //!                                    GET confirmed reliable by Wireshark.
-//!   Monitor mix:     [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback. Same address
+//!   Monitor mix:     [0x01, 0x86]  — 1 byte: MOTIV's Mic Level, 0–100%. Same address
 //!                                    as MVX2U FEAT_MIX. SET confirmed by Wireshark capture
 //!                                    of MOTIV app: HDR_CONSTANT=0x00 (not the usual 0x03),
 //!                                    CMD_SET_FEAT [02 02 02], prefix 0x00, value is 0–100.
@@ -155,18 +156,20 @@
 //!   Compressor:       [0x01, 0x5C]  — 1 byte: 0=off, 1=light, 2=medium, 3=heavy
 //!   Denoiser:         [0x01, 0x58]  — 1 byte: 0=off, 1=on
 //!   Auto level:       [0x01, 0x85]  — 1 byte: 0=manual, 1=auto
-//!   Mic monitor mix:  [0x01, 0x86]  — 1 byte, prefix=0x00, 0=full mic, 100=full playback
+//!   Mic Level:        [0x01, 0x86]  — 1 byte, prefix=0x00, 0–100%
 //!                                     SET: HDR_CONSTANT=0x00. Same framing as cmd_set_mv6_mix().
 //!   Popper stopper:   [0x03, 0x81]  — 1 byte: 0=off, 1=on
 //!   Tone:             [0x02, 0x04]  — 16-bit signed big-endian, units: percent (-100..+100)
 //!   Mute btn disable: [0x0C, 0x00, 0x60] — same framing as MV6 cmd_set_mv6_mute_btn_disable().
 //!                                     Both MV6 and MV7+ already use HDR_CONSTANT=0x00 here.
 //!
-//! MV7+ exclusive:
-//!   Playback mix:     [0x01, 0x86]  — 1 byte, prefix=0x03, 0=full mic, 100=full playback
-//!                                     SAME feature address as mic monitor mix but prefix=0x03.
+//! Playback Level, shared with every model that has `has_playback_mix()`:
+//!   Playback Level:   [0x01, 0x86]  — 1 byte, prefix=0x03, 0–100%
+//!                                     SAME feature address as Mic Level but prefix=0x03.
 //!                                     Both GET and SET use prefix=0x03. GET framing is standard
 //!                                     (HDR_CONSTANT=0x03); SET uses HDR_CONSTANT=0x00.
+//!
+//! MV7+ exclusive:
 //!   Reverb output:    [0x03, 0x82]  — 1 byte: 0=off, 1=on (reverb on headphone/speaker output)
 //!   Reverb type:      [0x03, 0x83]  — 1 byte: 0=Plate, 1=Hall, 2=Studio
 //!   Reverb intensity: [0x03, 0x84]  — 1 byte: 0–100
@@ -341,8 +344,9 @@ impl DeviceModel {
         clamped - clamped % self.gain_step_tenths()
     }
 
-    /// EQ band gain step in tenths of a dB: 2 dB on the MVX2U Gen 1, 0.5 dB on
-    /// the Gen 2. The other models have no EQ bands and never use it.
+    /// EQ band gain step in tenths of a dB: 0.5 dB on the MVX2U Gen 2, 2 dB on
+    /// the Gen 1 and the MV6 Gen 2 (MOTIV's step there). The MV6, MV7 and MV7+
+    /// have no EQ bands and never use it.
     pub fn eq_step_tenths(&self) -> i16 {
         match self {
             DeviceModel::Mvx2uGen2 => 5,
@@ -432,7 +436,8 @@ const RES_GET_LOCK: [u8; 3] = [0x03, 0x02, 0x01];
 const RES_SET_LOCK: [u8; 3] = [0x04, 0x02, 0x01];
 
 // ── Feature addresses (2 bytes each) ─────────────────────────────────────────
-/// Config lock lives on page 0x00, unlike all other features (page 0x01/0x02).
+/// Config lock lives on page 0x00 with the identity strings, unlike the DSP
+/// features (pages 0x01–0x03).
 const FEAT_LOCK: [u8; 2] = [0x00, 0xA6];
 const FEAT_GAIN: [u8; 2] = [0x01, 0x02];
 const FEAT_MUTE: [u8; 2] = [0x01, 0x04];
@@ -458,7 +463,7 @@ const FEAT_EQ: [u8; 2] = [0x02, 0x00];
 // which is the config-lock prefix. The response value is a length-prefixed ASCII
 // string: [len_hi, len_lo, bytes…] where len is a big-endian u16 equal to the
 // whole value length. Confirmed on MVX2U Gen 2 (PID 0x1033); see issue #63.
-/// User-set device name (set in the MOTIV app, persisted on the adapter).
+/// User-set device name (set in the MOTIV app, persisted on the device).
 /// SET is the same lock class and prefix with the GET reply's length-prefixed
 /// value, then CONFIRM. Found on the MVX2U Gen 2 by writing candidate formats and
 /// reading the name back; renaming has since been confirmed on other models' hardware.
@@ -603,19 +608,20 @@ const PHANTOM_OFF: u8 = 0x00;
 
 // ── Device state (fully decoded) ──────────────────────────────────────────────
 //
-// Fields used only by one model are noted inline. Unused fields for a given
-// model remain at their default values and are not sent to the device.
+// Fields not every model has name the models that use them. Unused fields for
+// a given model remain at their default values and are not sent to the device.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceState {
-    /// Manual gain in tenths of a dB. MVX2U range: 0–600. MV6/MV7/MV7+ range: 0–360.
-    /// Defaults to 36 dB (MVX2U factory default; also MV6 maximum).
+    /// Manual gain in tenths of a dB. MVX2U Gen 1 and Gen 2 range: 0–600; the
+    /// rest: 0–360. Defaults to 36 dB (MVX2U factory default; also MV6 maximum).
     pub gain_tenths: u16,
     pub mode: InputMode,
-    /// Mic position for Auto Level mode. MVX2U only.
+    /// Mic position for Auto Level mode. MVX2U Gen 1 and MV7.
     pub auto_position: MicPosition,
-    /// Tone preset for Auto Level mode. MVX2U only.
+    /// Tone preset for Auto Level mode. MVX2U Gen 1 and MV7.
     pub auto_tone: AutoTone,
-    /// Gain preset for Auto Level mode. MVX2U only.
+    /// Gain preset for Auto Level mode. MVX2U Gen 1, and the MV6 Gen 2's Target
+    /// Level.
     pub auto_gain: AutoGain,
     pub muted: bool,
     /// 48V phantom power. MVX2U Gen 1 and Gen 2 only (XLR input).
@@ -627,32 +633,35 @@ pub struct DeviceState {
     /// `has_playback_mix()`, where `monitor_mix` is the mic level. Same FEAT_MIX
     /// address as `monitor_mix`, with prefix=0x03 on the wire.
     pub playback_mix: u8,
-    /// Limiter. MVX2U Gen 1 and Gen 2 only.
+    /// Limiter. MVX2U Gen 1 and Gen 2, MV7+.
     pub limiter_enabled: bool,
-    /// Compressor preset. MVX2U Gen 1 and Gen 2 only.
+    /// Compressor preset. MVX2U Gen 1 and Gen 2, MV7, MV7+.
     pub compressor: CompressorPreset,
     pub hpf: HpfFrequency,
     /// 5-band parametric EQ master enable. MVX2U Gen 1 only. Gen 2 has no master toggle.
     pub eq_enabled: bool,
-    /// 5 EQ bands at fixed frequencies (100, 250, 1k, 4k, 10k Hz). MVX2U Gen 1 and Gen 2.
-    /// `gain_db` is in tenths of dB. `enabled` is unused on Gen 2 (always active).
+    /// 5 EQ bands at fixed frequencies (100, 250, 1k, 4k, 10k Hz). MVX2U Gen 1
+    /// and Gen 2, MV6 Gen 2 (Advanced tone). `gain_db` is in tenths of dB.
+    /// `enabled` is only used on the Gen 1; elsewhere the bands are always active.
     pub eq_bands: [EqBand; 5],
-    /// Config lock (ignores SET commands while locked). MVX2U Gen 1 only.
+    /// Config lock (ignores SET commands while locked). MVX2U Gen 1 and MV7.
     pub locked: bool,
 
-    // ── MV6 and MVX2U Gen 2 fields ───────────────────────────────────────────
-    /// Real-time denoiser. MV6 and MVX2U Gen 2.
+    // ── MV6-family fields (also MVX2U Gen 2 and MV7+, as noted) ──────────────
+    /// Real-time denoiser. MV6, MV6 Gen 2, MVX2U Gen 2, MV7+.
     pub denoiser_enabled: bool,
-    /// Popper stopper. MV6 and MVX2U Gen 2. Address [0x03, 0x81] confirmed by MOTIV app probe diff.
+    /// Popper stopper. MV6, MV6 Gen 2, MVX2U Gen 2, MV7+. Address [0x03, 0x81]
+    /// confirmed by MOTIV app probe diff.
     pub popper_stopper_enabled: bool,
-    /// Mute button disable. MV6 only. Address [0x0C, 0x00] confirmed by Wireshark capture.
-    /// GET uses CMD_GET_LOCK with inverted encoding; read from device at startup.
+    /// Mute button disable. MV6, MV6 Gen 2, MV7+. Address [0x0C, 0x00] confirmed
+    /// by Wireshark capture. GET uses CMD_GET_LOCK with inverted encoding.
     pub mute_btn_disabled: bool,
-    /// Tone character. MV6 and MVX2U Gen 2. Range: -10 to +10 (displayed as × 10%).
-    /// -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
+    /// Tone character. MV6, MV6 Gen 2, MVX2U Gen 2, MV7+. Range: -10 to +10
+    /// (displayed as × 10%). -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
     pub tone: i8,
-    /// Gain lock (Manual mode only). MV6 and MVX2U Gen 2. Prevents gain from being changed
-    /// while locked. Address [0x01, 0xF3] confirmed by probe diff.
+    /// Gain lock (Manual mode only), on models with `has_gain_lock()`. Prevents
+    /// gain from being changed while locked. Address [0x01, 0xF3] confirmed by
+    /// probe diff.
     pub mv6_gain_locked: bool,
 
     // ── MV6 Gen 2 fields ─────────────────────────────────────────────────────
@@ -701,15 +710,15 @@ pub struct DeviceState {
     /// LEDs are dimmed.
     pub led_night_mode: bool,
 
-    /// Device serial number string, populated after connection.
+    /// USB descriptor serial number, populated after connection.
     pub serial_number: String,
-    /// User-set device name read from the adapter (lock-class feature 0x0012).
+    /// User-set device name read from the device (lock-class feature 0x0012).
     /// "Unknown" if the device does not report it.
     pub device_name: String,
-    /// Firmware version string read from the adapter (lock-class feature 0x0009),
+    /// Firmware version string read from the device (lock-class feature 0x0009),
     /// e.g. "1.2.0.6". "Unknown" if the device does not report it.
     pub firmware_version: String,
-    /// Factory serial number read from the adapter (lock-class feature 0x0002),
+    /// Factory serial number read from the device (lock-class feature 0x0002),
     /// e.g. "3EK26001276" — the serial printed on the device and shown in the
     /// MOTIV app. "Unknown" if the device does not report it; callers fall back
     /// to `serial_number` (the USB descriptor serial) in that case.
@@ -1432,18 +1441,20 @@ impl std::fmt::Display for LedPulsingTheme {
 ///   Wire format: 16-bit signed big-endian (value already in tenths, no multiply needed).
 /// Gen 2 range: −8.0 to +6.0 dB in steps of 0.5 dB (step = 5 tenths).
 ///   Wire format: 8-bit signed i8 (value already in tenths, no multiply needed).
+/// MV6 Gen 2: the Gen 2 wire format, in the Gen 1's 2 dB steps (MOTIV's step).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EqBand {
-    /// Gain in tenths of dB. Gen 1 range: −80..+60 (steps of 20). Gen 2: −80..+60 (steps of 5).
+    /// Gain in tenths of dB, −80..+60, on the step `DeviceModel::eq_step_tenths()` gives.
     pub gain_db: i16,
-    /// Whether this band is active. Gen 2 devices have no per-band enable; always true.
+    /// Whether this band is active. Only the MVX2U Gen 1 has a per-band enable;
+    /// elsewhere it is unused and the band is always active.
     pub enabled: bool,
 }
 
 // ── CRC-16/ANSI ───────────────────────────────────────────────────────────────
 /// CRC-16/ANSI: poly 0x8005, init 0x0000, reflected input and output.
 ///
-/// This is the standard "CRC-16" used by the MVX2U protocol (not CCITT-FALSE).
+/// This is the standard "CRC-16" used by the binary protocol (not CCITT-FALSE).
 #[must_use]
 pub fn crc16_ansi(data: &[u8]) -> u16 {
     let mut crc: u16 = 0x0000;
@@ -1465,7 +1476,7 @@ pub fn crc16_ansi(data: &[u8]) -> u16 {
 /// Build a 64-byte packet ready for `hidapi::write()`.
 ///
 /// `seq` is the per-packet sequence number (0–255, wraps).
-/// `cmd` is the 3-byte command ([`CMD_GET_FEAT`], [`CMD_SET_FEAT`], or [`CMD_CONFIRM`]).
+/// `cmd` is the 3-byte command (e.g. [`CMD_GET_FEAT`], [`CMD_SET_FEAT`], [`CMD_CONFIRM`]).
 /// `payload` is the feature address + optional value bytes.
 ///
 /// Layout produced (before CRC + padding):
@@ -1481,7 +1492,8 @@ pub fn build_packet(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
 ///
 /// The only field that varies between the two framings is `hdr_constant`:
 /// [`HDR_CONSTANT`] (0x03) for standard packets, 0x00 for the MV7+ SET class
-/// and the handful of MV6 commands that mirror it. Everything else — lengths,
+/// and the commands on other models that mirror it (Mic/Playback Level, mute
+/// button, factory reset). Everything else — lengths,
 /// CRC coverage, zero padding — is identical, so both wrappers share this body.
 fn build_packet_with_hdr(seq: u8, hdr_constant: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     // data_len counts: DATA_START(1) + data_len(1) + cmd(3) + payload
@@ -1519,8 +1531,8 @@ pub const PREFIX_OFFSET: usize = 13;
 /// FEAT_MIX prefix for Playback Mix. Monitor Mix uses 0x00 (0x01 on the Gen 1).
 const PLAYBACK_MIX_PREFIX: u8 = 0x03;
 
-/// One device reply. The device echoes the request's prefix byte (checked on an
-/// MV6 Gen 2 and in the MV7+ LED captures), which is the only thing telling
+/// One device reply. The device echoes the request's prefix byte (checked on the
+/// MV6 Gen 2 and MVX2U Gen 2, and in the MV7+ LED captures), which is the only thing telling
 /// Playback Mix apart from Monitor Mix.
 #[derive(Debug, PartialEq)]
 pub struct Reply {
@@ -1687,7 +1699,8 @@ pub fn cmd_get_denoiser_level(seq: u8) -> Vec<u8> {
 pub fn cmd_get_tone_mode(seq: u8) -> Vec<u8> {
     cmd_get(seq, &MV6_GEN2_FEAT_TONE_MODE)
 }
-/// GET for MV6 monitor mix. Uses standard framing (HDR_CONSTANT=0x03, prefix=0x00).
+/// GET for the Mic Level on models with `has_playback_mix()` (named for the MV6,
+/// where it was found). Uses standard framing (HDR_CONSTANT=0x03, prefix=0x00).
 /// Confirmed by Wireshark capture. Note: the device only responds after at least one
 /// SET has been issued — a fresh device returns nothing, which is why the probe sweep
 /// found no response before shurectl first wrote a value.
@@ -1700,7 +1713,7 @@ pub fn cmd_get_mv6_mix(seq: u8) -> Vec<u8> {
 /// parse_response will return feat_addr=[0x00, 0x60] (MV6_FEAT_MUTE_BTN_DISABLE_RESP)
 /// with value[0]: 0x00=button disabled, 0x01=button active (inverted encoding).
 /// Confirmed reliable by Wireshark — device correctly reflects current state.
-/// Also used for MV7+ — the framing is identical.
+/// Also used for the MV6 Gen 2 and MV7+ — the framing is identical.
 pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
     let payload = [
         MV6_FEAT_MUTE_BTN_DISABLE[0],
@@ -1712,7 +1725,8 @@ pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
 
 // ── MV7+ GET constructors ─────────────────────────────────────────────────────
 
-/// GET for MV7+ playback mix. Shares FEAT_MIX [0x01, 0x86] with Monitor Mix;
+/// GET for the Playback Level on models with `has_playback_mix()`. Shares
+/// FEAT_MIX [0x01, 0x86] with the Mic Level;
 /// the prefix selects the channel, and the reply echoes it (see `apply_reply()`).
 pub fn cmd_get_mv7_playback_mix(seq: u8) -> Vec<u8> {
     let payload = [PLAYBACK_MIX_PREFIX, FEAT_MIX[0], FEAT_MIX[1]];
@@ -1820,7 +1834,7 @@ pub fn cmd_set_mv7_led_live_interior(seq: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
 
 // ── MV7+ factory reset constructor ───────────────────────────────────────────
 
-/// Build a factory reset packet for the MV7+.
+/// Build a factory reset packet (MV7+, MV6 Gen 2, MVX2U Gen 2).
 ///
 /// Uses CMD_SET_LOCK with HDR_CONSTANT=0x00, payload [page=0x00, 0x00, sub=0x22, value=0x01].
 /// The device disconnects and re-enumerates immediately after receipt.
@@ -1861,7 +1875,7 @@ pub fn is_device_name_char(c: char) -> bool {
     c.is_ascii_graphic() || c == ' '
 }
 
-/// Build a SET packet for the user-set device name (MVX2U Gen 1/Gen 2, MV6).
+/// Build a SET packet for the user-set device name (MVX2U Gen 1/Gen 2, MV6, MV6 Gen 2).
 /// Must be followed by CONFIRM.
 pub fn cmd_set_device_name(seq: u8, name: &str) -> Vec<u8> {
     build_packet(seq, &CMD_SET_LOCK, &device_name_payload(name))
@@ -2008,10 +2022,10 @@ pub fn cmd_set_eq_band_enable(seq: u8, band: usize, enabled: bool) -> Vec<u8> {
 ///
 /// Wire encoding is model-specific:
 ///   - Gen 1 (Mvx2u):      16-bit signed big-endian (value in tenths, no multiply)
-///   - Gen 2 (Mvx2uGen2):  8-bit signed i8 (value in tenths, no multiply)
+///   - Gen 2 and MV6 Gen 2: 8-bit signed i8 (value in tenths, no multiply)
 ///
-/// Gen 1 callers should pass multiples of 20 (2.0 dB steps).
-/// Gen 2 callers should pass multiples of 5 (0.5 dB steps).
+/// Callers pass a value on `DeviceModel::eq_step_tenths()`'s grid: multiples of
+/// 20 (2.0 dB) on the Gen 1 and MV6 Gen 2, of 5 (0.5 dB) on the Gen 2.
 pub fn cmd_set_eq_band_gain(seq: u8, band: usize, gain_tenths: i16, model: DeviceModel) -> Vec<u8> {
     assert!(
         band < EQ_BAND_ADDRS.len(),
@@ -2089,9 +2103,9 @@ pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
     build_packet_hdr0(seq, &CMD_SET_LOCK, &payload)
 }
 
-/// Set the MV6 monitor mix level.
+/// Set the Mic Level on the MVX2U Gen 2, MV6 and MV6 Gen 2 (named for the MV6).
 ///
-/// `mix` is clamped to 0–100: 0 = full mic in headphones, 100 = full playback.
+/// `mix` is clamped to 0–100%.
 /// Uses the same FEAT_MIX address as the MVX2U [0x01, 0x86], but requires
 /// HDR_CONSTANT=0x00 (confirmed by Wireshark capture of MOTIV app SET packet).
 /// GET uses standard framing — see cmd_get_mv6_mix().
@@ -2110,7 +2124,7 @@ pub fn cmd_set_mv6_tone(seq: u8, tone: i8) -> Vec<u8> {
     cmd_set(seq, &MV6_FEAT_TONE, &raw)
 }
 
-/// Lock or unlock the MV6 gain in Manual mode.
+/// Lock or unlock the gain in Manual mode, on models with `has_gain_lock()`.
 /// `locked = true` prevents gain changes; `false` allows them.
 /// Must be followed by a CONFIRM packet (handled by `send_set`).
 pub fn cmd_set_mv6_gain_lock(seq: u8, locked: bool) -> Vec<u8> {
@@ -2163,8 +2177,7 @@ pub fn cmd_set_mv7_tone(seq: u8, tone: i8) -> Vec<u8> {
     cmd_set_mv7(seq, &MV6_FEAT_TONE, &raw)
 }
 
-/// Set MV7+ mic monitor mix (prefix=0x00, HDR_CONST=0x00).
-/// 0 = full mic, 100 = full playback.
+/// Set the MV7+ Mic Level, 0–100% (prefix=0x00, HDR_CONST=0x00).
 pub fn cmd_set_mv7_mic_mix(seq: u8, mix: u8) -> Vec<u8> {
     let value = mix.min(100);
     // prefix=0x00 for mic mix (vs 0x03 for playback mix)
@@ -2172,9 +2185,9 @@ pub fn cmd_set_mv7_mic_mix(seq: u8, mix: u8) -> Vec<u8> {
     build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
 }
 
-/// Set MV7+ playback mix (prefix=0x03, HDR_CONST=0x00).
-/// Shares FEAT_MIX address with mic mix; prefix=0x03 selects the playback channel.
-/// 0 = full mic, 100 = full playback.
+/// Set the Playback Level, 0–100%, on models with `has_playback_mix()`
+/// (prefix=0x03, HDR_CONST=0x00). Shares the FEAT_MIX address with the Mic
+/// Level; prefix=0x03 selects the playback channel.
 pub fn cmd_set_mv7_playback_mix(seq: u8, mix: u8) -> Vec<u8> {
     let value = mix.min(100);
     let payload = [PLAYBACK_MIX_PREFIX, FEAT_MIX[0], FEAT_MIX[1], value];
@@ -2204,7 +2217,7 @@ pub fn cmd_set_mv7_gain(seq: u8, gain_tenths: u16) -> Vec<u8> {
 
 // ── Response decoder ──────────────────────────────────────────────────────────
 /// Decode a length-prefixed ASCII string as returned by the lock-class identity
-/// features (device name, firmware). The value is `[len_hi, len_lo, bytes…]` where
+/// features (device name, firmware, serial). The value is `[len_hi, len_lo, bytes…]` where
 /// `len` is a big-endian u16 equal to the full value length.
 ///
 /// Returns `None` if the value is too short to hold the 2-byte length plus at
@@ -2265,7 +2278,7 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             }
             let raw = u16::from_be_bytes([value[0], value[1]]);
             // No model-specific clamp here — apply_response is model-agnostic.
-            // The adjustment layer (adjust_focused) enforces device_model.max_gain_tenths().
+            // adjust_focused() and preset loads clamp through snap_gain_tenths().
             state.gain_tenths = raw / 10;
             true
         }
@@ -2546,7 +2559,7 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                 }
                 if feat_addr == *gain_addr {
                     // Gen 1 returns 2-byte i16 (value in tenths of dB).
-                    // Gen 2 returns 1-byte i8 (value in tenths of dB).
+                    // Gen 2 and MV6 Gen 2 return 1-byte i8 (value in tenths of dB).
                     // The length of the response determines which encoding was used.
                     let gain_tenths: i16 = if value.len() >= 2 {
                         i16::from_be_bytes([value[0], value[1]])
@@ -5618,7 +5631,7 @@ mod tests {
         assert_eq!(state.led_live_interior_rgb, [0xFF, 0x2A, 0x1A]);
     }
 
-    // ── Missing MV7+ tests ────────────────────────────────────────────────────
+    // ── MV7+ gain range ───────────────────────────────────────────────────────
 
     #[test]
     fn device_model_max_gain_tenths_mv7_plus() {

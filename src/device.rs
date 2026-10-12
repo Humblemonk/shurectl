@@ -6,7 +6,7 @@
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — USB gaming microphone (Gen 2)
 //!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
-//!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
+//!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone
 //!
 //! All six devices expose a USB HID configuration interface alongside their
 //! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
@@ -149,7 +149,7 @@ impl ShureDevice {
 
         match found.len() {
             0 => Err(anyhow!(
-                "No Shure MVX2U, MVX2U Gen 2, MV6, MV7, or MV7+ device found.\nHint: {ACCESS_HINT}."
+                "No Shure MVX2U, MVX2U Gen 2, MV6, MV6 Gen 2, MV7, or MV7+ device found.\nHint: {ACCESS_HINT}."
             )),
             1 => {
                 let (info, model) = found[0];
@@ -387,7 +387,7 @@ impl ShureDevice {
         Ok(())
     }
 
-    /// Fetch all 5 EQ band gain values. Used by both Gen 1 and Gen 2 state readback.
+    /// Fetch all 5 EQ band gain values. Used by the MVX2U Gen 1 and Gen 2 and MV6 Gen 2 readback.
     fn fetch_eq_band_gains(&self, readback: &mut Readback) -> Result<()> {
         for band in 0..5 {
             self.query(&cmd_get_eq_band_gain(self.next_seq(), band), readback)?;
@@ -533,7 +533,7 @@ impl ShureDevice {
             cmd_get_mv6_popper_stopper,
             cmd_get_mv6_tone,
             cmd_get_mv6_mute_btn_disable,
-            cmd_get_mv6_mix, // mic monitor mix (prefix=0x00)
+            cmd_get_mv6_mix, // Mic Level (prefix=0x00)
             cmd_get_mv7_playback_mix,
             cmd_get_mv7_reverb_output,
             cmd_get_mv7_reverb_type,
@@ -638,7 +638,7 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
-    // ── MVX2U Gen 1 and Gen 2 SET commands ───────────────────────────────────
+    // ── MVX2U-first SET commands (Auto Level, mix, dynamics, EQ, lock) ──────
 
     /// Set the Auto Level mic position. `tone` is only used by the MV7, which
     /// stores both in one setting.
@@ -739,7 +739,7 @@ impl ShureDevice {
         }
     }
 
-    // ── MV6 and MV7+ shared SET commands ─────────────────────────────────────
+    // ── MV6-first SET commands (also MVX2U Gen 2, MV6 Gen 2, MV7+) ──────────
 
     pub fn set_mv6_denoiser(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
@@ -773,7 +773,8 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
-    /// Disable or enable the physical mute button. MV6 and MV7+ share identical framing here.
+    /// Disable or enable the physical mute button. The MV6, MV6 Gen 2 and MV7+ share
+    /// identical framing here.
     pub fn set_mv6_mute_btn_disable(&self, disabled: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_mv6_mute_btn_disable(
             self.next_seq(),
@@ -811,7 +812,8 @@ impl ShureDevice {
         self.send_set(&protocol::cmd_set_mv6_gain_lock(self.next_seq(), locked))
     }
 
-    /// Set monitor mic mix. MV7+ uses cmd_set_mv7_mic_mix (HDR_CONST=0x00 with prefix=0x00).
+    /// Set the Mic Level, or the MV7's mic ↔ playback balance. MV7+ uses
+    /// cmd_set_mv7_mic_mix (HDR_CONST=0x00 with prefix=0x00).
     pub fn set_mv6_monitor_mix(&self, mix: u8) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),

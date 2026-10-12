@@ -1,4 +1,4 @@
-//! MVX2U / MVX2U Gen 2 / MV6 / MV7+ HID Feature Address Probe
+//! MVX2U / MVX2U Gen 2 / MV6 / MV6 Gen 2 / MV7+ HID Feature Address Probe
 //!
 //! Not for the original MV7 (PID 0x1012): it speaks an ASCII command shell, not
 //! the binary protocol swept here. See `protocol::mv7_text`.
@@ -8,16 +8,17 @@
 //! features such as native preset slots and monitor mix addresses.
 //!
 //! Usage:
-//!   cargo run --bin probe                                    # the one supported device plugged in
-//!   cargo run --bin probe -- --pid 0x1013                   # target MVX2U Gen 1
-//!   cargo run --bin probe -- --pid 0x1019                   # target MV7+
-//!   cargo run --bin probe -- --pid 0x1026                   # target MV6
-//!   cargo run --bin probe -- --pid 0x1035                   # target MV6 Gen 2
-//!   cargo run --bin probe -- --output results.txt
-//!   cargo run --bin probe -- --page 0x03
-//!   cargo run --bin probe -- --also-mix-class          # try is_mix=0x01 for every address
-//!   cargo run --bin probe -- --also-lock-class         # CMD_GET_LOCK at prefix 0x06 and 0x00
-//!   cargo run --bin probe -- --page 0x01 --also-mix-class  # hunt for MVX2U-style mix features
+//!   cargo run --features probe --bin shurectl-probe             # the one supported device plugged in
+//!   cargo run --features probe --bin shurectl-probe -- --pid 0x1013  # target MVX2U Gen 1
+//!   cargo run --features probe --bin shurectl-probe -- --pid 0x1033  # target MVX2U Gen 2
+//!   cargo run --features probe --bin shurectl-probe -- --pid 0x1019  # target MV7+
+//!   cargo run --features probe --bin shurectl-probe -- --pid 0x1026  # target MV6
+//!   cargo run --features probe --bin shurectl-probe -- --pid 0x1035  # target MV6 Gen 2
+//!   cargo run --features probe --bin shurectl-probe -- --output results.txt
+//!   cargo run --features probe --bin shurectl-probe -- --page 0x03
+//!   cargo run --features probe --bin shurectl-probe -- --also-mix-class  # try is_mix=0x01 for every address
+//!   cargo run --features probe --bin shurectl-probe -- --also-lock-class  # CMD_GET_LOCK at prefix 0x06 and 0x00
+//!   cargo run --features probe --bin shurectl-probe -- --page 0x01 --also-mix-class  # hunt for MVX2U-style mix features
 //!
 //! The tool is READ-ONLY — it only sends GET packets, never SET or CONFIRM.
 //! It is safe to run against a live device; no settings will be changed.
@@ -31,15 +32,16 @@
 //!
 //! The command class (CMD_GET_FEAT vs CMD_GET_LOCK) and the prefix byte are
 //! independent. Config lock uses CMD_GET_LOCK with prefix 0x06, but the identity
-//! strings — device name [0x00, 0x12], serial [0x00, 0x03], firmware [0x00, 0x09]
+//! strings — device name [0x00, 0x12], serial [0x00, 0x02], firmware [0x00, 0x09]
 //! — use CMD_GET_LOCK with the standard prefix 0x00. --also-lock-class therefore
 //! sweeps the lock command class at both 0x06 and 0x00.
 //!
 //! # Monitor mix: one address, a channel per prefix
 //!
 //! FEAT_MIX [0x01, 0x86] answers at a different payload prefix per model:
-//! 0x00 is the mic level (MV6, MV6 Gen 2, MV7+), 0x01 the MVX2U Gen 1 balance,
-//! and 0x03 the playback level (MV7+, MV6 Gen 2; MV6 expected but unconfirmed). The standard sweep reads
+//! 0x00 is the mic level (MVX2U Gen 2, MV6, MV6 Gen 2, MV7+), 0x01 the MVX2U Gen 1
+//! balance, and 0x03 the playback level (MVX2U Gen 2, MV6 Gen 2, MV7+; MV6 expected
+//! but unconfirmed). The standard sweep reads
 //! that address at all three, so whichever channels a model has show up. (It
 //! used to force 0x01 there, which hid the MV6 family's monitor levels.) The
 //! original MV6 is reported to answer only after a SET since power-on; the MV6
@@ -240,7 +242,7 @@ struct Cli {
     /// Also sweep every address with the CMD_GET_LOCK command class, using both
     /// payload prefix 0x06 (config-lock features) and prefix 0x00. The prefix 0x00
     /// pass surfaces the identity strings — device name [0x00, 0x12], serial
-    /// [0x00, 0x03], firmware [0x00, 0x09] — which answer to the lock command
+    /// [0x00, 0x02], firmware [0x00, 0x09] — which answer to the lock command
     /// class but the standard prefix rather than 0x06.
     #[arg(long)]
     also_lock_class: bool,
@@ -478,7 +480,7 @@ impl Probe {
     /// once with payload prefix 0x06 (config-lock features) and once with prefix
     /// 0x00. The command class and the payload prefix are independent: config lock
     /// at [0x00, 0xA6] answers to prefix 0x06, but the identity strings (device
-    /// name [0x00, 0x12], serial [0x00, 0x03], firmware [0x00, 0x09]) answer to
+    /// name [0x00, 0x12], serial [0x00, 0x02], firmware [0x00, 0x09]) answer to
     /// the same command class with the standard prefix 0x00. Sweeping both is
     /// required to surface every lock-class feature.
     fn sweep_page_lock_class(&mut self, page: u8) -> Result<()> {
@@ -500,7 +502,7 @@ impl Probe {
     /// mute_btn_disable ([0x0C, 0x00, 0x60]) that the standard 2-level sweep
     /// cannot find because they use a different payload structure.
     ///
-    /// To probe MV7+ LED: cargo run --bin probe -- --pid 0x1019 --page 0x0C --also-mv7-lock-class
+    /// To probe MV7+ LED: cargo run --features probe --bin shurectl-probe -- --pid 0x1019 --page 0x0C --also-mv7-lock-class
     fn sweep_page_mv7_lock(&mut self, page: u8) -> Result<()> {
         self.log(&format!(
             "\n── Page 0x{page:02X} sweep (MV7+ lock class: [page, 0x00, sub_addr]) ────"
