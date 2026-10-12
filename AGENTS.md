@@ -8,7 +8,8 @@ obvious solution over clever abstractions.
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
 `protocol.md` for `protocol.rs`/`device.rs`/`probe.rs` (HID packet format, usbmon
 debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`. Claude Code
-loads these automatically.
+loads these only when a matching file is read, so anything a reviewer must know from a diff
+alone belongs in **Review** below.
 
 ## Commands
 
@@ -41,9 +42,11 @@ src/
   app.rs        # App state: Tab, Focus, DeviceState, DeviceAction events
   device.rs     # hidapi wrapper: open device, send/receive HID reports
   meter.rs      # cpal capture: dBFS metering, RollingWindow, PeakWindow
+  mouse.rs      # HitMap from the last rendered frame; clicks/wheel → the same key actions
   presets.rs    # Host-side presets: TOML load/save/delete, PresetSlot
   protocol.rs   # Packet encoding, CRC-16/ANSI, command constructors, apply_response()
-  ui.rs         # ratatui rendering: 5 tabs (Main | EQ | Dynamics | Presets | Info) + help overlay
+  ui.rs         # ratatui rendering: the tabs in Tab::ALL + help overlay
+  ui_renders.golden  # Render hashes checked by ui.rs `renders_match_golden`
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
 ```
 
@@ -52,7 +55,7 @@ src/
 
 **Layering rules (strict):**
 - `apply_action()` in `main.rs` is the *only* place that writes to the device. Never call
-  `device.rs` from `ui.rs` or `app.rs`.
+  `device.rs` from `ui.rs`, `app.rs` or `mouse.rs`. Mouse input only maps to key actions.
 - Raw protocol byte values live *only* in `protocol.rs` as named constants.
 - `shurectl-probe` must never ship to end users via `cargo install` or Homebrew.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
@@ -122,8 +125,10 @@ Shared across all models unless the hardware makes it impossible:
   everywhere. dB values, percentages, and enum names render through the same code path
 - **Drawing helpers**: `draw_mode_block()`, `draw_mute_block()`, `draw_gain_gauge()`,
   `draw_monitor_mix_gauge()`, `draw_gain_lock_block()`, `draw_config_lock_block()`,
-  `draw_phantom_block()`, `draw_auto_controls()`, `segmented_span()`, `draw_main_shared()`.
-  Extend a helper with a parameter rather than forking a near-copy
+  `draw_phantom_block()`, `draw_auto_controls()`, `segmented_span()`, `draw_main_shared()`;
+  block styles `focus_border()`, `focus_block()`, `alert_block()`, `card_block()`; sliders
+  `slider_gauge()`; EQ `eq_band_column()`; click targets `control_rows()`. Extend a helper
+  with a parameter rather than forking a near-copy
 - **Status and error wording**: same phrasing for the same condition on every model
 
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
@@ -177,10 +182,45 @@ Shared across all models unless the hardware makes it impossible:
 | Packet encoding changes | Test CRC correctness and 64-byte length invariant |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
 | Focus/navigation changes | Manual test in `--demo` for all six models |
+| `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo` |
 | `main()` / CLI args | No tests |
 
 Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific
 bottleneck has been identified.
+
+## Review
+
+The verification gate and CI already cover clippy, fmt, tests and jscpd; don't report what
+they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its golden file
+is unchanged; a changed golden file lists the screens to look at.
+
+**Regression traps.** Check every diff that touches these:
+
+- **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
+  can shift every later GET by one packet (481dc76). Replies route by address. The prefix
+  byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed only on the MV6 Gen 2.
+- **Gain Lock**: a locked device ignores gain writes. `apply_preset_to_device()` unlocks,
+  writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
+- **New `PresetSlot` field**: files saved before it existed, or on a model without it, must
+  not zero the setting on load (73476a4). Check `#[serde(default)]` and
+  `apply_to_device_state()`.
+- **Model checks**: use `DeviceModel::has_*()` and exhaustive matches, never a model name or
+  `_`. A wildcard sent the MV6 Gen 2 the wrong EQ encoding (a800e26).
+- **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
+  check heights 16-50 (bc3bb3f).
+- **Stale prose**: when a capability moves between models, update the doc comments, help
+  overlay, status strings, Info tab and README row too. Most "tidy" commits fix this.
+
+**Intentional, don't flag:**
+
+- A preset's Playback Mix of 0 means "not saved", not 0%
+- `ACK_TIMEOUT_MS` is 15 ms on every model
+- `unsafe` `dup`/`dup2` in `meter.rs` (silences ALSA/JACK probing)
+- `send_if_connected()` succeeding silently in demo mode
+- No firmware-update packets anywhere
+- `field_reassign_with_default` in `app.rs` tests (see Commands)
+- The MV7 bypassing `send_set()`/`send_get()` for its text shell
+- Factory Reset not marking the device disconnected; the presence poll handles the reboot
 
 ## Workflow
 

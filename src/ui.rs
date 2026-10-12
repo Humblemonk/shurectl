@@ -3482,21 +3482,22 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
 mod tests {
     use super::*;
 
+    const MODELS: [DeviceModel; 6] = [
+        DeviceModel::Mvx2u,
+        DeviceModel::Mvx2uGen2,
+        DeviceModel::Mv6,
+        DeviceModel::Mv6Gen2,
+        DeviceModel::Mv7,
+        DeviceModel::Mv7Plus,
+    ];
+
     // ── Rendering smoke test ──────────────────────────────────────────────────
 
     #[test]
     fn every_tab_renders_for_every_model_and_mode() {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let models = [
-            DeviceModel::Mvx2u,
-            DeviceModel::Mvx2uGen2,
-            DeviceModel::Mv6,
-            DeviceModel::Mv6Gen2,
-            DeviceModel::Mv7,
-            DeviceModel::Mv7Plus,
-        ];
-        for model in models {
+        for model in MODELS {
             for mode in [InputMode::Manual, InputMode::Auto] {
                 for tab in Tab::ALL {
                     let mut app = App {
@@ -3517,6 +3518,169 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── Render golden file ────────────────────────────────────────────────────
+
+    const GOLDEN_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui_renders.golden");
+
+    /// FNV-1a over every cell's symbol and style. Unlike `DefaultHasher`, it
+    /// stays the same across Rust releases.
+    fn buffer_hash(buffer: &ratatui::buffer::Buffer) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for cell in &buffer.content {
+            let text = format!(
+                "{}{:?}{:?}{:?}",
+                cell.symbol(),
+                cell.fg,
+                cell.bg,
+                cell.modifier
+            );
+            for byte in text.bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    fn render_hash(app: &App) -> u64 {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| {
+                draw(f, app);
+            })
+            .expect("draw");
+        buffer_hash(terminal.backend().buffer())
+    }
+
+    /// Every focus `focus_next()` reaches from the current one, in order.
+    fn focus_ring(app: &mut App) -> Vec<Focus> {
+        let first = app.focus;
+        let mut ring = Vec::new();
+        while !ring.contains(&app.focus) {
+            ring.push(app.focus);
+            app.focus_next();
+        }
+        app.focus = first;
+        ring
+    }
+
+    /// One line per model, mode, tab, focus and mute/lock/tone state, with a
+    /// hash of the rendered screen.
+    fn render_all() -> String {
+        use std::fmt::Write;
+
+        let mut out = String::new();
+        for model in MODELS {
+            let tone_modes: &[bool] = match model {
+                DeviceModel::Mv6Gen2 => &[false, true],
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv7
+                | DeviceModel::Mv7Plus => &[false],
+            };
+            let states = [InputMode::Manual, InputMode::Auto]
+                .into_iter()
+                .flat_map(|mode| {
+                    tone_modes.iter().flat_map(move |&adv| {
+                        [(false, false), (true, true)]
+                            .map(|(muted, locked)| (mode, adv, muted, locked))
+                    })
+                });
+            for (mode, tone_advanced, muted, locked) in states {
+                for tab in Tab::ALL {
+                    let mut app = App {
+                        device_model: model,
+                        active_tab: if tab == Tab::Main {
+                            Tab::Info
+                        } else {
+                            Tab::Main
+                        },
+                        ..App::default()
+                    };
+                    let state = &mut app.device_state;
+                    state.mode = mode;
+                    state.tone_advanced = tone_advanced;
+                    state.muted = muted;
+                    state.locked = locked;
+                    state.mv6_gain_locked = locked;
+                    state.gain_tenths = 240;
+                    for (band, gain_db) in state.eq_bands.iter_mut().zip([-80, -20, 0, 20, 60]) {
+                        band.gain_db = gain_db;
+                    }
+                    if app.is_tab_hidden(tab) {
+                        continue;
+                    }
+                    // A locked tab can't be selected and shows only its notice.
+                    let tab_locked = app.is_tab_locked(tab);
+                    app.select_tab(tab);
+                    app.active_tab = tab;
+                    let bands: &[usize] = if tab == Tab::Eq && app.eq_bands_shown() {
+                        &[0, 2]
+                    } else {
+                        &[0]
+                    };
+                    let start = app.focus;
+                    for &band in bands {
+                        app.eq_selected_band = band;
+                        app.focus = start;
+                        let ring = if tab_locked {
+                            vec![app.focus]
+                        } else {
+                            focus_ring(&mut app)
+                        };
+                        for focus in ring {
+                            app.focus = focus;
+                            writeln!(
+                                out,
+                                "{model:?} {mode:?} adv={tone_advanced} muted={muted} \
+                                 locked={locked} {tab:?} band={band} {focus:?} {:016x}",
+                                render_hash(&app)
+                            )
+                            .expect("write to String");
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Proves a refactor leaves every screen unchanged. After an intended visual
+    /// change, regenerate with `UPDATE_GOLDEN=1 cargo test renders_match_golden`
+    /// and check the screens it lists in `--demo`.
+    #[test]
+    fn renders_match_golden() {
+        use std::collections::HashSet;
+
+        let actual = render_all();
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::write(GOLDEN_PATH, &actual).expect("write golden file");
+            return;
+        }
+        let golden = std::fs::read_to_string(GOLDEN_PATH).unwrap_or_default();
+        let golden_lines: HashSet<&str> = golden.lines().collect();
+        let actual_lines: HashSet<&str> = actual.lines().collect();
+        let mut diff: Vec<String> = golden
+            .lines()
+            .filter(|line| !actual_lines.contains(line))
+            .map(|line| format!("- {line}"))
+            .collect();
+        diff.extend(
+            actual
+                .lines()
+                .filter(|line| !golden_lines.contains(line))
+                .map(|line| format!("+ {line}")),
+        );
+        assert!(
+            diff.is_empty(),
+            "{} golden lines differ; rerun with UPDATE_GOLDEN=1 if intended:\n{}",
+            diff.len(),
+            diff[..diff.len().min(40)].join("\n")
+        );
     }
 
     fn header_text(app: &App) -> String {
