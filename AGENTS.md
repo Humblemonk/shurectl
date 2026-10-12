@@ -29,7 +29,7 @@ cargo clippy --features probe -- -D warnings && cargo build --all-targets --feat
   compiles. Read the `cargo test` output for warnings; don't just grep for `test result`.
 - Clippy isn't run with `--all-targets` yet because of pre-existing
   `field_reassign_with_default` warnings in `app.rs` tests. Fold them into struct literals before tightening.
-- CI runs jscpd (budget 7% in `.github/linters/.jscpd.json`, ~5.5% actual). Check with
+- CI runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~4.3% actual). Check with
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared helper;
   don't raise the threshold.
 
