@@ -165,7 +165,9 @@ Shared across all models unless the hardware makes it impossible:
 
 - No `unwrap()`/`expect()` in production paths; no `panic!()` outside tests; no
   `todo!()`/`unimplemented!()` in final code
-- No `println!()`. Use `eprintln!()` only at startup, and the TUI status bar after that.
+- No `println!()` once the TUI runs: use `eprintln!()` only at startup, and the TUI status
+  bar after that. The one-shot commands (`--list`, `--mute`, `--preset`) and
+  `shurectl-probe` print their results to stdout, so scripts can read them.
   State readback collects unrecognised replies in `Readback::unrecognised` for this
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
