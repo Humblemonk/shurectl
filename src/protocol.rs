@@ -2009,16 +2009,14 @@ pub fn cmd_set_eq_enable(seq: u8, enabled: bool) -> Vec<u8> {
     cmd_set(seq, &FEAT_EQ, &[u8::from(enabled)])
 }
 
-/// Set EQ band enable. `band` is 0–4.
+/// Set EQ band enable. `band` is 0–4; larger values clamp to the last band.
 pub fn cmd_set_eq_band_enable(seq: u8, band: usize, enabled: bool) -> Vec<u8> {
-    assert!(
-        band < EQ_BAND_ADDRS.len(),
-        "band index out of range: {band}"
-    );
+    let band = band.min(EQ_BAND_ADDRS.len() - 1);
     cmd_set(seq, &EQ_BAND_ADDRS[band].0, &[u8::from(enabled)])
 }
 
-/// Set EQ band gain. `gain_db` is in tenths of dB, clamped to −80..+60.
+/// Set EQ band gain. `gain_db` is in tenths of dB, clamped to −80..+60; `band`
+/// is 0–4 and larger values clamp to the last band.
 ///
 /// Wire encoding is model-specific:
 ///   - Gen 1 (Mvx2u):      16-bit signed big-endian (value in tenths, no multiply)
@@ -2027,10 +2025,7 @@ pub fn cmd_set_eq_band_enable(seq: u8, band: usize, enabled: bool) -> Vec<u8> {
 /// Callers pass a value on `DeviceModel::eq_step_tenths()`'s grid: multiples of
 /// 20 (2.0 dB) on the Gen 1 and MV6 Gen 2, of 5 (0.5 dB) on the Gen 2.
 pub fn cmd_set_eq_band_gain(seq: u8, band: usize, gain_tenths: i16, model: DeviceModel) -> Vec<u8> {
-    assert!(
-        band < EQ_BAND_ADDRS.len(),
-        "band index out of range: {band}"
-    );
+    let band = band.min(EQ_BAND_ADDRS.len() - 1);
     let clamped = gain_tenths.clamp(-80, 60);
     match model {
         DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 => {
@@ -2103,7 +2098,7 @@ pub fn cmd_set_mv6_mute_btn_disable(seq: u8, disabled: bool) -> Vec<u8> {
     build_packet_hdr0(seq, &CMD_SET_LOCK, &payload)
 }
 
-/// Set the Mic Level on the MVX2U Gen 2, MV6 and MV6 Gen 2 (named for the MV6).
+/// Set the Mic Level on models with `has_playback_mix()` (named for the MV6).
 ///
 /// `mix` is clamped to 0–100%.
 /// Uses the same FEAT_MIX address as the MVX2U [0x01, 0x86], but requires
@@ -2175,14 +2170,6 @@ pub fn cmd_set_mv7_tone(seq: u8, tone: i8) -> Vec<u8> {
     let clamped = tone.clamp(-10, 10);
     let raw = (clamped as i16 * 10).to_be_bytes();
     cmd_set_mv7(seq, &MV6_FEAT_TONE, &raw)
-}
-
-/// Set the MV7+ Mic Level, 0–100% (prefix=0x00, HDR_CONST=0x00).
-pub fn cmd_set_mv7_mic_mix(seq: u8, mix: u8) -> Vec<u8> {
-    let value = mix.min(100);
-    // prefix=0x00 for mic mix (vs 0x03 for playback mix)
-    let payload = [0x00, FEAT_MIX[0], FEAT_MIX[1], value];
-    build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
 }
 
 /// Set the Playback Level, 0–100%, on models with `has_playback_mix()`
@@ -5127,7 +5114,7 @@ mod tests {
             cmd_set_mv7_denoiser(0, true),
             cmd_set_mv7_popper_stopper(0, true),
             cmd_set_mv7_tone(0, 5),
-            cmd_set_mv7_mic_mix(0, 50),
+            cmd_set_mv6_mix(0, 50),
             cmd_set_mv7_playback_mix(0, 50),
             cmd_set_mv7_reverb_output(0, true),
             cmd_set_mv7_reverb_type(0, &ReverbType::Hall),
@@ -5204,15 +5191,6 @@ mod tests {
         assert_eq!(pkt[13], 0x03, "prefix must be 0x03 for playback mix");
         assert_eq!(&pkt[14..16], &FEAT_MIX, "feature address must be FEAT_MIX");
         assert_eq!(pkt[16], 70, "value must be encoded directly");
-    }
-
-    #[test]
-    fn mv7_mic_mix_uses_prefix_0x00() {
-        let pkt = cmd_set_mv7_mic_mix(0, 40);
-        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
-        assert_eq!(pkt[13], 0x00, "prefix must be 0x00 for mic mix");
-        assert_eq!(&pkt[14..16], &FEAT_MIX);
-        assert_eq!(pkt[16], 40);
     }
 
     #[test]
@@ -5322,7 +5300,7 @@ mod tests {
 
     #[test]
     fn mv7_set_mix_values_clamp_at_100() {
-        assert_eq!(cmd_set_mv7_mic_mix(0, 200)[16], 100);
+        assert_eq!(cmd_set_mv6_mix(0, 200)[16], 100);
         assert_eq!(cmd_set_mv7_playback_mix(0, 200)[16], 100);
     }
 

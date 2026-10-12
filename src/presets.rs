@@ -54,6 +54,12 @@ pub struct PresetSlot {
     /// or the Mic Level on models with `has_playback_mix()`.
     #[serde(default)]
     pub monitor_mix: u8,
+    /// Which of those `monitor_mix` is: `Some(true)` when saved on a model with
+    /// `has_playback_mix()`. Loading skips a Monitor Mix of the other kind, since
+    /// a balance of 0 (all mic) would mute the mic as a Mic Level. `None` in
+    /// presets saved before this field, which load as they always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_mix_is_mic_level: Option<bool>,
     /// Playback Level in the headphones, 1–100%, on models with
     /// `has_playback_mix()`. Loading treats 0 as "not saved" and keeps the
     /// device's current level.
@@ -188,6 +194,7 @@ impl PresetSlot {
             auto_gain: SerAutoGain::from(state.auto_gain),
             phantom_power: state.phantom_power,
             monitor_mix: state.monitor_mix,
+            monitor_mix_is_mic_level: None,
             limiter_enabled: state.limiter_enabled,
             compressor: SerCompressorPreset::from(state.compressor),
             eq_enabled: state.eq_enabled,
@@ -1003,6 +1010,17 @@ mod tests {
     fn toml_roundtrip(slot: &PresetSlot) -> PresetSlot {
         let toml_str = toml::to_string_pretty(slot).expect("serialise");
         toml::from_str(&toml_str).expect("deserialise")
+    }
+
+    #[test]
+    fn monitor_mix_kind_survives_toml_and_is_absent_in_older_files() {
+        let unmarked = PresetSlot::from_device_state("S", &DeviceState::default());
+        assert_eq!(toml_roundtrip(&unmarked).monitor_mix_is_mic_level, None);
+        let marked = PresetSlot {
+            monitor_mix_is_mic_level: Some(true),
+            ..unmarked
+        };
+        assert_eq!(toml_roundtrip(&marked).monitor_mix_is_mic_level, Some(true));
     }
 
     /// Write `slot` to a temp file and reload it, returning the loaded copy.

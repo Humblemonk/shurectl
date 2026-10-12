@@ -812,16 +812,16 @@ impl ShureDevice {
         self.send_set(&protocol::cmd_set_mv6_gain_lock(self.next_seq(), locked))
     }
 
-    /// Set the Mic Level, or the MV7's mic ↔ playback balance. MV7+ uses
-    /// cmd_set_mv7_mic_mix (HDR_CONST=0x00 with prefix=0x00).
+    /// Set the Mic Level, or the mic ↔ playback balance on the MVX2U Gen 1 and MV7.
     pub fn set_mv6_monitor_mix(&self, mix: u8) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),
-            DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mic_mix(self.next_seq(), mix),
-            DeviceModel::Mvx2u
-            | DeviceModel::Mvx2uGen2
+            // The Gen 1 balance is prefix 0x01 with the standard header.
+            DeviceModel::Mvx2u => protocol::cmd_set_mix(self.next_seq(), mix),
+            DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
-            | DeviceModel::Mv6Gen2 => protocol::cmd_set_mv6_mix(self.next_seq(), mix),
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => protocol::cmd_set_mv6_mix(self.next_seq(), mix),
         };
         self.send_set(&pkt)
     }
@@ -991,11 +991,20 @@ impl Readback {
     /// An empty readback, seeded with what a silent GET means on `model`.
     fn for_model(model: DeviceModel) -> Self {
         let mut readback = Self::default();
-        if model.has_playback_mix() {
-            // A device that has never had a FEAT_MIX SET doesn't answer its
-            // GETs (see `cmd_get_mv6_mix`), so it is still at the factory 100%
-            // (seen on the Gen 2). Unseeded, both levels would show 0% and one
-            // → press would write 1%.
+        // Only where a silent FEAT_MIX GET is known to mean the factory 100%:
+        // a Gen 2 that has never had a level SET (checked on hardware after a
+        // factory reset). Unseeded, both levels would show 0% and one → press
+        // would write 1%. The MV6 may also go silent after a power-on with a
+        // level set, so 100% there could be a loud guess; 0% stays the quiet one.
+        let silent_mix_is_factory_100 = match model {
+            DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7
+            | DeviceModel::Mv7Plus => false,
+        };
+        if silent_mix_is_factory_100 {
             readback.state.monitor_mix = 100;
             readback.state.playback_mix = 100;
         }
@@ -1116,21 +1125,16 @@ mod tests {
     }
 
     #[test]
-    fn readback_seeds_unanswered_monitor_levels_at_factory_100() {
-        for model in [
-            DeviceModel::Mvx2u,
-            DeviceModel::Mvx2uGen2,
-            DeviceModel::Mv6,
-            DeviceModel::Mv6Gen2,
-            DeviceModel::Mv7,
-            DeviceModel::Mv7Plus,
+    fn readback_seeds_unanswered_monitor_levels_only_where_confirmed() {
+        for (model, expected) in [
+            (DeviceModel::Mvx2u, (0, 0)),
+            (DeviceModel::Mvx2uGen2, (100, 100)),
+            (DeviceModel::Mv6, (0, 0)),
+            (DeviceModel::Mv6Gen2, (0, 0)),
+            (DeviceModel::Mv7, (0, 0)),
+            (DeviceModel::Mv7Plus, (0, 0)),
         ] {
             let state = Readback::for_model(model).state;
-            let expected = if model.has_playback_mix() {
-                (100, 100)
-            } else {
-                (0, 0)
-            };
             assert_eq!(
                 (state.monitor_mix, state.playback_mix),
                 expected,

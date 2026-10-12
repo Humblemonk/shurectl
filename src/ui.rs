@@ -3309,7 +3309,9 @@ mod tests {
     #[test]
     fn summary_rows_keep_the_shared_order() {
         for model in MODELS {
-            assert!(summary_rows(model).is_sorted(), "{model:?}");
+            // Strictly increasing: in the shared order, and no row listed twice.
+            let rows = summary_rows(model);
+            assert!(rows.windows(2).all(|pair| pair[0] < pair[1]), "{model:?}");
         }
     }
 

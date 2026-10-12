@@ -909,7 +909,10 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                 .as_ref()
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| format!("Preset {}", i + 1));
-            let slot = PresetSlot::from_device_state(name, &app.device_state);
+            let slot = PresetSlot {
+                monitor_mix_is_mic_level: Some(app.device_model.has_playback_mix()),
+                ..PresetSlot::from_device_state(name, &app.device_state)
+            };
             match presets::save_preset(*i, &slot) {
                 Ok(()) => {
                     app.set_ok(format!("Saved to \"{}\".", slot.name));
@@ -1153,7 +1156,16 @@ where
 
 /// Apply `slot` to `state`, fitted to `model`.
 fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, model: DeviceModel) {
+    let monitor_mix_before = state.monitor_mix;
     slot.apply_to_device_state(state);
+    // A balance and a Mic Level share the field but not the meaning: keep the
+    // device's own Monitor Mix rather than translate one into the other.
+    if slot
+        .monitor_mix_is_mic_level
+        .is_some_and(|mic_level| mic_level != model.has_playback_mix())
+    {
+        state.monitor_mix = monitor_mix_before;
+    }
     // Show the gain and EQ the device will actually get: presets are
     // shared across models, so one saved elsewhere may be out of
     // range or off this model's step grid.
@@ -1171,8 +1183,8 @@ fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, m
 
 /// Writes a preset's Playback Level, except 0. A preset's 0 means "not saved" (so
 /// the state still holds the device's level), and a 0 in the state can be a
-/// level that was never read (demo mode, a failed readback), which written
-/// would silence playback.
+/// level that was never read (an unanswered GET outside the MVX2U Gen 2, demo
+/// mode, a failed readback), which written would silence playback.
 fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
     if level > 0 {
         d.set_mv7_playback_mix(level)?;
@@ -1467,6 +1479,40 @@ mod tests {
         let mut app = gen2_on_eq_tab(InputMode::Manual);
         let action = handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
         assert!(matches!(action, Some(DeviceAction::FlattenEq)));
+    }
+
+    /// A Gen 1 balance of 0 (all mic) must not load as a Mic Level of 0, which
+    /// mutes the mic in the headphones, and the reverse. Older presets that
+    /// don't say which kind they hold load as before.
+    #[test]
+    fn preset_monitor_mix_loads_only_onto_the_same_kind() {
+        let preset = |mic_level: Option<bool>| PresetSlot {
+            monitor_mix_is_mic_level: mic_level,
+            ..PresetSlot::from_device_state("P", &protocol::DeviceState::default())
+        };
+        let load = |slot: &PresetSlot, model: DeviceModel| {
+            let mut state = protocol::DeviceState {
+                monitor_mix: 80,
+                ..protocol::DeviceState::default()
+            };
+            apply_preset_to_state(slot, &mut state, model);
+            state.monitor_mix
+        };
+        let balance = preset(Some(false));
+        let mic_level = preset(Some(true));
+        assert_eq!(load(&balance, DeviceModel::Mvx2uGen2), 80, "kept");
+        assert_eq!(load(&mic_level, DeviceModel::Mvx2u), 80, "kept");
+        assert_eq!(load(&balance, DeviceModel::Mv7), 0, "same kind applies");
+        assert_eq!(
+            load(&mic_level, DeviceModel::Mv7Plus),
+            0,
+            "same kind applies"
+        );
+        assert_eq!(
+            load(&preset(None), DeviceModel::Mvx2uGen2),
+            0,
+            "old files as before"
+        );
     }
 
     /// A preset saved on an MV6 with gain lock on must not freeze the gain of a
