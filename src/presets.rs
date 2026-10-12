@@ -49,9 +49,15 @@ pub struct PresetSlot {
     pub auto_gain: SerAutoGain,
     #[serde(default)]
     pub phantom_power: bool,
-    /// Monitor mix: 0 = 100% mic, 100 = 100% playback.
+    /// Monitor Mix, as `DeviceState::monitor_mix`: one mic ↔ playback balance,
+    /// or the Mic Level on models with `has_playback_mix()`.
     #[serde(default)]
     pub monitor_mix: u8,
+    /// Playback Level in the headphones, 1–100%, on models with
+    /// `has_playback_mix()`. Loading treats 0 as "not saved" and keeps the
+    /// device's current level.
+    #[serde(default)]
+    pub playback_mix: u8,
     #[serde(default)]
     pub limiter_enabled: bool,
     #[serde(default)]
@@ -86,10 +92,6 @@ pub struct PresetSlot {
     pub tone_advanced: bool,
 
     // ── MV7+-specific ────────────────────────────────────────────────────────
-    /// Independent playback mix channel: 0 = full mic, 100 = full playback.
-    /// Loading treats 0 as "not saved" and keeps the device's current level.
-    #[serde(default)]
-    pub playback_mix: u8,
     #[serde(default)]
     pub reverb_on_output: bool,
     #[serde(default)]

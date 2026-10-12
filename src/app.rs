@@ -1390,6 +1390,8 @@ pub enum DeviceAction {
     /// models with `has_playback_mix()`. Same encoding as the MVX2U Gen 1
     /// (`SetMonitorMix`) but HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
+    /// Playback Level, 0–100% (models with `has_playback_mix()`).
+    SetMv7PlaybackMix(u8),
     // ── MV6 Gen 2 actions ─────────────────────────────────────────────────────
     /// Auto Level Adaptation Rate: false = Slow, true = Fast.
     SetAdaptationRate(bool),
@@ -1400,8 +1402,6 @@ pub enum DeviceAction {
     /// Select a built-in preset; the mic applies its settings.
     SetMicPreset(MicPreset),
     // ── MV7+ exclusive actions ────────────────────────────────────────────────
-    /// Playback Level, 0–100% (models with `has_playback_mix()`).
-    SetMv7PlaybackMix(u8),
     SetMv7ReverbOutput(bool),
     SetMv7ReverbMonitor(bool),
     SetMv7ReverbPreset(ReverbType),

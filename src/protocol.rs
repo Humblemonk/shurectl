@@ -242,7 +242,6 @@ impl DeviceModel {
     }
 
     /// Whether the device name (Info tab) can be read and renamed.
-    /// Only confirmed on hardware for the Gen 2; see `FEAT_DEVICE_NAME`.
     pub fn has_device_rename(&self) -> bool {
         match self {
             DeviceModel::Mvx2u
@@ -461,8 +460,8 @@ const FEAT_EQ: [u8; 2] = [0x02, 0x00];
 // whole value length. Confirmed on MVX2U Gen 2 (PID 0x1033); see issue #63.
 /// User-set device name (set in the MOTIV app, persisted on the adapter).
 /// SET is the same lock class and prefix with the GET reply's length-prefixed
-/// value, then CONFIRM. Confirmed on MVX2U Gen 2 by writing candidate formats and
-/// reading the name back; the Gen 1, MV6 and MV7+ (with its 0x00 header) are untested.
+/// value, then CONFIRM. Found on the MVX2U Gen 2 by writing candidate formats and
+/// reading the name back; renaming has since been confirmed on other models' hardware.
 const FEAT_DEVICE_NAME: [u8; 2] = [0x00, 0x12];
 /// Longest device name shurectl writes. The firmware's own limit is unknown;
 /// this stays under a likely 32-byte buffer.
@@ -545,8 +544,9 @@ const MV6_GEN2_FEAT_TONE_MODE: [u8; 2] = [0x02, 0x05];
 // Confirmed by Wireshark capture of MOTIV app against MV7+ firmware 1.6.
 // All MV7+ SETs use HDR_CONSTANT=0x00 via build_packet_hdr0().
 // Playback mix uses the same address as FEAT_MIX but with prefix=0x03 (see
-// cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix). The MV6 Gen 2 shares it;
-// there MOTIV calls the two FEAT_MIX channels Mic Level and Playback Level.
+// cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix). Every model with
+// `has_playback_mix()` shares it; MOTIV calls the two FEAT_MIX channels Mic Level
+// and Playback Level.
 
 /// Reverb effect on headphone/speaker output. 0=off, 1=on.
 const MV7_FEAT_REVERB_OUTPUT: [u8; 2] = [0x03, 0x82];
@@ -623,6 +623,10 @@ pub struct DeviceState {
     /// Monitor mix: one balance, 0 = 100% mic, 100 = 100% playback, on the MVX2U
     /// Gen 1 and MV7. On models with `has_playback_mix()` it is the mic level.
     pub monitor_mix: u8,
+    /// Playback level in the headphones, 0–100%, on models with
+    /// `has_playback_mix()`, where `monitor_mix` is the mic level. Same FEAT_MIX
+    /// address as `monitor_mix`, with prefix=0x03 on the wire.
+    pub playback_mix: u8,
     /// Limiter. MVX2U Gen 1 and Gen 2 only.
     pub limiter_enabled: bool,
     /// Compressor preset. MVX2U Gen 1 and Gen 2 only.
@@ -660,10 +664,6 @@ pub struct DeviceState {
     pub tone_advanced: bool,
 
     // ── MV7+ exclusive fields ────────────────────────────────────────────────
-    /// Playback level in the headphones, 0–100%. MV7+, MV6 Gen 2, MVX2U Gen 2 and
-    /// (unconfirmed) MV6, where `monitor_mix` is the mic level. Same FEAT_MIX address as
-    /// `monitor_mix`, with prefix=0x03 on the wire.
-    pub playback_mix: u8,
     /// Reverb applied to speaker/headphone output.
     pub reverb_on_output: bool,
     /// Reverb applied to direct monitoring.

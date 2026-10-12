@@ -405,15 +405,7 @@ impl ShureDevice {
 
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<Readback> {
-        let mut readback = Readback::default();
-        if self.model.has_playback_mix() {
-            // A device that has never had a FEAT_MIX SET doesn't answer its
-            // GETs (see `cmd_get_mv6_mix`), so it is still at the factory 100%
-            // (seen on the Gen 2). Unseeded, both levels would show 0% and one
-            // → press would write 1%.
-            readback.state.monitor_mix = 100;
-            readback.state.playback_mix = 100;
-        }
+        let mut readback = Readback::for_model(self.model);
         match self.model {
             DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),
@@ -994,6 +986,20 @@ pub struct Readback {
 }
 
 impl Readback {
+    /// An empty readback, seeded with what a silent GET means on `model`.
+    fn for_model(model: DeviceModel) -> Self {
+        let mut readback = Self::default();
+        if model.has_playback_mix() {
+            // A device that has never had a FEAT_MIX SET doesn't answer its
+            // GETs (see `cmd_get_mv6_mix`), so it is still at the factory 100%
+            // (seen on the Gen 2). Unseeded, both levels would show 0% and one
+            // → press would write 1%.
+            readback.state.monitor_mix = 100;
+            readback.state.playback_mix = 100;
+        }
+        readback
+    }
+
     /// Apply one binary GET reply, noting it if no setting matches.
     fn apply(&mut self, reply: &Reply) {
         let applied = apply_reply(reply, &mut self.state);
@@ -1105,6 +1111,30 @@ mod tests {
             readback.unrecognised,
             vec!["feature 0x7f 0x7f (prefix 0x00)"]
         );
+    }
+
+    #[test]
+    fn readback_seeds_unanswered_monitor_levels_at_factory_100() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7,
+            DeviceModel::Mv7Plus,
+        ] {
+            let state = Readback::for_model(model).state;
+            let expected = if model.has_playback_mix() {
+                (100, 100)
+            } else {
+                (0, 0)
+            };
+            assert_eq!(
+                (state.monitor_mix, state.playback_mix),
+                expected,
+                "{model:?}"
+            );
+        }
     }
 
     #[test]
