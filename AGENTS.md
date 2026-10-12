@@ -209,7 +209,7 @@ is unchanged; a changed golden file lists the screens to look at.
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
   check heights 16-50 (bc3bb3f).
 - **Stale prose**: when a capability moves between models, update the doc comments, help
-  overlay, status strings, Info tab and README row too. Most "tidy" commits fix this.
+  overlay, status strings, Info tab and readme row too. Most "tidy" commits fix this.
 
 **Intentional, don't flag:**
 
