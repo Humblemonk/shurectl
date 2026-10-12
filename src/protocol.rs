@@ -3482,6 +3482,25 @@ mod tests {
         }
     }
 
+    /// Every packet goes through one of these two builders, so this covers the
+    /// length, CRC and padding of every command.
+    #[test]
+    fn both_builders_make_64_byte_packets_with_valid_crc() {
+        let builders: [(fn(u8, &[u8; 3], &[u8]) -> Vec<u8>, u8); 2] =
+            [(build_packet, 0x03), (build_packet_hdr0, 0x00)];
+        for (build, hdr_constant) in builders {
+            for payload in [&[][..], &[0x00, 0x01, 0x86, 0x64][..]] {
+                let pkt = build(7, &CMD_SET_FEAT, payload);
+                assert_eq!(pkt.len(), PACKET_SIZE);
+                assert_eq!(pkt[5], hdr_constant);
+                let total_len = pkt[1] as usize;
+                let stored_crc = u16::from_be_bytes([pkt[total_len], pkt[total_len + 1]]);
+                assert_eq!(stored_crc, crc16_ansi(&pkt[2..total_len]));
+                assert!(pkt[total_len + 2..].iter().all(|&b| b == 0x00));
+            }
+        }
+    }
+
     // ── Command encoding ──────────────────────────────────────────────────────
 
     #[test]

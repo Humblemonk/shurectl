@@ -181,8 +181,8 @@ Shared across all models unless the hardware makes it impossible:
 
 | Situation | Approach |
 | --- | --- |
-| New protocol command | Roundtrip test in `protocol.rs` first |
-| Packet encoding changes | Test CRC correctness and 64-byte length invariant |
+| New protocol command | One roundtrip test in `protocol.rs` first: the packet bytes (match a usbmon capture when there is one) and `apply_response()` decoding the reply. Length and CRC come from `build_packet()`, so don't re-test them per command |
+| Packet encoding changes (`build_packet()`, `build_packet_hdr0()`, `crc16_ansi()`) | Test CRC correctness and the 64-byte length invariant there |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
 | Focus/navigation changes | Manual test in `--demo` for all six models |
 | `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo` |
