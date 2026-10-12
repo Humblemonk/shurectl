@@ -241,9 +241,7 @@ impl DeviceModel {
         }
     }
 
-    /// Whether the model has a Gain Lock setting (`mv6_gain_locked`). On other
-    /// models the flag can still arrive in a preset saved elsewhere, and must
-    /// not freeze a gain control that has no lock to undo it.
+    /// Whether the device name (Info tab) can be read and renamed.
     /// Only confirmed on hardware for the Gen 2; see `FEAT_DEVICE_NAME`.
     pub fn has_device_rename(&self) -> bool {
         match self {
@@ -257,6 +255,9 @@ impl DeviceModel {
         }
     }
 
+    /// Whether the model has a Gain Lock setting (`mv6_gain_locked`). On other
+    /// models the flag can still arrive in a preset saved elsewhere, and must
+    /// not freeze a gain control that has no lock to undo it.
     pub fn has_gain_lock(&self) -> bool {
         match self {
             DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mvx2uGen2 => true,

@@ -87,9 +87,8 @@ to confirm. Most terminals let you hold `Shift` to select text while the mouse i
 ## Presets
 
 On the Presets tab, `s` saves the current settings into the focused slot, `Enter` on its
-actions row loads it onto the device, and `Enter` on its name renames it. A preset also
-keeps the device's name and restores it on load (except on the MV7, which has none). Each
-slot is a hand-editable file, `preset_1.toml` through `preset_4.toml`, in:
+actions row loads it onto the device, and `Enter` on its name renames it. Each slot is a
+hand-editable file, `preset_1.toml` through `preset_4.toml`, in:
 
 | Platform | Location |
 |----------|----------|

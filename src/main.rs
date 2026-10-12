@@ -303,16 +303,9 @@ fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
         .get_state()
         .context("Could not read device state")?
         .state;
-    let rename = apply_preset_to_state(&slot, &mut state, model);
-    apply_preset_to_device(&Some(dev), &state, model, rename).context("Could not load preset")?;
-    if rename {
-        println!(
-            "Loaded \"{}\" and renamed the device to \"{}\".",
-            slot.name, state.device_name
-        );
-    } else {
-        println!("Loaded \"{}\".", slot.name);
-    }
+    apply_preset_to_state(&slot, &mut state, model);
+    apply_preset_to_device(&Some(dev), &state, model).context("Could not load preset")?;
+    println!("Loaded \"{}\".", slot.name);
     Ok(())
 }
 
@@ -925,16 +918,9 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
         }
         DeviceAction::LoadPreset(i) => {
             if let Some(slot) = &app.presets[*i].clone() {
-                let rename = apply_preset_to_state(slot, &mut app.device_state, app.device_model);
-                app.set_ok(if rename {
-                    format!(
-                        "Loaded \"{}\" and renamed the device to \"{}\".",
-                        slot.name, app.device_state.device_name
-                    )
-                } else {
-                    format!("Loaded \"{}\".", slot.name)
-                });
-                apply_preset_to_device(device, &app.device_state, app.device_model, rename)
+                apply_preset_to_state(slot, &mut app.device_state, app.device_model);
+                app.set_ok(format!("Loaded \"{}\".", slot.name));
+                apply_preset_to_device(device, &app.device_state, app.device_model)
                     .and_then(|()| resync_mv7_state(app, device))
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
@@ -1163,27 +1149,8 @@ where
 }
 
 /// Apply `slot` to `state`, fitted to `model`.
-/// Returns whether the preset renames the device, so the caller writes the
-/// name: only where the model has one, the preset saved one ("" in older files
-/// and MV7 presets), and it differs, to spare the device a needless write.
-fn apply_preset_to_state(
-    slot: &PresetSlot,
-    state: &mut protocol::DeviceState,
-    model: DeviceModel,
-) -> bool {
+fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, model: DeviceModel) {
     slot.apply_to_device_state(state);
-    // Presets are hand-editable: keep only what a rename can send.
-    let device_name: String = slot
-        .device_name
-        .chars()
-        .filter(|&c| protocol::is_device_name_char(c))
-        .take(protocol::DEVICE_NAME_MAX_LEN)
-        .collect();
-    let rename =
-        model.has_device_rename() && !device_name.is_empty() && device_name != state.device_name;
-    if rename {
-        state.device_name = device_name;
-    }
     // Show the gain and EQ the device will actually get: presets are
     // shared across models, so one saved elsewhere may be out of
     // range or off this model's step grid.
@@ -1197,11 +1164,8 @@ fn apply_preset_to_state(
     if !model.has_gain_lock() {
         state.mv6_gain_locked = false;
     }
-    rename
 }
 
-/// Send every configurable field of `state` to the device.
-/// Called after loading a preset to bring the hardware into sync.
 /// Writes a preset's Playback Level, except 0. A preset's 0 means "not saved" (so
 /// the state still holds the device's level), and a 0 in the state can be a
 /// level that was never read back, which written would silence playback.
@@ -1212,11 +1176,12 @@ fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
     Ok(())
 }
 
+/// Send every configurable field of `state` to the device.
+/// Called after loading a preset to bring the hardware into sync.
 fn apply_preset_to_device(
     device: &Option<ShureDevice>,
     state: &protocol::DeviceState,
     model: DeviceModel,
-    rename: bool,
 ) -> Result<()> {
     send_if_connected(device, |d| {
         d.set_mode(
@@ -1322,11 +1287,6 @@ fn apply_preset_to_device(
                 d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
                 d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
             }
-        }
-        // Last: the name is identity, not sound, so a failure here can't
-        // leave the audio settings half-applied.
-        if rename {
-            d.set_device_name(&state.device_name)?;
         }
         Ok(())
     })
@@ -1662,56 +1622,5 @@ mod tests {
         assert_eq!(app.device_state.mode, InputMode::Manual);
         assert_eq!(app.active_tab, app::Tab::Presets);
         assert_eq!(app.focus, app::Focus::PresetActions(0));
-    }
-
-    #[test]
-    fn preset_renames_only_where_it_saved_a_new_name() {
-        let state_named = |name: &str| protocol::DeviceState {
-            device_name: name.to_string(),
-            ..protocol::DeviceState::default()
-        };
-        let slot = PresetSlot::from_device_state("Named", &state_named("Desk mic"));
-
-        let mut state = state_named("Studio");
-        assert!(apply_preset_to_state(
-            &slot,
-            &mut state,
-            DeviceModel::Mvx2uGen2
-        ));
-        assert_eq!(state.device_name, "Desk mic");
-        assert!(
-            !apply_preset_to_state(&slot, &mut state, DeviceModel::Mvx2uGen2),
-            "the same name again needs no write"
-        );
-
-        let mut mv7 = protocol::DeviceState::default();
-        assert!(!apply_preset_to_state(&slot, &mut mv7, DeviceModel::Mv7));
-        assert_eq!(mv7.device_name, "Unknown", "the MV7 has no name to set");
-
-        let unnamed = PresetSlot {
-            device_name: String::new(),
-            ..slot.clone()
-        };
-        let mut kept = state_named("Studio");
-        assert!(!apply_preset_to_state(
-            &unnamed,
-            &mut kept,
-            DeviceModel::Mvx2uGen2
-        ));
-        assert_eq!(kept.device_name, "Studio", "older presets keep the name");
-
-        // A hand-edited name is cut to what a rename can send.
-        let edited = PresetSlot {
-            device_name: format!("D\u{e9}sk\t{}", "x".repeat(40)),
-            ..slot
-        };
-        let mut cut = protocol::DeviceState::default();
-        assert!(apply_preset_to_state(
-            &edited,
-            &mut cut,
-            DeviceModel::Mvx2uGen2
-        ));
-        assert_eq!(cut.device_name.len(), protocol::DEVICE_NAME_MAX_LEN);
-        assert!(cut.device_name.starts_with("Dskx"), "{}", cut.device_name);
     }
 }

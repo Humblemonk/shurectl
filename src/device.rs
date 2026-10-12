@@ -406,6 +406,14 @@ impl ShureDevice {
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<Readback> {
         let mut readback = Readback::default();
+        if self.model.has_playback_mix() {
+            // A device that has never had a FEAT_MIX SET doesn't answer its
+            // GETs (see `cmd_get_mv6_mix`), so it is still at the factory 100%
+            // (seen on the Gen 2). Unseeded, both levels would show 0% and one
+            // → press would write 1%.
+            readback.state.monitor_mix = 100;
+            readback.state.playback_mix = 100;
+        }
         match self.model {
             DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),

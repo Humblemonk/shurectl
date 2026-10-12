@@ -108,7 +108,7 @@ pub enum Focus {
     MuteBtnDisable,
     // Main tab — MV6 gain lock (Manual mode only)
     GainLock,
-    // Main tab — Playback Level, the second row of Monitor Mix (MV7+, MV6 Gen 2, MV6)
+    // Main tab — Playback Level, the second row of Monitor Mix (`has_playback_mix()`)
     PlaybackMix,
     // Main tab — MV6 Gen 2 built-in preset (Speech / Singing / Instrument)
     MicPreset,
@@ -1386,8 +1386,8 @@ pub enum DeviceAction {
     /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
     SetMv6Tone(i8),
     SetMv6GainLock(bool),
-    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MVX2U Gen 2 and MV7,
-    /// Mic Level on the MV6, MV6 Gen 2 and MV7+. Same encoding as the MVX2U Gen 1
+    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MV7, Mic Level on
+    /// models with `has_playback_mix()`. Same encoding as the MVX2U Gen 1
     /// (`SetMonitorMix`) but HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
     // ── MV6 Gen 2 actions ─────────────────────────────────────────────────────
@@ -1400,7 +1400,7 @@ pub enum DeviceAction {
     /// Select a built-in preset; the mic applies its settings.
     SetMicPreset(MicPreset),
     // ── MV7+ exclusive actions ────────────────────────────────────────────────
-    /// Playback Level, 0–100% (MV7+, MV6 Gen 2, MV6).
+    /// Playback Level, 0–100% (models with `has_playback_mix()`).
     SetMv7PlaybackMix(u8),
     SetMv7ReverbOutput(bool),
     SetMv7ReverbMonitor(bool),

@@ -873,9 +873,9 @@ fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
 // Orange, not Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
 const C_PLAYBACK_LEVEL: Color = Color::Rgb(200, 100, 50);
 
-/// Renders the Monitor Mix block. Models with two monitor levels (MV7+, MV6
-/// Gen 2, MV6) get MOTIV's Mic Level and Playback Level rows and need 4 rows of
-/// `area`; the rest get one mic ↔ playback balance gauge in 3.
+/// Renders the Monitor Mix block. Models with two monitor levels
+/// (`has_playback_mix()`) get MOTIV's Mic Level and Playback Level rows and
+/// need 4 rows of `area`; the rest get one mic ↔ playback balance gauge in 3.
 fn draw_monitor_mix_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     if app.device_model.has_playback_mix() {
         draw_monitor_levels(f, app, area);
@@ -1058,10 +1058,10 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 /// Rows of the Main tab's Summary, in display order. Models list the rows they
-/// have in `summary_rows()` but never reorder them, so a setting sits in the
-/// same place on every model: Main-tab settings in left-column order, then the
-/// sound settings in EQ and Dynamics tab order, then Reverb and LED.
-#[derive(Clone, Copy, PartialEq)]
+/// have in `summary_rows()` in this order (a test checks it), so a setting sits
+/// in the same place on every model: Main-tab settings in left-column order,
+/// then the sound settings in EQ and Dynamics tab order, then Reverb and LED.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SummaryRow {
     Mode,
     Muted,
@@ -1091,34 +1091,6 @@ enum SummaryRow {
 }
 
 impl SummaryRow {
-    const ALL: [SummaryRow; 25] = [
-        SummaryRow::Mode,
-        SummaryRow::Muted,
-        SummaryRow::Gain,
-        SummaryRow::GainLock,
-        SummaryRow::Position,
-        SummaryRow::AutoGain,
-        SummaryRow::TargetLevel,
-        SummaryRow::Adaptation,
-        SummaryRow::Phantom,
-        SummaryRow::ConfigLock,
-        SummaryRow::MicPreset,
-        SummaryRow::Tone,
-        SummaryRow::Eq,
-        SummaryRow::Limiter,
-        SummaryRow::Compressor,
-        SummaryRow::Denoiser,
-        SummaryRow::PopperStopper,
-        SummaryRow::MuteButton,
-        SummaryRow::Hpf,
-        SummaryRow::ReverbOutput,
-        SummaryRow::ReverbMonitor,
-        SummaryRow::ReverbType,
-        SummaryRow::ReverbIntensity,
-        SummaryRow::LiveMeter,
-        SummaryRow::NightMode,
-    ];
-
     /// Label, padded so the colons line up.
     fn label(self) -> &'static str {
         match self {
@@ -1182,7 +1154,7 @@ impl SummaryRow {
     }
 }
 
-/// The Summary rows a model has; their order comes from `SummaryRow::ALL`.
+/// The Summary rows a model has, in `SummaryRow` declaration order.
 fn summary_rows(model: DeviceModel) -> &'static [SummaryRow] {
     use SummaryRow as R;
     match model {
@@ -1254,12 +1226,12 @@ fn summary_rows(model: DeviceModel) -> &'static [SummaryRow] {
             R::Mode,
             R::Muted,
             R::Gain,
-            R::MuteButton,
             R::Tone,
             R::Limiter,
             R::Compressor,
             R::Denoiser,
             R::PopperStopper,
+            R::MuteButton,
             R::Hpf,
             R::ReverbOutput,
             R::ReverbMonitor,
@@ -1411,10 +1383,9 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
 }
 
 fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
-    let rows = summary_rows(app.device_model);
     let mut lines = vec![Line::from("")];
     let mut last_group = None;
-    for row in SummaryRow::ALL.into_iter().filter(|row| rows.contains(row)) {
+    for &row in summary_rows(app.device_model) {
         let Some(value) = summary_value(app, row) else {
             continue;
         };
@@ -3267,7 +3238,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         help_row("← / h", "Decrease value"),
         help_row("→ / l", "Increase value"),
         help_row("Enter / Space", "Toggle boolean / cycle option"),
-        help_row("f", "Flatten EQ (EQ tab)"),
+        help_row("f", "Flatten 5-band EQ (EQ tab)"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "  General",
@@ -3334,6 +3305,13 @@ mod tests {
         DeviceModel::Mv7,
         DeviceModel::Mv7Plus,
     ];
+
+    #[test]
+    fn summary_rows_keep_the_shared_order() {
+        for model in MODELS {
+            assert!(summary_rows(model).is_sorted(), "{model:?}");
+        }
+    }
 
     // ── Rendering smoke test ──────────────────────────────────────────────────
 
