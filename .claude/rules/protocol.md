@@ -31,7 +31,10 @@ Every packet is exactly 64 bytes (65 with hidapi's report-ID byte 0), sent via `
 - **State readback:** there is no monolithic GET_STATE. `device.rs::get_state()` issues
   individual `cmd_get_*` packets; `apply_response()` dispatches on the 2-byte feature address
   and writes into `DeviceState`. The address → field mapping is documented inline in
-  `protocol.rs`.
+  `protocol.rs`. `apply_reply()` tells Playback Mix (FEAT_MIX, prefix 0x03) from Monitor Mix
+  by the reply's prefix byte (`buf[13]`). That echo is confirmed only on the MV6 Gen 2 and
+  inferred on the MV7+ from its LED replies; it is unchecked on the MV6 and MVX2U models, so
+  don't route anything else by prefix without a capture
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
 
 ## Original MV7: text shell, not binary packets

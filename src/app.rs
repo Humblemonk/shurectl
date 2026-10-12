@@ -108,7 +108,7 @@ pub enum Focus {
     MuteBtnDisable,
     // Main tab — MV6 gain lock (Manual mode only)
     GainLock,
-    // Main tab — MV7+ playback mix (independent from monitor mix)
+    // Main tab — Playback Level, the second row of Monitor Mix (MV7+, MV6 Gen 2, MV6)
     PlaybackMix,
     // Main tab — MV6 Gen 2 built-in preset (Speech / Singing / Instrument)
     MicPreset,
@@ -436,14 +436,14 @@ impl App {
     //   Note: if mode switches while Focus is on Limiter/Compressor (Manual-only),
     //   the next focus_next/prev call self-corrects to Denoiser via the catchall arm.
     //
-    // MV6 Main cycles (Playback Mix unconfirmed on hardware, see has_playback_mix):
+    // MV6 Main cycles (Playback Level unconfirmed on hardware, see has_playback_mix):
     //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → (wrap)
     //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → (wrap)
     //
     // MV6 EQ:      Tone (slider only, no bands)
     // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
     //
-    // MV6 Gen 2: as MV6, plus Playback Mix after Monitor Mix (as on the MV7+), Mic
+    // MV6 Gen 2: as MV6, plus Playback Level after Mic Level (as on the MV7+), Mic
     // Preset last (a device extra), and in Auto its Auto Level controls (Gen 1 order):
     //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → MicPreset → (wrap)
     //   Auto:   Mode → Mute → AutoGain (Target Level) → AdaptationRate → MonitorMix
@@ -461,7 +461,7 @@ impl App {
             &self.device_model,
             &self.device_state.mode,
         ) {
-            // ── MV6 Gen 2 Playback Mix (after Monitor Mix, as on the MV7+) ────
+            // ── MV6 Gen 2 Playback Level (after Mic Level, as on the MV7+) ────
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6Gen2, _) => Focus::PlaybackMix,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6Gen2, _) => Focus::MicPreset,
             (Tab::Main, Focus::MicPreset, DeviceModel::Mv6Gen2, _) => Focus::Mode,
@@ -711,7 +711,7 @@ impl App {
             &self.device_model,
             &self.device_state.mode,
         ) {
-            // ── MV6 Gen 2 Playback Mix reverse ────────────────────────────────
+            // ── MV6 Gen 2 Playback Level reverse ──────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mv6Gen2, _) => Focus::MicPreset,
             (Tab::Main, Focus::MicPreset, DeviceModel::Mv6Gen2, _) => Focus::PlaybackMix,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6Gen2, _) => Focus::MonitorMix,
@@ -1396,8 +1396,9 @@ pub enum DeviceAction {
     /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
     SetMv6Tone(i8),
     SetMv6GainLock(bool),
-    /// Monitor mix: 0 = full mic, 100 = full playback. MV6 and MVX2U Gen 2.
-    /// Uses the same 0–100 encoding as MVX2U Gen 1 but requires HDR_CONSTANT=0x00 on the wire.
+    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MVX2U Gen 2 and MV7,
+    /// Mic Level on the MV6, MV6 Gen 2 and MV7+. Same encoding as the MVX2U Gen 1
+    /// (`SetMonitorMix`) but HDR_CONSTANT=0x00 on the wire.
     SetMv6MonitorMix(u8),
     // ── MV6 Gen 2 actions ─────────────────────────────────────────────────────
     /// Auto Level Adaptation Rate: false = Slow, true = Fast.
@@ -1409,7 +1410,7 @@ pub enum DeviceAction {
     /// Select a built-in preset; the mic applies its settings.
     SetMicPreset(MicPreset),
     // ── MV7+ exclusive actions ────────────────────────────────────────────────
-    /// Playback mix: 0 = full mic, 100 = full playback. MV7+ independent channel.
+    /// Playback Level, 0–100% (MV7+, MV6 Gen 2, MV6).
     SetMv7PlaybackMix(u8),
     SetMv7ReverbOutput(bool),
     SetMv7ReverbMonitor(bool),

@@ -136,8 +136,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Mute | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Gain | Manual, 0–60 dB | Manual, 0–60 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB |
 | Gain Lock | — | Manual | Manual | Manual | — | — |
-| Monitor Mix (0–100%) | ✓ | ✓ | Mic level | Mic level | ✓ | Mic level |
-| Playback Mix (playback level, 0–100%) | — | — | ✓ | ✓ | — | ✓ |
+| Monitor Mix (0–100%) | ✓ | ✓ | Mic + Playback Level | Mic + Playback Level | ✓ | Mic + Playback Level |
 | Phantom Power (48V) | ✓ | ✓ | — | — | — | — |
 | Config Lock | ✓ | — | — | — | ✓ | — |
 | Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
@@ -169,7 +168,9 @@ firmware version), `--mute`, `--preset`, and `--demo`.
 - On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
   5-band EQ (Advanced), as in MOTIV.
 - Monitor Mix balances mic against playback in your headphones. On the MV6, MV6 Gen 2 and
-  MV7+ it is the mic level alone, and Playback Mix sets the playback level.
+  MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
+- The level meter reads your system's default input, so set the Shure as the default input
+  (at 100% input volume) for it to match the device.
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.

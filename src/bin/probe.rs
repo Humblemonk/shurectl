@@ -286,16 +286,13 @@ fn build_get_packet_raw(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
 // ── Response parser ───────────────────────────────────────────────────────────
 #[derive(Debug)]
 struct ParsedResponse {
-    feat_addr: [u8; 2],
-    value_bytes: Vec<u8>,
+    reply: protocol::Reply,
     raw: Vec<u8>,
 }
 
 fn parse_response(buf: &[u8]) -> Option<ParsedResponse> {
-    let (feat_addr, value_bytes) = protocol::parse_response(buf)?;
     Some(ParsedResponse {
-        feat_addr,
-        value_bytes,
+        reply: protocol::parse_response(buf)?,
         raw: buf.to_vec(),
     })
 }
@@ -397,9 +394,14 @@ impl Probe {
     /// report sent because someone touched the mic) is logged as STRAY rather
     /// than taken as this address's answer. Taking it would shift every later
     /// result in the sweep onto the wrong address.
+    ///
+    /// A reply whose prefix differs from the request's is still taken, since
+    /// the echo is only confirmed on some models, but logged as a NOTE: it may
+    /// be a late answer for the same address at another prefix.
     fn get(&mut self, pkt: &[u8], expected: [u8; 2]) -> Result<Option<ParsedResponse>> {
         self.device.write(pkt).context("HID write failed")?;
         std::thread::sleep(self.delay);
+        let request_prefix = pkt[protocol::PREFIX_OFFSET];
         let deadline = Instant::now() + READ_TIMEOUT;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -419,15 +421,23 @@ impl Probe {
             let Some(resp) = parse_response(&buf[..n]) else {
                 continue;
             };
-            if resp.feat_addr == expected {
+            let reply = &resp.reply;
+            if reply.feat == expected {
+                if reply.prefix != request_prefix {
+                    self.log(&format!(
+                        "  NOTE  [{:02X} {:02X}] reply prefix=0x{:02X}, request prefix=0x{request_prefix:02X}",
+                        expected[0], expected[1], reply.prefix,
+                    ));
+                }
                 return Ok(Some(resp));
             }
             self.strays += 1;
             self.log(&format!(
-                "  STRAY [{:02X} {:02X}]  value: [{}]  (arrived while waiting for [{:02X} {:02X}])",
-                resp.feat_addr[0],
-                resp.feat_addr[1],
-                fmt_value_hex(&resp.value_bytes),
+                "  STRAY [{:02X} {:02X}] prefix=0x{:02X}  value: [{}]  (arrived while waiting for [{:02X} {:02X}])",
+                reply.feat[0],
+                reply.feat[1],
+                reply.prefix,
+                fmt_value_hex(&reply.value),
                 expected[0],
                 expected[1],
             ));
@@ -511,10 +521,10 @@ impl Probe {
                 let name_tag = known_mv7_lock_name(page, sub_addr)
                     .map(|n| format!(" [{n}]"))
                     .unwrap_or_else(|| " *** NEW ***".to_string());
-                let val_hex = fmt_value_hex(&resp.value_bytes);
+                let val_hex = fmt_value_hex(&resp.reply.value);
                 self.log(&format!(
                     "  RESP  [{page:02X} 00 {sub_addr:02X}]{name_tag}  value: [{val_hex}]  ({} bytes)",
-                    resp.value_bytes.len(),
+                    resp.reply.value.len(),
                 ));
                 if !is_known {
                     self.log("  Raw response packet:");
@@ -522,7 +532,7 @@ impl Probe {
                 }
                 self.hits.push(ProbeHit {
                     addr: [page, sub_addr],
-                    value_bytes: resp.value_bytes,
+                    value_bytes: resp.reply.value,
                     prefix: 0x00,
                     cmd_class: "mv7-lock",
                     is_known,
@@ -569,10 +579,10 @@ impl Probe {
                         let name_tag = known_name(addr)
                             .map(|n| format!(" [{n}]"))
                             .unwrap_or_else(|| " *** NEW ***".to_string());
-                        let val_hex = fmt_value_hex(&resp.value_bytes);
+                        let val_hex = fmt_value_hex(&resp.reply.value);
                         self.log(&format!(
                             "  RESP  [{:02X} {:02X}]{}  prefix=0x{effective_prefix:02X}  value: [{}]  ({} bytes)",
-                            addr[0], addr[1], name_tag, val_hex, resp.value_bytes.len(),
+                            addr[0], addr[1], name_tag, val_hex, resp.reply.value.len(),
                         ));
                         if !is_known {
                             self.log("  Raw response packet:");
@@ -580,7 +590,7 @@ impl Probe {
                         }
                         self.hits.push(ProbeHit {
                             addr,
-                            value_bytes: resp.value_bytes,
+                            value_bytes: resp.reply.value,
                             prefix: effective_prefix,
                             cmd_class: class_label,
                             is_known,
@@ -733,7 +743,7 @@ fn main() -> Result<()> {
     let firmware_get = protocol::cmd_get_firmware_version(seq);
     if let Some(resp) = probe.get(&firmware_get, protocol::FEAT_FIRMWARE)? {
         // A reply that doesn't decode leaves the version as "Unknown".
-        let _ = protocol::apply_response(resp.feat_addr, &resp.value_bytes, &mut identity);
+        let _ = protocol::apply_response(resp.reply.feat, &resp.reply.value, &mut identity);
     }
 
     let start_time = chrono_now();

@@ -261,6 +261,17 @@ impl DeviceModel {
         }
     }
 
+    pub fn has_hpf(&self) -> bool {
+        match self {
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => true,
+            DeviceModel::Mv7 => false,
+        }
+    }
+
     /// Whether the model has two monitor levels: Monitor Mix is then the mic
     /// level in the headphones and Playback Mix the playback level. Elsewhere
     /// Monitor Mix is one mic ↔ playback balance.
@@ -1492,9 +1503,25 @@ fn build_packet_with_hdr(seq: u8, hdr_constant: u8, cmd: &[u8; 3], payload: &[u8
     pkt
 }
 
-/// Validate a received HID report and extract the feature address and value bytes.
+/// Index of the prefix byte in both requests and replies.
+pub const PREFIX_OFFSET: usize = 13;
+
+/// FEAT_MIX prefix for Playback Mix. Monitor Mix uses 0x00 (0x01 on the Gen 1).
+const PLAYBACK_MIX_PREFIX: u8 = 0x03;
+
+/// One device reply. The device echoes the request's prefix byte (checked on an
+/// MV6 Gen 2 and in the MV7+ LED captures), which is the only thing telling
+/// Playback Mix apart from Monitor Mix.
+#[derive(Debug, PartialEq)]
+pub struct Reply {
+    pub prefix: u8,
+    pub feat: [u8; 2],
+    pub value: Vec<u8>,
+}
+
+/// Validate a received HID report and extract its prefix, feature address and value bytes.
 ///
-/// Returns `(feat_addr, value_bytes)` on success, `None` if the buffer
+/// Returns a [`Reply`] on success, `None` if the buffer
 /// is malformed, the header magic is wrong, the CRC does not match, or the
 /// response command type carries no feature data (e.g. CONFIRM).
 ///
@@ -1508,7 +1535,7 @@ fn build_packet_with_hdr(seq: u8, hdr_constant: u8, cmd: &[u8; 3], payload: &[u8
 ///   buf[16..total_len] = value bytes
 ///   buf[total_len..total_len+2] = CRC-16/ANSI (covers buf[2..total_len])
 #[must_use]
-pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
+pub fn parse_response(buf: &[u8]) -> Option<Reply> {
     // Minimum: report_id(1) + total_len(1) + header(2) + seq(1) + hdr_const(1) +
     //          hdr_end(1) + data_len(1) + data_start(1) + data_len(1) +
     //          cmd(3) + prefix(1) + feat(2) + crc(2) = 18 bytes minimum
@@ -1543,10 +1570,11 @@ pub fn parse_response(buf: &[u8]) -> Option<([u8; 2], Vec<u8>)> {
         return None;
     }
 
-    let feat_addr: [u8; 2] = buf[14..16].try_into().ok()?;
-    let value_bytes = buf[16..contents_end].to_vec();
-
-    Some((feat_addr, value_bytes))
+    Some(Reply {
+        prefix: buf[PREFIX_OFFSET],
+        feat: buf[14..16].try_into().ok()?,
+        value: buf[16..contents_end].to_vec(),
+    })
 }
 
 // ── Command constructors ──────────────────────────────────────────────────────
@@ -1674,21 +1702,11 @@ pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
 
 // ── MV7+ GET constructors ─────────────────────────────────────────────────────
 
-/// GET for MV7+ playback mix. Uses prefix=0x03 to distinguish from mic monitor mix.
-/// Both share FEAT_MIX [0x01, 0x86] but different prefix bytes select the channel.
+/// GET for MV7+ playback mix. Shares FEAT_MIX [0x01, 0x86] with Monitor Mix;
+/// the prefix selects the channel, and the reply echoes it (see `apply_reply()`).
 pub fn cmd_get_mv7_playback_mix(seq: u8) -> Vec<u8> {
-    let payload = [0x03, FEAT_MIX[0], FEAT_MIX[1]];
+    let payload = [PLAYBACK_MIX_PREFIX, FEAT_MIX[0], FEAT_MIX[1]];
     build_packet(seq, &CMD_GET_FEAT, &payload)
-}
-
-/// Playback Mix from the reply to `cmd_get_mv7_playback_mix()`, or `None` if the
-/// reply is for another address (a stale reply left over from an earlier GET).
-/// The prefix isn't checked: nothing confirms the device echoes 0x03.
-pub fn playback_mix_from_reply(feat: [u8; 2], value: &[u8]) -> Option<u8> {
-    if feat != FEAT_MIX {
-        return None;
-    }
-    value.first().map(|&mix| mix.min(100))
 }
 
 pub fn cmd_get_mv7_reverb_output(seq: u8) -> Vec<u8> {
@@ -2149,7 +2167,7 @@ pub fn cmd_set_mv7_mic_mix(seq: u8, mix: u8) -> Vec<u8> {
 /// 0 = full mic, 100 = full playback.
 pub fn cmd_set_mv7_playback_mix(seq: u8, mix: u8) -> Vec<u8> {
     let value = mix.min(100);
-    let payload = [0x03, FEAT_MIX[0], FEAT_MIX[1], value];
+    let payload = [PLAYBACK_MIX_PREFIX, FEAT_MIX[0], FEAT_MIX[1], value];
     build_packet_hdr0(seq, &CMD_SET_FEAT, &payload)
 }
 
@@ -2200,6 +2218,21 @@ fn decode_lp_string(value: &[u8]) -> Option<String> {
             .trim_end_matches('\0')
             .to_string(),
     )
+}
+
+/// Apply a parsed [`Reply`] to `state`. Playback Mix shares FEAT_MIX with
+/// Monitor Mix and is told apart by its prefix; everything else goes by address.
+/// The MV7+ echo of prefix 0x03 is inferred from its LED replies, not checked.
+#[must_use]
+pub fn apply_reply(reply: &Reply, state: &mut DeviceState) -> bool {
+    if reply.feat == FEAT_MIX && reply.prefix == PLAYBACK_MIX_PREFIX {
+        let Some(&mix) = reply.value.first() else {
+            return false;
+        };
+        state.playback_mix = mix.min(100);
+        return true;
+    }
+    apply_response(reply.feat, &reply.value, state)
 }
 
 /// Apply a parsed feature response `(feat_addr, value_bytes)` to `state`.
@@ -3802,8 +3835,17 @@ mod tests {
 
     /// Build a synthetic response from the device for testing parse_response.
     fn make_response(seq: u8, resp_cmd: &[u8; 3], feat_addr: &[u8; 2], value: &[u8]) -> Vec<u8> {
-        let is_mix: u8 = 0x00;
-        let mut payload = vec![is_mix, feat_addr[0], feat_addr[1]];
+        make_response_with_prefix(seq, resp_cmd, 0x00, feat_addr, value)
+    }
+
+    fn make_response_with_prefix(
+        seq: u8,
+        resp_cmd: &[u8; 3],
+        prefix: u8,
+        feat_addr: &[u8; 2],
+        value: &[u8],
+    ) -> Vec<u8> {
+        let mut payload = vec![prefix, feat_addr[0], feat_addr[1]];
         payload.extend_from_slice(value);
 
         build_packet(seq, resp_cmd, &payload)
@@ -3814,9 +3856,10 @@ mod tests {
         let buf = make_response(0, &RES_GET_FEAT, &FEAT_PHANTOM, &[PHANTOM_ON]);
         let result = parse_response(&buf);
         assert!(result.is_some(), "parse_response must succeed");
-        let (feat, value) = result.unwrap();
-        assert_eq!(feat, FEAT_PHANTOM);
-        assert_eq!(value, vec![PHANTOM_ON]);
+        let reply = result.unwrap();
+        assert_eq!(reply.prefix, 0x00);
+        assert_eq!(reply.feat, FEAT_PHANTOM);
+        assert_eq!(reply.value, vec![PHANTOM_ON]);
     }
 
     #[test]
@@ -3856,9 +3899,9 @@ mod tests {
         let buf = make_response(0, &RES_SET_FEAT, &FEAT_MUTE, &[0x01]);
         let result = parse_response(&buf);
         assert!(result.is_some(), "parse_response must accept RES_SET_FEAT");
-        let (feat, value) = result.unwrap();
-        assert_eq!(feat, FEAT_MUTE);
-        assert_eq!(value, vec![0x01]);
+        let reply = result.unwrap();
+        assert_eq!(reply.feat, FEAT_MUTE);
+        assert_eq!(reply.value, vec![0x01]);
     }
 
     #[test]
@@ -3893,12 +3936,12 @@ mod tests {
         let buf = make_response(0, &RES_GET_FEAT, &FEAT_MIX, &[75]);
         let result = parse_response(&buf);
         assert!(result.is_some(), "parse_response must accept MIX response");
-        let (feat, value) = result.unwrap();
-        assert_eq!(feat, FEAT_MIX, "feature address must be FEAT_MIX");
-        assert_eq!(value, vec![75]);
+        let reply = result.unwrap();
+        assert_eq!(reply.feat, FEAT_MIX, "feature address must be FEAT_MIX");
+        assert_eq!(reply.value, vec![75]);
 
         let mut state = DeviceState::default();
-        assert!(apply_response(feat, &value, &mut state));
+        assert!(apply_reply(&reply, &mut state));
         assert_eq!(state.monitor_mix, 75);
     }
 
@@ -4396,17 +4439,17 @@ mod tests {
         let buf = make_response(0, &RES_GET_LOCK, &FEAT_LOCK, &[0x01]);
         let result = parse_response(&buf);
         assert!(result.is_some(), "parse_response must accept RES_GET_LOCK");
-        let (feat, value) = result.unwrap();
-        assert_eq!(feat, FEAT_LOCK);
-        assert_eq!(value, vec![0x01]);
+        let reply = result.unwrap();
+        assert_eq!(reply.feat, FEAT_LOCK);
+        assert_eq!(reply.value, vec![0x01]);
 
         // SET LOCK response
         let buf2 = make_response(0, &RES_SET_LOCK, &FEAT_LOCK, &[0x00]);
         let result2 = parse_response(&buf2);
         assert!(result2.is_some(), "parse_response must accept RES_SET_LOCK");
-        let (feat2, value2) = result2.unwrap();
-        assert_eq!(feat2, FEAT_LOCK);
-        assert_eq!(value2, vec![0x00]);
+        let reply2 = result2.unwrap();
+        assert_eq!(reply2.feat, FEAT_LOCK);
+        assert_eq!(reply2.value, vec![0x00]);
     }
 
     // ── Auto Level sub-feature tests ──────────────────────────────────────────
@@ -4952,8 +4995,8 @@ mod tests {
         // and after changing each setting in MOTIV.
         let mut state = DeviceState::default();
         let set_reply = make_response(0, &RES_GET_FEAT, &MV6_GEN2_FEAT_ADAPTATION_RATE, &[0x01]);
-        let (addr, value) = parse_response(&set_reply).expect("valid reply");
-        assert!(apply_response(addr, &value, &mut state));
+        let reply = parse_response(&set_reply).expect("valid reply");
+        assert!(apply_reply(&reply, &mut state));
         assert!(state.adaptation_rate_fast);
 
         assert!(apply_response(
@@ -5085,12 +5128,30 @@ mod tests {
     }
 
     #[test]
-    fn playback_mix_from_reply_rejects_other_addresses() {
-        assert_eq!(playback_mix_from_reply(FEAT_MIX, &[70]), Some(70));
-        assert_eq!(playback_mix_from_reply(FEAT_MIX, &[150]), Some(100));
-        assert_eq!(playback_mix_from_reply(FEAT_MIX, &[]), None);
-        // A stale reply from another getter must not land in playback_mix.
-        assert_eq!(playback_mix_from_reply(FEAT_GAIN, &[70]), None);
+    fn apply_reply_routes_mix_by_prefix() {
+        // Mic level 40 at prefix 0x00 and playback level 80 at 0x03, as read
+        // from an MV6 Gen 2 (firmware 1.1.0.21).
+        let mix_reply = |prefix: u8, value: u8| {
+            let buf = make_response_with_prefix(0, &RES_GET_FEAT, prefix, &FEAT_MIX, &[value]);
+            parse_response(&buf).expect("valid reply")
+        };
+        let mut state = DeviceState::default();
+        assert!(apply_reply(&mix_reply(0x03, 0x50), &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (0, 80));
+        assert!(apply_reply(&mix_reply(0x00, 0x28), &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (40, 80));
+        // The MVX2U Gen 1 balance (prefix 0x01) is Monitor Mix too.
+        assert!(apply_reply(&mix_reply(0x01, 0x46), &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (70, 80));
+        assert!(apply_reply(&mix_reply(0x03, 150), &mut state));
+        assert_eq!(state.playback_mix, 100);
+
+        let empty = Reply {
+            prefix: PLAYBACK_MIX_PREFIX,
+            feat: FEAT_MIX,
+            value: vec![],
+        };
+        assert!(!apply_reply(&empty, &mut state));
     }
 
     #[test]

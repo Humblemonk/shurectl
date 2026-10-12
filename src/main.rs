@@ -691,7 +691,7 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
             send_if_connected(device, |d| d.set_lock(*locked))
         }
         DeviceAction::SetMonitorMix(m) => {
-            app.set_ok(format!("Monitor mix → {}%", m));
+            app.set_ok(format!("Monitor Mix → {m}%"));
             send_if_connected(device, |d| d.set_monitor_mix(*m))
         }
         DeviceAction::SetLimiter(en) => {
@@ -798,12 +798,16 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
             send_if_connected(device, |d| d.set_mv6_gain_lock(*locked))
         }
         DeviceAction::SetMv6MonitorMix(m) => {
-            app.set_ok(format!("Monitor mix → {}%", m));
+            app.set_ok(if app.device_model.has_playback_mix() {
+                format!("Mic Level → {m}%")
+            } else {
+                format!("Monitor Mix → {m}%")
+            });
             send_if_connected(device, |d| d.set_mv6_monitor_mix(*m))
         }
         // ── MV7+ exclusive actions ────────────────────────────────────────────
         DeviceAction::SetMv7PlaybackMix(m) => {
-            app.set_ok(format!("Playback mix → {}%", m));
+            app.set_ok(format!("Playback Level → {m}%"));
             send_if_connected(device, |d| d.set_mv7_playback_mix(*m))
         }
         DeviceAction::SetMv7ReverbOutput(en) => {
@@ -1191,8 +1195,7 @@ fn apply_preset_to_device(
             d.set_mv6_gain_lock(state.mv6_gain_locked)?;
         }
         d.set_mute(state.muted)?;
-        // The MV7 has no HPF.
-        if model != DeviceModel::Mv7 {
+        if model.has_hpf() {
             d.set_hpf(&state.hpf)?;
         }
         match model {

@@ -124,7 +124,8 @@ mod tests {
         DeviceModel, InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
     };
     use crossterm::event::KeyModifiers;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use std::ops::Range;
 
     const MODELS: [DeviceModel; 6] = [
         DeviceModel::Mvx2u,
@@ -188,25 +189,95 @@ mod tests {
         terminal
             .draw(|frame| hits = crate::ui::draw(frame, app))
             .unwrap();
-        let buffer = terminal.backend().buffer();
         let rows = if tab_row_only { 3..4 } else { 6..50 };
-        for row in rows {
-            for column in 0..120 - label.len() as u16 {
-                if label.chars().enumerate().all(|(offset, ch)| {
+        let Some((column, row)) = find_label(terminal.backend().buffer(), label, rows) else {
+            panic!("label not rendered: {label}");
+        };
+        for offset in 0..label.len() as u16 {
+            assert_eq!(
+                hits.target_at(column + offset, row),
+                Some(target),
+                "{label}"
+            );
+        }
+    }
+
+    /// The first cell where `label` is rendered within `rows`.
+    fn find_label(buffer: &Buffer, label: &str, rows: Range<u16>) -> Option<(u16, u16)> {
+        let last_column = buffer.area.width.saturating_sub(label.len() as u16);
+        rows.flat_map(|row| (0..last_column).map(move |column| (column, row)))
+            .find(|&(column, row)| {
+                label.chars().enumerate().all(|(offset, ch)| {
                     buffer[(column + offset as u16, row)].symbol() == ch.to_string()
-                }) {
-                    for offset in 0..label.len() as u16 {
-                        assert_eq!(
-                            hits.target_at(column + offset, row),
-                            Some(target),
-                            "{label}"
-                        );
+                })
+            })
+    }
+
+    #[test]
+    fn monitor_level_rows_focus_their_own_level() {
+        for model in MODELS.into_iter().filter(DeviceModel::has_playback_mix) {
+            for mode in [InputMode::Manual, InputMode::Auto] {
+                let mut app = App {
+                    device_model: model,
+                    ..App::default()
+                };
+                app.device_state.mode = mode;
+                assert_label_target(
+                    &app,
+                    "Monitor Mix",
+                    Target::Control(Focus::MonitorMix),
+                    false,
+                );
+                assert_label_target(&app, "Mic Level", Target::Control(Focus::MonitorMix), false);
+                assert_label_target(
+                    &app,
+                    "Playback Level",
+                    Target::Control(Focus::PlaybackMix),
+                    false,
+                );
+            }
+        }
+    }
+
+    /// Short terminals squash the Monitor Mix block; each level label must
+    /// still focus its own level, and the bottom border the last one shown.
+    #[test]
+    fn monitor_level_targets_follow_rendered_rows_at_any_height() {
+        for model in MODELS.into_iter().filter(DeviceModel::has_playback_mix) {
+            for mode in [InputMode::Manual, InputMode::Auto] {
+                let mut app = App {
+                    device_model: model,
+                    ..App::default()
+                };
+                app.device_state.mode = mode;
+                for height in 16..=50 {
+                    let mut terminal = Terminal::new(TestBackend::new(120, height)).unwrap();
+                    let mut hits = HitMap::default();
+                    terminal
+                        .draw(|frame| hits = crate::ui::draw(frame, &app))
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let mut last_row = None;
+                    for (label, focus) in [
+                        ("Mic Level", Focus::MonitorMix),
+                        ("Playback Level", Focus::PlaybackMix),
+                    ] {
+                        if let Some((column, row)) = find_label(buffer, label, 6..height) {
+                            let target = Some(Target::Control(focus));
+                            let context = format!("{model:?} {mode:?} height {height}: {label}");
+                            assert_eq!(hits.target_at(column, row), target, "{context}");
+                            last_row = Some((column, row, target, context));
+                        }
                     }
-                    return;
+                    if let Some((column, row, target, context)) = last_row {
+                        // The block's bottom-left corner, two cells left of the label.
+                        if buffer[(column - 2, row + 1)].symbol() == "╰" {
+                            assert_eq!(hits.target_at(column, row + 1), target, "{context} border");
+                        }
+                    }
                 }
             }
         }
-        panic!("label not rendered: {label}");
     }
 
     #[test]
