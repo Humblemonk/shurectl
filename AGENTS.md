@@ -7,9 +7,9 @@ obvious solution over clever abstractions.
 
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
 `protocol.md` for `protocol.rs`/`device.rs`/`probe.rs` (HID packet format, usbmon
-debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`. Claude Code
-loads these only when a matching file is read, so anything a reviewer must know from a diff
-alone belongs in **Review** below.
+debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`, `ui.md` for
+`ui.rs` (MOTIV Mix palette and controls). Claude Code loads these only when a matching file
+is read, so anything a reviewer must know from a diff alone belongs in **Review** below.
 
 ## Commands
 
@@ -209,6 +209,9 @@ is unchanged; a changed golden file lists the screens to look at.
   `_`. A wildcard sent the MV6 Gen 2 the wrong EQ encoding (a800e26).
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
   check heights 16-50 (bc3bb3f).
+- **Colors**: new colors use the `C_*` palette constants in `ui.rs`, never a raw
+  `Color::Rgb` (the MV7+ LED channel sliders excepted). Lime is reserved for focus and active
+  states; values stay white. See `.claude/rules/ui.md`.
 - **Stale prose**: when a capability moves between models, update the doc comments, help
   overlay, status strings, Info tab and readme row too. Most "tidy" commits fix this.
 
