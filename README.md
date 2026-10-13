@@ -136,7 +136,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Mute | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Gain | Manual, 0–60 dB | Manual, 0–60 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB | Manual, 0–36 dB |
 | Gain Lock | — | Manual | Manual | Manual | — | — |
-| Monitor Mix (0–100%) | ✓ | ✓ | Mic + Playback Level | Mic + Playback Level | ✓ | Mic + Playback Level |
+| Monitor Mix (0–100%) | ✓ | Mic + Playback Level | Mic + Playback Level | Mic + Playback Level | ✓ | Mic + Playback Level |
 | Phantom Power (48V) | ✓ | ✓ | — | — | — | — |
 | Config Lock | ✓ | — | — | — | ✓ | — |
 | Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
@@ -155,20 +155,20 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | ✓ | — | ✓ |
 | Denoiser | — | ✓ | ✓ | ✓, level 1–100% | — | ✓ |
 | Popper Stopper | — | ✓ | ✓ | ✓ | — | ✓ |
-| Mute Button Disable | — | — | ✓ | ✓ | — | ✓ |
+| Mute Button (Works / Ignored) | — | — | ✓ | ✓ | — | ✓ |
 | **Other tabs** | | | | | | |
 | Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | — | ✓ |
 | LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
 | Rename device (Info tab) | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| Factory Reset (Info tab) | — | — | — | ✓ | — | ✓ |
+| Factory Reset (Info tab) | — | ✓ | — | ✓ | — | ✓ |
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
 firmware version), `--mute`, `--preset`, and `--demo`.
 
 - On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
   5-band EQ (Advanced), as in MOTIV.
-- Monitor Mix balances mic against playback in your headphones. On the MV6, MV6 Gen 2 and
-  MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
+- Monitor Mix balances mic against playback in your headphones. On the MVX2U Gen 2, MV6,
+  MV6 Gen 2 and MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
 - The level meter reads your system's default input, so set the Shure as the default input
   (at 100% input volume) for it to match the device.
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.

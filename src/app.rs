@@ -73,7 +73,8 @@ impl Tab {
 /// Which control within the current tab has focus.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
-    // Main tab — shared
+    // Main tab — Mode, Mute and Monitor Mix everywhere; Phantom (MVX2U) and
+    // Lock (MVX2U Gen 1, MV7) where the model has them
     Mode,
     Mute,
     Phantom,
@@ -87,32 +88,32 @@ pub enum Focus {
     AutoGain,
     // Main tab — MV6 Gen 2 Auto Level (Target Level reuses AutoGain)
     AdaptationRate,
-    // EQ tab — MVX2U bands
+    // EQ tab — 5 bands (MVX2U; MV6 Gen 2 in Advanced); band enables are Gen 1 only
     EqEnable,
     EqBandSelect,
     EqBandEnable(usize),
     EqGain(usize),
-    // EQ tab — MV6 tone
+    // EQ tab — Tone slider (MV6, MV6 Gen 2 in Simple, MVX2U Gen 2 in Auto, MV7+)
     Tone,
     // EQ tab — MV6 Gen 2 Simple (Tone slider) / Advanced (5 bands)
     ToneMode,
     // EQ tab — MV7 EQ preset
     EqPreset,
-    // Dynamics tab — MVX2U
+    // Dynamics tab — Limiter, Compressor, HPF
     Limiter,
     Compressor,
     Hpf,
-    // Dynamics tab — MV6 extra controls
+    // Dynamics tab — MV6-family controls (also MVX2U Gen 2, MV7+)
     Denoiser,
     PopperStopper,
     MuteBtnDisable,
-    // Main tab — MV6 gain lock (Manual mode only)
+    // Main tab — Gain Lock (`has_gain_lock()`, Manual mode only)
     GainLock,
-    // Main tab — Playback Level, the second row of Monitor Mix (MV7+, MV6 Gen 2, MV6)
+    // Main tab — Playback Level, the second row of Monitor Mix (`has_playback_mix()`)
     PlaybackMix,
     // Main tab — MV6 Gen 2 built-in preset (Speech / Singing / Instrument)
     MicPreset,
-    // Dynamics tab — MV7+ reverb controls
+    // Reverb tab — MV7+
     ReverbOutput,
     ReverbMonitor,
     ReverbPreset,
@@ -181,7 +182,7 @@ pub struct App {
     /// that same button fires it. Cleared by any other click or any key.
     pub armed_preset_action: Option<(usize, KeyCode)>,
     /// Rolling peak windows shared with the cpal capture thread.
-    /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak marker.
+    /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak-hold readout.
     pub peak_window: Arc<Mutex<PeakWindow>>,
 }
 
@@ -250,21 +251,20 @@ impl App {
         )
     }
 
-    /// Returns true when the Info tab offers Factory Reset. Only the MV7+ reset
-    /// packet is known; the original MV7 has no factory reset at all (MOTIV
-    /// doesn't offer one either). The UI hides the button and the Enter handler
-    /// ignores it on every other model.
     /// Whether a preset or device name is being typed.
     pub fn editing_name(&self) -> bool {
         self.editing_preset_name || self.editing_device_name
     }
 
+    /// Returns true when the Info tab offers Factory Reset: the models whose
+    /// reset packet was captured from MOTIV (`cmd_factory_reset`). The original
+    /// MV7 has no factory reset (MOTIV doesn't offer one); the MVX2U Gen 1 and
+    /// MV6 are uncaptured. The UI hides the button and the Enter handler ignores
+    /// it on every other model.
     pub fn supports_factory_reset(&self) -> bool {
         match self.device_model {
-            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 => true,
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
-                false
-            }
+            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 => false,
         }
     }
 
@@ -423,8 +423,8 @@ impl App {
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
     // MVX2U Gen 2 Main cycles:
-    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → Phantom → (wrap)
-    //   Auto:   Mode → Mute → MonitorMix → Phantom → (wrap)
+    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → Phantom → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → Phantom → (wrap)
     //
     // MVX2U Gen 2 EQ cycles:
     //   Auto:   Tone (slider only)
@@ -433,8 +433,7 @@ impl App {
     // MVX2U Gen 2 Dynamics cycles:
     //   Manual: Limiter → Compressor → Denoiser → PopperStopper → Hpf → (wrap)
     //   Auto:   Denoiser → PopperStopper → Hpf → (wrap)
-    //   Note: if mode switches while Focus is on Limiter/Compressor (Manual-only),
-    //   the next focus_next/prev call self-corrects to Denoiser via the catchall arm.
+    //   (A mode change while on Limiter/Compressor is fixed up by settle_focus().)
     //
     // MV6 Main cycles (Playback Level unconfirmed on hardware, see has_playback_mix):
     //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → (wrap)
@@ -454,6 +453,12 @@ impl App {
     //   Manual: Mode → Mute → Gain → MonitorMix → Lock → (wrap)
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → MonitorMix → Lock → (wrap)
     // MV7 EQ: EqPreset. MV7 Dynamics: Compressor. MV7 LED: LedLiveMeter → LedNightMode.
+    //
+    // MV7+ Main cycles:
+    //   Manual: Mode → Mute → Gain → MonitorMix → PlaybackMix → (wrap)
+    //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → (wrap)
+    // MV7+ EQ: Tone. MV7+ Dynamics: Limiter → Compressor → Denoiser → PopperStopper
+    //   → MuteBtnDisable → Hpf → (wrap). Reverb and LED tabs: MV7+ only.
     pub fn focus_next(&mut self) {
         self.focus = match (
             &self.active_tab,
@@ -549,16 +554,11 @@ impl App {
             (Tab::Main, Focus::GainLock, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
                 Focus::MonitorMix
             }
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
-                Focus::Phantom
-            }
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mode,
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::MonitorMix,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
-                Focus::Phantom
-            }
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mode,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, _) => Focus::PlaybackMix,
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mvx2uGen2, _) => Focus::Phantom,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
             (Tab::Main, _, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
 
             // ── MVX2U Gen 2 EQ (Tone in Auto, 5-band in Manual) ──────────────
@@ -692,7 +692,7 @@ impl App {
             }
             (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
-            // Info: Device Name ↔ Factory Reset where both exist (MV7+).
+            // Info: Device Name ↔ Factory Reset where both exist.
             (Tab::Info, Focus::DeviceName, _, _) if self.supports_factory_reset() => {
                 Focus::FactoryReset
             }
@@ -797,15 +797,11 @@ impl App {
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
                 Focus::GainLock
             }
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
-                Focus::MonitorMix
-            }
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Phantom,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mode,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
-            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, InputMode::Auto) => {
-                Focus::MonitorMix
-            }
+            (Tab::Main, Focus::PlaybackMix, DeviceModel::Mvx2uGen2, _) => Focus::MonitorMix,
+            (Tab::Main, Focus::Phantom, DeviceModel::Mvx2uGen2, _) => Focus::PlaybackMix,
             (Tab::Main, _, DeviceModel::Mvx2uGen2, _) => Focus::Mode,
 
             // ── MVX2U Gen 2 EQ reverse ────────────────────────────────────────
@@ -938,7 +934,7 @@ impl App {
             (Tab::Presets, Focus::PresetActions(i), _, _) => Focus::PresetName(*i),
             (Tab::Presets, _, _, _) => Focus::PresetName(0),
 
-            // Info: Device Name ↔ Factory Reset where both exist (MV7+).
+            // Info: Device Name ↔ Factory Reset where both exist.
             (Tab::Info, Focus::DeviceName, _, _) if self.supports_factory_reset() => {
                 Focus::FactoryReset
             }
@@ -1003,15 +999,7 @@ impl App {
                 } else {
                     *m = m.saturating_sub(1);
                 }
-                let mix = self.device_state.monitor_mix;
-                match self.device_model {
-                    DeviceModel::Mv6
-                    | DeviceModel::Mv6Gen2
-                    | DeviceModel::Mvx2uGen2
-                    | DeviceModel::Mv7
-                    | DeviceModel::Mv7Plus => Some(DeviceAction::SetMv6MonitorMix(mix)),
-                    DeviceModel::Mvx2u => Some(DeviceAction::SetMonitorMix(mix)),
-                }
+                Some(DeviceAction::SetMonitorMix(self.device_state.monitor_mix))
             }
             Focus::PlaybackMix => {
                 let m = &mut self.device_state.playback_mix;
@@ -1259,7 +1247,7 @@ impl App {
                 self.device_state.hpf = self.device_state.hpf.cycle_next();
                 Some(DeviceAction::SetHpf(self.device_state.hpf))
             }
-            // ── MV6 Dynamics controls ─────────────────────────────────────────
+            // ── MV6-family Dynamics controls (also MVX2U Gen 2, MV7+) ─────────
             Focus::Denoiser => {
                 self.device_state.denoiser_enabled = !self.device_state.denoiser_enabled;
                 Some(DeviceAction::SetMv6Denoiser(
@@ -1379,7 +1367,6 @@ pub enum DeviceAction {
     SetMute(bool),
     SetPhantom(bool),
     SetLock(bool),
-    SetMonitorMix(u8),
     SetLimiter(bool),
     SetCompressor(CompressorPreset),
     SetHpf(HpfFrequency),
@@ -1387,19 +1374,22 @@ pub enum DeviceAction {
     /// `usize` is band index 0–4.
     SetEqBandEnable(usize, bool),
     /// `usize` is band index 0–4; `i16` is gain in tenths of dB (−80..+60).
-    /// Gen 1 steps: multiples of 20. Gen 2 steps: multiples of 5.
+    /// On the model's `eq_step_tenths()` grid.
     SetEqBandGain(usize, i16),
-    // ── MV6-specific actions ──────────────────────────────────────────────────
+    // ── MV6-first actions (also MVX2U Gen 2, MV6 Gen 2, MV7+) ─────────────────
     SetMv6Denoiser(bool),
     SetMv6PopperStopper(bool),
     SetMv6MuteBtnDisable(bool),
     /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
     SetMv6Tone(i8),
     SetMv6GainLock(bool),
-    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MVX2U Gen 2 and MV7,
-    /// Mic Level on the MV6, MV6 Gen 2 and MV7+. Same encoding as the MVX2U Gen 1
-    /// (`SetMonitorMix`) but HDR_CONSTANT=0x00 on the wire.
-    SetMv6MonitorMix(u8),
+    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MVX2U Gen 1 and
+    /// MV7, Mic Level on models with `has_playback_mix()`. The Gen 1 balance is
+    /// FEAT_MIX prefix 0x01 with the standard header; the Mic Level is prefix
+    /// 0x00 with HDR_CONSTANT=0x00.
+    SetMonitorMix(u8),
+    /// Playback Level, 0–100% (models with `has_playback_mix()`).
+    SetMv7PlaybackMix(u8),
     // ── MV6 Gen 2 actions ─────────────────────────────────────────────────────
     /// Auto Level Adaptation Rate: false = Slow, true = Fast.
     SetAdaptationRate(bool),
@@ -1410,8 +1400,6 @@ pub enum DeviceAction {
     /// Select a built-in preset; the mic applies its settings.
     SetMicPreset(MicPreset),
     // ── MV7+ exclusive actions ────────────────────────────────────────────────
-    /// Playback Level, 0–100% (MV7+, MV6 Gen 2, MV6).
-    SetMv7PlaybackMix(u8),
     SetMv7ReverbOutput(bool),
     SetMv7ReverbMonitor(bool),
     SetMv7ReverbPreset(ReverbType),
@@ -1444,7 +1432,7 @@ pub enum DeviceAction {
     /// Open the device again after it was unplugged and plugged back in, and
     /// load its state. Sent by main's presence poll rather than a key.
     Reconnect,
-    /// Send a factory reset command (MV7+, MV6 Gen 2). Device disconnects immediately after.
+    /// Send a factory reset command (MV7+, MV6 Gen 2, MVX2U Gen 2). Device disconnects immediately after.
     FactoryReset,
 }
 
@@ -1817,7 +1805,7 @@ mod tests {
             assert_eq!(app.focus, *expected);
         }
 
-        // Manual matches the MV6 (no Auto Level controls) plus Playback Mix.
+        // Manual matches the MV6 (no Auto Level controls) plus Mic Preset.
         app.device_state.mode = InputMode::Manual;
         app.focus = Focus::Mode;
         let order = [
@@ -2113,46 +2101,28 @@ mod tests {
     }
 
     #[test]
-    fn adjust_monitor_mix_dispatches_set_mv6_monitor_mix_for_mv6() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 50;
-
-        let action = app.adjust_focused(1);
-        assert_eq!(app.device_state.monitor_mix, 51);
-        assert!(
-            matches!(action, Some(DeviceAction::SetMv6MonitorMix(51))),
-            "MV6 must dispatch SetMv6MonitorMix, got {action:?}"
-        );
-    }
-
-    #[test]
-    fn adjust_monitor_mix_dispatches_set_monitor_mix_for_mvx2u() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2u;
-        app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 50;
-
-        let action = app.adjust_focused(1);
-        assert!(
-            matches!(action, Some(DeviceAction::SetMonitorMix(51))),
-            "MVX2U must dispatch SetMonitorMix, got {action:?}"
-        );
-    }
-
-    #[test]
-    fn adjust_monitor_mix_dispatches_set_mv6_monitor_mix_for_gen2() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2uGen2;
-        app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 50;
-
-        let action = app.adjust_focused(1);
-        assert!(
-            matches!(action, Some(DeviceAction::SetMv6MonitorMix(51))),
-            "Gen 2 must dispatch SetMv6MonitorMix (same wire framing), got {action:?}"
-        );
+    fn adjust_monitor_mix_dispatches_set_monitor_mix_on_every_model() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7,
+            DeviceModel::Mv7Plus,
+        ] {
+            let mut app = App {
+                device_model: model,
+                focus: Focus::MonitorMix,
+                ..App::default()
+            };
+            app.device_state.monitor_mix = 50;
+            let action = app.adjust_focused(1);
+            assert_eq!(app.device_state.monitor_mix, 51, "{model:?}");
+            assert!(
+                matches!(action, Some(DeviceAction::SetMonitorMix(51))),
+                "{model:?}: {action:?}"
+            );
+        }
     }
 
     #[test]
@@ -2705,6 +2675,7 @@ mod tests {
         app.presets[2] = Some(crate::presets::PresetSlot::from_device_state(
             "Test",
             &DeviceState::default(),
+            DeviceModel::Mvx2u,
         ));
 
         let action = app.toggle_focused();
@@ -2823,11 +2794,12 @@ mod tests {
     }
 
     #[test]
-    fn factory_reset_is_mv7_plus_only() {
+    fn factory_reset_only_on_captured_models() {
         for (model, supported) in [
             (DeviceModel::Mvx2u, false),
-            (DeviceModel::Mvx2uGen2, false),
+            (DeviceModel::Mvx2uGen2, true),
             (DeviceModel::Mv6, false),
+            (DeviceModel::Mv6Gen2, true),
             (DeviceModel::Mv7, false),
             (DeviceModel::Mv7Plus, true),
         ] {
@@ -2900,7 +2872,7 @@ mod tests {
         app.focus = Focus::MonitorMix;
         assert!(matches!(
             app.adjust_focused(1),
-            Some(DeviceAction::SetMv6MonitorMix(1))
+            Some(DeviceAction::SetMonitorMix(1))
         ));
     }
 

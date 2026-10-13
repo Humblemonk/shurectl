@@ -6,7 +6,7 @@
 //!   - Shure MV6         (VID 0x14ED, PID 0x1026) — USB gaming microphone
 //!   - Shure MV6 Gen 2   (VID 0x14ED, PID 0x1035) — USB gaming microphone (Gen 2)
 //!   - Shure MV7         (VID 0x14ED, PID 0x1012) — USB/XLR dynamic microphone (original)
-//!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone (protocol unverified)
+//!   - Shure MV7+        (VID 0x14ED, PID 0x1019) — USB/XLR dynamic microphone
 //!
 //! All six devices expose a USB HID configuration interface alongside their
 //! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
@@ -149,7 +149,7 @@ impl ShureDevice {
 
         match found.len() {
             0 => Err(anyhow!(
-                "No Shure MVX2U, MVX2U Gen 2, MV6, MV7, or MV7+ device found.\nHint: {ACCESS_HINT}."
+                "No Shure MVX2U, MVX2U Gen 2, MV6, MV6 Gen 2, MV7, or MV7+ device found.\nHint: {ACCESS_HINT}."
             )),
             1 => {
                 let (info, model) = found[0];
@@ -387,7 +387,7 @@ impl ShureDevice {
         Ok(())
     }
 
-    /// Fetch all 5 EQ band gain values. Used by both Gen 1 and Gen 2 state readback.
+    /// Fetch all 5 EQ band gain values. Used by the MVX2U Gen 1 and Gen 2 and MV6 Gen 2 readback.
     fn fetch_eq_band_gains(&self, readback: &mut Readback) -> Result<()> {
         for band in 0..5 {
             self.query(&cmd_get_eq_band_gain(self.next_seq(), band), readback)?;
@@ -457,13 +457,14 @@ impl ShureDevice {
     fn get_state_mvx2u_gen2(&self, readback: &mut Readback) -> Result<()> {
         // Gen 2 shares most getters with Gen 1 but has no config lock, no EQ master
         // enable, and no per-band enable. It adds denoiser, popper stopper, gain lock,
-        // tone, and uses the MV6-style monitor mix framing.
+        // tone, and the MV6 Gen 2's two monitor levels (Mic Level, Playback Level).
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_gain,
             cmd_get_mute,
             cmd_get_phantom,
             cmd_get_mode,
             cmd_get_mv6_mix, // same address as Gen 1 mix; GET uses standard framing
+            cmd_get_mv7_playback_mix, // replies echo prefix 0x03 (captured)
             cmd_get_hpf,
             cmd_get_limiter,
             cmd_get_compressor,
@@ -532,7 +533,7 @@ impl ShureDevice {
             cmd_get_mv6_popper_stopper,
             cmd_get_mv6_tone,
             cmd_get_mv6_mute_btn_disable,
-            cmd_get_mv6_mix, // mic monitor mix (prefix=0x00)
+            cmd_get_mv6_mix, // Mic Level (prefix=0x00)
             cmd_get_mv7_playback_mix,
             cmd_get_mv7_reverb_output,
             cmd_get_mv7_reverb_type,
@@ -637,7 +638,7 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
-    // ── MVX2U Gen 1 and Gen 2 SET commands ───────────────────────────────────
+    // ── MVX2U-first SET commands (Auto Level, mix, dynamics, EQ, lock) ──────
 
     /// Set the Auto Level mic position. `tone` is only used by the MV7, which
     /// stores both in one setting.
@@ -680,10 +681,6 @@ impl ShureDevice {
 
     pub fn set_phantom(&self, enabled: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_phantom(self.next_seq(), enabled))
-    }
-
-    pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
-        self.send_set(&protocol::cmd_set_mix(self.next_seq(), mix))
     }
 
     pub fn set_limiter(&self, enabled: bool) -> Result<()> {
@@ -738,7 +735,7 @@ impl ShureDevice {
         }
     }
 
-    // ── MV6 and MV7+ shared SET commands ─────────────────────────────────────
+    // ── MV6-first SET commands (also MVX2U Gen 2, MV6 Gen 2, MV7+) ──────────
 
     pub fn set_mv6_denoiser(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
@@ -772,7 +769,8 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
-    /// Disable or enable the physical mute button. MV6 and MV7+ share identical framing here.
+    /// Disable or enable the physical mute button. The MV6, MV6 Gen 2 and MV7+ share
+    /// identical framing here.
     pub fn set_mv6_mute_btn_disable(&self, disabled: bool) -> Result<()> {
         self.send_set(&protocol::cmd_set_mv6_mute_btn_disable(
             self.next_seq(),
@@ -810,15 +808,16 @@ impl ShureDevice {
         self.send_set(&protocol::cmd_set_mv6_gain_lock(self.next_seq(), locked))
     }
 
-    /// Set monitor mic mix. MV7+ uses cmd_set_mv7_mic_mix (HDR_CONST=0x00 with prefix=0x00).
-    pub fn set_mv6_monitor_mix(&self, mix: u8) -> Result<()> {
+    /// Set the Mic Level, or the mic ↔ playback balance on the MVX2U Gen 1 and MV7.
+    pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),
-            DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mic_mix(self.next_seq(), mix),
-            DeviceModel::Mvx2u
-            | DeviceModel::Mvx2uGen2
+            // The Gen 1 balance is prefix 0x01 with the standard header.
+            DeviceModel::Mvx2u => protocol::cmd_set_mix(self.next_seq(), mix),
+            DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
-            | DeviceModel::Mv6Gen2 => protocol::cmd_set_mv6_mix(self.next_seq(), mix),
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => protocol::cmd_set_mv6_mix(self.next_seq(), mix),
         };
         self.send_set(&pkt)
     }
@@ -951,25 +950,23 @@ impl ShureDevice {
         ))
     }
 
-    /// Send a factory reset to the MV7+.
+    /// Send a factory reset to the MV7+, MV6 Gen 2 or MVX2U Gen 2.
     ///
     /// The device disconnects and re-enumerates immediately; no CONFIRM is sent.
     /// After this call succeeds the device handle is stale — do not use it again.
-    /// Refuses every other model: the packet is MV7+-specific, and the original
-    /// MV7 has no factory reset.
+    /// Refuses every other model: the packet is only captured on these three, and
+    /// the original MV7 has no factory reset.
     pub fn factory_reset(&self) -> Result<()> {
         match self.model {
-            // The MV6 Gen 2 takes the same packet (captured from MOTIV's Reset to
-            // defaults).
-            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 => {
+            // The MV6 Gen 2 and MVX2U Gen 2 take the same packet (captured from
+            // MOTIV's Reset to defaults).
+            DeviceModel::Mv7Plus | DeviceModel::Mv6Gen2 | DeviceModel::Mvx2uGen2 => {
                 self.write(&cmd_factory_reset(self.next_seq()))
             }
-            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7 => {
-                Err(anyhow!(
-                    "Factory reset is not available on the {}",
-                    self.model.display_name()
-                ))
-            }
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv7 => Err(anyhow!(
+                "Factory reset is not available on the {}",
+                self.model.display_name()
+            )),
         }
     }
 }

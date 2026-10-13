@@ -13,7 +13,7 @@
 //! exclusively, preventing any other application (PipeWire, PulseAudio, DAW)
 //! from capturing audio until shurectl exits. Using the default input
 //! device instead lets PipeWire/PulseAudio act as the broker and share the
-//! hardware normally. If the user has set the MVX2U as their default input,
+//! hardware normally. If the user has set the Shure device as their default input,
 //! the meter reads it correctly without the exclusivity problem.
 //!
 //! The sentinel value `METER_SILENT` (`i32::MIN`) means no audio data has
@@ -82,7 +82,7 @@ impl RollingWindow {
 /// A pair of rolling windows shared between the audio thread and render thread.
 ///
 /// * `short` — 0.3 s: drives the instantaneous bar height displayed in the gauge.
-/// * `long`  — 3.0 s: drives the slow peak-hold marker shown beside the bar.
+/// * `long`  — 3.0 s: drives the peak-hold readout (`pk -8.1`) beside the bar.
 pub struct PeakWindow {
     pub short: RollingWindow,
     pub long: RollingWindow,
@@ -139,7 +139,7 @@ pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>) -> MeterStatus {
     let host = cpal::default_host();
 
     // Use the system default input device. PipeWire/PulseAudio will route
-    // from the MVX2U if it is set as the default, without exclusive access.
+    // from the Shure device if it is set as the default, without exclusive access.
     let device: Device = match host.default_input_device() {
         Some(d) => d,
         None => {

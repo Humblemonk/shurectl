@@ -1,6 +1,7 @@
 //! Host-side preset storage for shurectl.
 //!
-//! Presets are TOML files stored in `~/.config/shurectl/presets/`.
+//! Presets are TOML files in `shurectl/presets/` under the platform config
+//! directory (`~/.config` on Linux; the README lists the others).
 //! There are 4 fixed slots, numbered 0–3, stored as `preset_1.toml`–`preset_4.toml`.
 //!
 //! Each file is human-readable and hand-editable. The preset captures all
@@ -25,7 +26,7 @@ pub const PRESET_COUNT: usize = 4;
 
 /// A serializable snapshot of all configurable device settings.
 ///
-/// Fields from both MVX2U and MV6 are included. Fields irrelevant to a given
+/// Fields from every model are included. Fields irrelevant to a given
 /// device model remain at their serde defaults and are not applied to the device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresetSlot {
@@ -40,7 +41,7 @@ pub struct PresetSlot {
     pub muted: bool,
     pub hpf: SerHpfFrequency,
 
-    // ── MVX2U-specific ───────────────────────────────────────────────────────
+    // ── MVX2U-first (several shared with other models; see DeviceState) ─────
     #[serde(default)]
     pub auto_position: SerMicPosition,
     #[serde(default)]
@@ -49,9 +50,21 @@ pub struct PresetSlot {
     pub auto_gain: SerAutoGain,
     #[serde(default)]
     pub phantom_power: bool,
-    /// Monitor mix: 0 = 100% mic, 100 = 100% playback.
+    /// Monitor Mix, as `DeviceState::monitor_mix`: one mic ↔ playback balance,
+    /// or the Mic Level on models with `has_playback_mix()`.
     #[serde(default)]
     pub monitor_mix: u8,
+    /// Which of those `monitor_mix` is: `Some(true)` when saved on a model with
+    /// `has_playback_mix()`. Loading skips a Monitor Mix of the other kind, since
+    /// a balance of 0 (all mic) would mute the mic as a Mic Level. `None` in
+    /// presets saved before this field, which load as they always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_mix_is_mic_level: Option<bool>,
+    /// Playback Level in the headphones, 1–100%, on models with
+    /// `has_playback_mix()`. Loading treats 0 as "not saved" and keeps the
+    /// device's current level.
+    #[serde(default)]
+    pub playback_mix: u8,
     #[serde(default)]
     pub limiter_enabled: bool,
     #[serde(default)]
@@ -61,7 +74,7 @@ pub struct PresetSlot {
     #[serde(default)]
     pub eq_bands: [SerEqBand; 5],
 
-    // ── MV6-specific ─────────────────────────────────────────────────────────
+    // ── MV6-first (also MVX2U Gen 2, MV6 Gen 2, MV7+; see DeviceState) ───────
     #[serde(default)]
     pub denoiser_enabled: bool,
     #[serde(default = "default_popper_stopper")]
@@ -71,7 +84,7 @@ pub struct PresetSlot {
     /// Tone: -10 (100% Dark) to +10 (100% Bright), 0 = Natural.
     #[serde(default)]
     pub tone: i8,
-    /// Gain lock (Manual mode only). MV6 only.
+    /// Gain lock (Manual mode only), on models with `has_gain_lock()`.
     #[serde(default)]
     pub mv6_gain_locked: bool,
 
@@ -86,10 +99,6 @@ pub struct PresetSlot {
     pub tone_advanced: bool,
 
     // ── MV7+-specific ────────────────────────────────────────────────────────
-    /// Independent playback mix channel: 0 = full mic, 100 = full playback.
-    /// Loading treats 0 as "not saved" and keeps the device's current level.
-    #[serde(default)]
-    pub playback_mix: u8,
     #[serde(default)]
     pub reverb_on_output: bool,
     #[serde(default)]
@@ -172,8 +181,13 @@ fn default_led_live_interior_rgb() -> [u8; 3] {
 }
 
 impl PresetSlot {
-    /// Build a preset snapshot from a live `DeviceState`.
-    pub fn from_device_state(name: impl Into<String>, state: &DeviceState) -> Self {
+    /// Build a preset snapshot from a live `DeviceState` on `model`, which
+    /// decides what kind of Monitor Mix it records.
+    pub fn from_device_state(
+        name: impl Into<String>,
+        state: &DeviceState,
+        model: DeviceModel,
+    ) -> Self {
         Self {
             name: name.into(),
             gain_db: f32::from(state.gain_tenths) / 10.0,
@@ -185,6 +199,7 @@ impl PresetSlot {
             auto_gain: SerAutoGain::from(state.auto_gain),
             phantom_power: state.phantom_power,
             monitor_mix: state.monitor_mix,
+            monitor_mix_is_mic_level: Some(model.has_playback_mix()),
             limiter_enabled: state.limiter_enabled,
             compressor: SerCompressorPreset::from(state.compressor),
             eq_enabled: state.eq_enabled,
@@ -305,9 +320,9 @@ impl PresetSlot {
 
     /// One-line summary of the key settings for display in the TUI.
     ///
-    /// The model is needed because MVX2U and MV6 have different configurable
-    /// fields — showing EQ/phantom for an MV6 preset (or denoiser for an MVX2U
-    /// preset) would be misleading.
+    /// The model is needed because models have different configurable fields —
+    /// showing phantom power on an MV6 (or reverb on an MVX2U) would be
+    /// misleading.
     pub fn summary(&self, model: DeviceModel) -> String {
         let hpf_str = match HpfFrequency::from(self.hpf) {
             HpfFrequency::Off => "HPF off".to_string(),
@@ -440,7 +455,7 @@ impl PresetSlot {
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
-/// Returns `~/.config/shurectl/`, creating it if absent.
+/// Returns `shurectl/` under the platform config directory, creating it if absent.
 fn config_dir() -> Result<PathBuf> {
     let base = dirs_next::config_dir()
         .or_else(|| {
@@ -455,7 +470,7 @@ fn config_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Returns `~/.config/shurectl/presets/`, creating it if absent.
+/// Returns the `presets/` directory inside `config_dir()`, creating it if absent.
 fn presets_dir() -> Result<PathBuf> {
     let dir = config_dir()?.join("presets");
     std::fs::create_dir_all(&dir)
@@ -1002,6 +1017,26 @@ mod tests {
         toml::from_str(&toml_str).expect("deserialise")
     }
 
+    #[test]
+    fn monitor_mix_kind_is_recorded_and_absent_in_older_files() {
+        let state = DeviceState::default();
+        let balance = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
+        assert_eq!(
+            toml_roundtrip(&balance).monitor_mix_is_mic_level,
+            Some(false)
+        );
+        let mic_level = PresetSlot::from_device_state("S", &state, DeviceModel::Mv7Plus);
+        assert_eq!(
+            toml_roundtrip(&mic_level).monitor_mix_is_mic_level,
+            Some(true)
+        );
+        let older = PresetSlot {
+            monitor_mix_is_mic_level: None,
+            ..balance
+        };
+        assert_eq!(toml_roundtrip(&older).monitor_mix_is_mic_level, None);
+    }
+
     /// Write `slot` to a temp file and reload it, returning the loaded copy.
     fn write_and_reload(slot: &PresetSlot) -> PresetSlot {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1014,7 +1049,7 @@ mod tests {
     #[test]
     fn preset_slot_roundtrip_toml() {
         let state = example_state();
-        let slot = PresetSlot::from_device_state("My Preset", &state);
+        let slot = PresetSlot::from_device_state("My Preset", &state, DeviceModel::Mvx2u);
 
         let decoded = toml_roundtrip(&slot);
 
@@ -1032,7 +1067,7 @@ mod tests {
     #[test]
     fn apply_to_device_state_restores_all_fields() {
         let original = example_state();
-        let slot = PresetSlot::from_device_state("Test", &original);
+        let slot = PresetSlot::from_device_state("Test", &original, DeviceModel::Mvx2u);
 
         let mut target = DeviceState::default();
         target.serial_number = String::from("OTHER");
@@ -1063,7 +1098,7 @@ mod tests {
     #[test]
     fn save_and_load_preset_roundtrip() {
         let state = example_state();
-        let slot = PresetSlot::from_device_state("Roundtrip", &state);
+        let slot = PresetSlot::from_device_state("Roundtrip", &state, DeviceModel::Mvx2u);
 
         let loaded = write_and_reload(&slot);
 
@@ -1077,7 +1112,7 @@ mod tests {
         state.gain_tenths = 360;
         state.phantom_power = true;
         state.hpf = HpfFrequency::Hz75;
-        let slot = PresetSlot::from_device_state("S", &state);
+        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
         let s = slot.summary(DeviceModel::Mvx2u);
         assert!(s.contains("Manual"), "summary: {s}");
         assert!(s.contains("36 dB"), "summary: {s}");
@@ -1095,7 +1130,7 @@ mod tests {
         state.auto_gain = AutoGain::Normal;
         state.auto_position = MicPosition::Near;
         state.phantom_power = false;
-        let slot = PresetSlot::from_device_state("S", &state);
+        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
         let s = slot.summary(DeviceModel::Mvx2u);
         assert!(s.contains("Auto"), "summary: {s}");
         assert!(s.contains("Natural"), "summary: {s}");
@@ -1128,7 +1163,7 @@ mod tests {
     #[test]
     fn mv6_preset_roundtrip_toml() {
         let state = mv6_example_state();
-        let slot = PresetSlot::from_device_state("MV6 Preset", &state);
+        let slot = PresetSlot::from_device_state("MV6 Preset", &state, DeviceModel::Mv6);
 
         let decoded = toml_roundtrip(&slot);
 
@@ -1149,7 +1184,7 @@ mod tests {
     #[test]
     fn mv6_apply_to_device_state_restores_mv6_fields() {
         let original = mv6_example_state();
-        let slot = PresetSlot::from_device_state("MV6 Test", &original);
+        let slot = PresetSlot::from_device_state("MV6 Test", &original, DeviceModel::Mv6);
 
         let mut target = DeviceState::default();
         target.serial_number = String::from("OTHER");
@@ -1172,7 +1207,7 @@ mod tests {
         // Hz150 must result in Hz150, not whatever was there before.
         let mut state = mv6_example_state();
         state.hpf = HpfFrequency::Hz150;
-        let slot = PresetSlot::from_device_state("HPF test", &state);
+        let slot = PresetSlot::from_device_state("HPF test", &state, DeviceModel::Mvx2u);
 
         let mut target = DeviceState::default();
         // target.hpf starts as HpfFrequency::Off (default).
@@ -1184,7 +1219,7 @@ mod tests {
     #[test]
     fn mv6_mute_btn_disabled_roundtrip_file() {
         let state = mv6_example_state(); // mute_btn_disabled = true
-        let slot = PresetSlot::from_device_state("MV6 File", &state);
+        let slot = PresetSlot::from_device_state("MV6 File", &state, DeviceModel::Mv6);
 
         let loaded = write_and_reload(&slot);
 
@@ -1210,7 +1245,7 @@ mod tests {
         state.popper_stopper_enabled = false;
         state.tone = 5; // +50% Bright
         state.hpf = HpfFrequency::Hz75;
-        let slot = PresetSlot::from_device_state("S", &state);
+        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
         let s = slot.summary(DeviceModel::Mv6);
         assert!(s.contains("24 dB"), "summary: {s}");
         assert!(s.contains("Denoiser on"), "summary: {s}");
@@ -1238,7 +1273,7 @@ mod tests {
             tone_advanced: true,
             ..mv6_example_state()
         };
-        let slot = PresetSlot::from_device_state("G2", &state);
+        let slot = PresetSlot::from_device_state("G2", &state, DeviceModel::Mvx2uGen2);
         let parsed: PresetSlot =
             toml::from_str(&toml::to_string(&slot).expect("serialize")).expect("parse");
         let mut restored = DeviceState::default();
@@ -1282,7 +1317,8 @@ mod tests {
     fn summary_mv6_gen2_shows_denoiser_level_and_auto_level_settings() {
         let mut state = mv6_example_state();
         state.denoiser_level = 64;
-        let manual = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv6Gen2);
+        let manual = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u)
+            .summary(DeviceModel::Mv6Gen2);
         assert_eq!(
             manual,
             "24 dB · Denoiser 64% · Popper on · HPF 75 Hz · Tone: 50% Bright"
@@ -1291,7 +1327,8 @@ mod tests {
         state.mode = InputMode::Auto;
         state.auto_gain = AutoGain::Quiet;
         state.denoiser_enabled = false;
-        let auto = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv6Gen2);
+        let auto = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u)
+            .summary(DeviceModel::Mv6Gen2);
         assert!(
             auto.starts_with("Auto · Target Low · Slow · Denoiser off"),
             "{auto}"
@@ -1302,7 +1339,7 @@ mod tests {
     fn summary_mv6_tone_natural_and_dark() {
         let mut state = mv6_example_state();
         state.tone = 0;
-        let slot = PresetSlot::from_device_state("S", &state);
+        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
         assert!(
             slot.summary(DeviceModel::Mv6).contains("Natural"),
             "zero tone should be Natural"
@@ -1310,7 +1347,7 @@ mod tests {
 
         let mut state2 = mv6_example_state();
         state2.tone = -3; // -30% Dark
-        let slot2 = PresetSlot::from_device_state("S", &state2);
+        let slot2 = PresetSlot::from_device_state("S", &state2, DeviceModel::Mvx2u);
         assert!(
             slot2.summary(DeviceModel::Mv6).contains("30% Dark"),
             "negative tone should be Dark"
@@ -1324,7 +1361,7 @@ mod tests {
             gain_tenths: 195,
             ..DeviceState::default()
         };
-        let slot = PresetSlot::from_device_state("MV7", &state);
+        let slot = PresetSlot::from_device_state("MV7", &state, DeviceModel::Mv7);
         let decoded = toml_roundtrip(&slot);
         assert_eq!(decoded.gain_db, 19.5);
 
@@ -1335,7 +1372,8 @@ mod tests {
 
     #[test]
     fn preset_saved_with_whole_db_gain_still_loads() {
-        let slot = PresetSlot::from_device_state("Old", &DeviceState::default());
+        let slot =
+            PresetSlot::from_device_state("Old", &DeviceState::default(), DeviceModel::Mvx2u);
         let text = toml::to_string_pretty(&slot)
             .expect("serialise")
             .replace("gain_db = 36.0", "gain_db = 36");
@@ -1348,7 +1386,8 @@ mod tests {
 
     #[test]
     fn preset_without_mv7_fields_loads_with_defaults() {
-        let slot = PresetSlot::from_device_state("Pre-MV7", &DeviceState::default());
+        let slot =
+            PresetSlot::from_device_state("Pre-MV7", &DeviceState::default(), DeviceModel::Mv7);
         let text: String = toml::to_string_pretty(&slot)
             .expect("serialise")
             .lines()
@@ -1381,7 +1420,7 @@ mod tests {
     #[test]
     fn mv7_preset_roundtrips_mv7_fields() {
         let original = mv7_example_state();
-        let slot = PresetSlot::from_device_state("MV7", &original);
+        let slot = PresetSlot::from_device_state("MV7", &original, DeviceModel::Mv7);
         let loaded = write_and_reload(&slot);
         assert_eq!(slot, loaded);
 
@@ -1397,7 +1436,7 @@ mod tests {
 
     #[test]
     fn summary_mv7_manual_shows_gain_compressor_and_eq() {
-        let slot = PresetSlot::from_device_state("S", &mv7_example_state());
+        let slot = PresetSlot::from_device_state("S", &mv7_example_state(), DeviceModel::Mvx2u);
         let s = slot.summary(DeviceModel::Mv7);
         assert!(s.contains("Manual"), "summary: {s}");
         assert!(s.contains("19.5 dB"), "summary: {s}");
@@ -1413,13 +1452,15 @@ mod tests {
         state.mode = InputMode::Auto;
         state.auto_position = MicPosition::Far;
         state.auto_tone = AutoTone::Dark;
-        let s = PresetSlot::from_device_state("S", &state).summary(DeviceModel::Mv7);
+        let s = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u)
+            .summary(DeviceModel::Mv7);
         assert_eq!(s, "Auto · Far · Dark");
     }
 
     #[test]
     fn apply_to_device_state_keeps_playback_mix_for_zero() {
-        let mut slot = PresetSlot::from_device_state("old", &DeviceState::default());
+        let mut slot =
+            PresetSlot::from_device_state("old", &DeviceState::default(), DeviceModel::Mvx2u);
         let mut state = DeviceState {
             playback_mix: 60,
             ..DeviceState::default()
@@ -1439,7 +1480,8 @@ mod tests {
     /// where `monitor_mix = 255` overflowed on the next ← / →.
     #[test]
     fn apply_to_device_state_clamps_hand_edited_values() {
-        let mut slot = PresetSlot::from_device_state("edited", &DeviceState::default());
+        let mut slot =
+            PresetSlot::from_device_state("edited", &DeviceState::default(), DeviceModel::Mvx2u);
         slot.monitor_mix = 255;
         slot.playback_mix = 150;
         slot.reverb_intensity = 101;
