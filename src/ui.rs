@@ -1295,7 +1295,7 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
         }
     };
     if !manual && summary_auto_managed(model, row) {
-        return Some(Span::styled("auto", Style::default().fg(C_DISABLED)));
+        return Some(Span::styled("auto", Style::default().fg(C_DIM)));
     }
     let span = match row {
         SummaryRow::Mode => text(ds.mode.to_string()),
@@ -1503,7 +1503,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
         let label = if app.demo_mode { "no device" } else { "---" };
         let empty = Gauge::default()
             .block(focus_block("Level", false))
-            .gauge_style(Style::default().fg(C_DISABLED).bg(C_SURFACE))
+            .gauge_style(Style::default().fg(C_DIM).bg(C_SURFACE))
             .ratio(0.0)
             .label(label);
         f.render_widget(empty, area);
