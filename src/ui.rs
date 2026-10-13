@@ -979,10 +979,10 @@ fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
         if gain_locked {
             Span::styled(
                 "LOCKED",
-                Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
+                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+            Span::styled("Unlocked", Style::default().fg(C_TEXT))
         },
         Span::styled(
             if lock_focused { "  [Enter] toggle" } else { "" },
@@ -1035,10 +1035,10 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
         if locked {
             Span::styled(
                 "LOCKED",
-                Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
+                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+            Span::styled("Unlocked", Style::default().fg(C_TEXT))
         },
         Span::styled(
             if lock_focused { "  [Enter] toggle" } else { "" },
@@ -1282,9 +1282,9 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
     };
     let lock = |locked: bool| {
         if locked {
-            Span::styled("LOCKED", Style::default().fg(C_ERROR))
+            Span::styled("LOCKED", Style::default().fg(C_WARN))
         } else {
-            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+            Span::styled("Unlocked", Style::default().fg(C_TEXT))
         }
     };
     if !manual && summary_auto_managed(model, row) {
