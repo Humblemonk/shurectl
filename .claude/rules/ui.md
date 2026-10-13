@@ -12,18 +12,27 @@ Review-site JPEGs and old MOTIV builds have misled us (gray faders, blue accents
 colors against the guide.
 
 **Palette.** Use the `C_*` constants at the top of `ui.rs`, never a new `Color::Rgb`. The
-only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel itself.
+only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel itself,
+lightened so their bar text stays readable.
 
 - **Lime `C_ACCENT`** marks where you are and what is active: the focused control (with a
   `BorderType::Thick` border from `focus_border()`, so focus never relies on color alone), the
   selected tab's underline, the active pill in `segmented_span()`, name editing, EQ gains,
   and the Gain and Denoiser level bars (MOTIV's fader fill). Keep it off large areas and off
   plain values: full lime frames and lime values read as too bright.
-- **Values and headings** are `C_TEXT` white, labels `C_DIM`, frames `C_BORDER`.
+- **Values and headings** are `C_TEXT` white, labels and hints `C_DIM`, frames `C_BORDER`.
+  `C_DISABLED` (3:1, below the 4.5:1 text minimum) is only for inactive things: locked tabs
+  (navigation skips them), the locked gain bar, empty bar segments. Anything people read,
+  including "auto" in the Summary and the meter's "no device", is `C_DIM` or brighter.
 - **Bars:** Mic Level / Monitor Mix, Tone and Reverb Intensity use `C_BLUE`; Playback Level
-  `C_PLAYBACK_LEVEL` orange, so the two adjacent monitor gauges stay distinct.
+  `C_PLAYBACK_LEVEL` prismblue, so the two adjacent monitor gauges stay distinct.
+  A gauge draws its label in the bar color over the empty part and in `C_SURFACE` over the
+  fill, so every bar color needs 4.5:1 against `C_SURFACE` (pure red or blue falls short).
 - **States:** ON and the meter's safe zone `C_SUCCESS` (MOTIV's meter green, bluer than the
-  lime), alerts `C_ERROR` (Muted ON is red, not green), warnings `C_WARN`.
+  lime), alerts `C_ERROR` (Muted ON is red, not green), warnings `C_WARN`. A locked Gain Lock
+  or Config Lock block shows LOCKED, its title and its frame in `C_WARN` (a chosen state, not
+  an error); Unlocked is `C_TEXT`. Red is for errors, Muted, clipping and destructive actions,
+  amber for cautions; never use either as decoration.
 
 **Controls.** Option strips (Input Mode, Auto Level rows, Mic Preset, Tone Mode) go through
 `segmented_span()`: gray segments with a black-on-lime active pill, pushed with no gap between

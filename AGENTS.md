@@ -213,7 +213,9 @@ is unchanged; a changed golden file lists the screens to look at.
   check heights 16-50 (bc3bb3f).
 - **Colors**: new colors use the `C_*` palette constants in `ui.rs`, never a raw
   `Color::Rgb` (the MV7+ LED channel sliders excepted). Lime is reserved for focus and active
-  states; values stay white. See `.claude/rules/ui.md`.
+  states; values stay white. Red means errors, Muted, clipping and destructive actions, amber
+  cautions; neither is decoration. Text people read, including a bar's label in its bar color,
+  needs 4.5:1, so `C_DISABLED` is for inactive things only. See `.claude/rules/ui.md`.
 - **Stale prose**: when a capability moves between models, update the doc comments, help
   overlay, status strings, Info tab and readme row too. Most "tidy" commits fix this.
 

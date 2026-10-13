@@ -1200,10 +1200,10 @@ fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
     Ok(())
 }
 
-/// Send every configurable field of `state` to the device.
-/// Called after loading a preset to bring the hardware into sync.
-/// `write_monitor_mix` is false when the preset's Monitor Mix was of the other
-/// kind, so the device keeps its own (which may never have been read).
+/// Send the configurable fields of `state` to the device, after loading a preset.
+/// Two are skipped: Monitor Mix when `write_monitor_mix` is false (the preset's
+/// was of the other kind, so the device keeps its own, which may never have
+/// been read), and a Playback Level of 0 (see `set_playback_level()`).
 fn apply_preset_to_device(
     device: &Option<ShureDevice>,
     state: &protocol::DeviceState,
@@ -1234,9 +1234,6 @@ fn apply_preset_to_device(
         d.set_mute(state.muted)?;
         if model.has_hpf() {
             d.set_hpf(&state.hpf)?;
-        }
-        if write_monitor_mix {
-            d.set_monitor_mix(state.monitor_mix)?;
         }
         match model {
             DeviceModel::Mvx2u => {
@@ -1312,6 +1309,11 @@ fn apply_preset_to_device(
                 d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
                 d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
             }
+        }
+        // Last, so a rejected write (the MV7 answers [Failed]) can't cut off
+        // the settings above.
+        if write_monitor_mix {
+            d.set_monitor_mix(state.monitor_mix)?;
         }
         Ok(())
     })
@@ -1504,30 +1506,30 @@ mod tests {
                 DeviceModel::Mvx2u,
             )
         };
-        let load = |slot: &PresetSlot, model: DeviceModel| {
+        // Each case: (preset, model loaded onto, Monitor Mix applies?).
+        let balance = preset(Some(false));
+        let mic_level = preset(Some(true));
+        let older = preset(None);
+        for (slot, model, applies) in [
+            (&balance, DeviceModel::Mvx2uGen2, false),
+            (&mic_level, DeviceModel::Mvx2u, false),
+            (&balance, DeviceModel::Mv7, true),
+            (&mic_level, DeviceModel::Mv7Plus, true),
+            (&older, DeviceModel::Mvx2uGen2, true),
+        ] {
             let mut state = protocol::DeviceState {
                 monitor_mix: 80,
                 ..protocol::DeviceState::default()
             };
-            let applies = apply_preset_to_state(slot, &mut state, model);
-            assert_eq!(applies, state.monitor_mix != 80, "write only what applies");
-            state.monitor_mix
-        };
-        let balance = preset(Some(false));
-        let mic_level = preset(Some(true));
-        assert_eq!(load(&balance, DeviceModel::Mvx2uGen2), 80, "kept");
-        assert_eq!(load(&mic_level, DeviceModel::Mvx2u), 80, "kept");
-        assert_eq!(load(&balance, DeviceModel::Mv7), 0, "same kind applies");
-        assert_eq!(
-            load(&mic_level, DeviceModel::Mv7Plus),
-            0,
-            "same kind applies"
-        );
-        assert_eq!(
-            load(&preset(None), DeviceModel::Mvx2uGen2),
-            0,
-            "old files as before"
-        );
+            assert_eq!(
+                apply_preset_to_state(slot, &mut state, model),
+                applies,
+                "{model:?}"
+            );
+            // The preset holds 0; a skipped one leaves the device's 80.
+            let expected = if applies { 0 } else { 80 };
+            assert_eq!(state.monitor_mix, expected, "{model:?}");
+        }
     }
 
     /// A preset saved on an MV6 with gain lock on must not freeze the gain of a

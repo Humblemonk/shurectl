@@ -1207,7 +1207,7 @@ mod tests {
         // Hz150 must result in Hz150, not whatever was there before.
         let mut state = mv6_example_state();
         state.hpf = HpfFrequency::Hz150;
-        let slot = PresetSlot::from_device_state("HPF test", &state, DeviceModel::Mvx2u);
+        let slot = PresetSlot::from_device_state("HPF test", &state, DeviceModel::Mv6);
 
         let mut target = DeviceState::default();
         // target.hpf starts as HpfFrequency::Off (default).
@@ -1245,7 +1245,7 @@ mod tests {
         state.popper_stopper_enabled = false;
         state.tone = 5; // +50% Bright
         state.hpf = HpfFrequency::Hz75;
-        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
+        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mv6);
         let s = slot.summary(DeviceModel::Mv6);
         assert!(s.contains("24 dB"), "summary: {s}");
         assert!(s.contains("Denoiser on"), "summary: {s}");
@@ -1273,7 +1273,7 @@ mod tests {
             tone_advanced: true,
             ..mv6_example_state()
         };
-        let slot = PresetSlot::from_device_state("G2", &state, DeviceModel::Mvx2uGen2);
+        let slot = PresetSlot::from_device_state("G2", &state, DeviceModel::Mv6Gen2);
         let parsed: PresetSlot =
             toml::from_str(&toml::to_string(&slot).expect("serialize")).expect("parse");
         let mut restored = DeviceState::default();
@@ -1317,7 +1317,7 @@ mod tests {
     fn summary_mv6_gen2_shows_denoiser_level_and_auto_level_settings() {
         let mut state = mv6_example_state();
         state.denoiser_level = 64;
-        let manual = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u)
+        let manual = PresetSlot::from_device_state("S", &state, DeviceModel::Mv6Gen2)
             .summary(DeviceModel::Mv6Gen2);
         assert_eq!(
             manual,
@@ -1327,7 +1327,7 @@ mod tests {
         state.mode = InputMode::Auto;
         state.auto_gain = AutoGain::Quiet;
         state.denoiser_enabled = false;
-        let auto = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u)
+        let auto = PresetSlot::from_device_state("S", &state, DeviceModel::Mv6Gen2)
             .summary(DeviceModel::Mv6Gen2);
         assert!(
             auto.starts_with("Auto · Target Low · Slow · Denoiser off"),
@@ -1339,7 +1339,7 @@ mod tests {
     fn summary_mv6_tone_natural_and_dark() {
         let mut state = mv6_example_state();
         state.tone = 0;
-        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u);
+        let slot = PresetSlot::from_device_state("S", &state, DeviceModel::Mv6);
         assert!(
             slot.summary(DeviceModel::Mv6).contains("Natural"),
             "zero tone should be Natural"
@@ -1347,7 +1347,7 @@ mod tests {
 
         let mut state2 = mv6_example_state();
         state2.tone = -3; // -30% Dark
-        let slot2 = PresetSlot::from_device_state("S", &state2, DeviceModel::Mvx2u);
+        let slot2 = PresetSlot::from_device_state("S", &state2, DeviceModel::Mv6);
         assert!(
             slot2.summary(DeviceModel::Mv6).contains("30% Dark"),
             "negative tone should be Dark"
@@ -1436,7 +1436,7 @@ mod tests {
 
     #[test]
     fn summary_mv7_manual_shows_gain_compressor_and_eq() {
-        let slot = PresetSlot::from_device_state("S", &mv7_example_state(), DeviceModel::Mvx2u);
+        let slot = PresetSlot::from_device_state("S", &mv7_example_state(), DeviceModel::Mv7);
         let s = slot.summary(DeviceModel::Mv7);
         assert!(s.contains("Manual"), "summary: {s}");
         assert!(s.contains("19.5 dB"), "summary: {s}");
@@ -1452,8 +1452,8 @@ mod tests {
         state.mode = InputMode::Auto;
         state.auto_position = MicPosition::Far;
         state.auto_tone = AutoTone::Dark;
-        let s = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2u)
-            .summary(DeviceModel::Mv7);
+        let s =
+            PresetSlot::from_device_state("S", &state, DeviceModel::Mv7).summary(DeviceModel::Mv7);
         assert_eq!(s, "Auto · Far · Dark");
     }
 

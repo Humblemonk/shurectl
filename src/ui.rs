@@ -47,8 +47,9 @@ const C_SUCCESS: Color = Color::Rgb(0, 200, 83);
 const C_ERROR: Color = Color::Rgb(255, 101, 103);
 const C_WARN: Color = Color::Rgb(255, 170, 0);
 const C_FOCUS: Color = C_ACCENT;
-const C_DISABLED: Color = Color::Rgb(98, 98, 100); // prismgray-s30
-// Muted like C_PLAYBACK_LEVEL; prismblue (65, 211, 248) glares as a full-width bar.
+// prismgray-s30: 3:1 on C_BG, below the 4.5:1 text minimum, so only for inactive things.
+const C_DISABLED: Color = Color::Rgb(98, 98, 100);
+// Darker than prismblue (C_PLAYBACK_LEVEL), so the two monitor gauges stay distinct.
 const C_BLUE: Color = Color::Rgb(50, 150, 220);
 
 /// A text row clipped to its widget's inner area, including tiny terminals.
@@ -80,23 +81,21 @@ fn focus_border(focused: bool) -> Block<'static> {
 
 /// A rounded block whose title and border light up when one of its controls has focus.
 fn focus_block(title: &str, focused: bool) -> Block<'static> {
-    alert_block(title, focused, false)
+    alert_block(title, focused, None)
 }
 
-/// `focus_block()` that turns red while `alert` holds (muted, locked) and it
-/// isn't focused.
-fn alert_block(title: &str, focused: bool, alert: bool) -> Block<'static> {
-    let alerting = alert && !focused;
-    let title_style = if alerting {
-        Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
-    } else {
-        focused_style(focused)
+/// `focus_block()` whose title and border take the `alert` color (red while muted,
+/// amber while locked) when it isn't focused.
+fn alert_block(title: &str, focused: bool, alert: Option<Color>) -> Block<'static> {
+    let alert = alert.filter(|_| !focused);
+    let title_style = match alert {
+        Some(color) => Style::default().fg(color).add_modifier(Modifier::BOLD),
+        None => focused_style(focused),
     };
     let block = focus_border(focused).title(Span::styled(format!("  {title}  "), title_style));
-    if alerting {
-        block.border_style(Style::default().fg(C_ERROR))
-    } else {
-        block
+    match alert {
+        Some(color) => block.border_style(Style::default().fg(color)),
+        None => block,
     }
 }
 
@@ -325,12 +324,12 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
     } else if app.can_flatten_eq() {
         Span::styled(
             " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
-            Style::default().fg(C_DISABLED),
+            Style::default().fg(C_DIM),
         )
     } else {
         Span::styled(
             " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [r] Refresh  [?] Help  [q] Quit",
-            Style::default().fg(C_DISABLED),
+            Style::default().fg(C_DIM),
         )
     };
 
@@ -866,12 +865,12 @@ fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(alert_block("Mute", focused, muted));
+    .block(alert_block("Mute", focused, muted.then_some(C_ERROR)));
     f.render_widget(p, area);
 }
 
-// Orange, not Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
-const C_PLAYBACK_LEVEL: Color = Color::Rgb(200, 100, 50);
+// prismblue, brighter than Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
+const C_PLAYBACK_LEVEL: Color = Color::Rgb(65, 211, 248);
 
 /// Renders the Monitor Mix block. Models with two monitor levels
 /// (`has_playback_mix()`) get MOTIV's Mic Level and Playback Level rows and
@@ -979,17 +978,21 @@ fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
         if gain_locked {
             Span::styled(
                 "LOCKED",
-                Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
+                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+            Span::styled("Unlocked", Style::default().fg(C_TEXT))
         },
         Span::styled(
             if lock_focused { "  [Enter] toggle" } else { "" },
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(alert_block("Gain Lock", lock_focused, gain_locked));
+    .block(alert_block(
+        "Gain Lock",
+        lock_focused,
+        gain_locked.then_some(C_WARN),
+    ));
     f.render_widget(gain_lock_p, area);
 }
 
@@ -1035,10 +1038,10 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
         if locked {
             Span::styled(
                 "LOCKED",
-                Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
+                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+            Span::styled("Unlocked", Style::default().fg(C_TEXT))
         },
         Span::styled(
             if lock_focused { "  [Enter] toggle" } else { "" },
@@ -1053,7 +1056,11 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
             Span::raw("")
         },
     ]))
-    .block(alert_block("Config Lock", lock_focused, locked));
+    .block(alert_block(
+        "Config Lock",
+        lock_focused,
+        locked.then_some(C_WARN),
+    ));
     f.render_widget(lock_p, area);
 }
 
@@ -1282,13 +1289,13 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
     };
     let lock = |locked: bool| {
         if locked {
-            Span::styled("LOCKED", Style::default().fg(C_ERROR))
+            Span::styled("LOCKED", Style::default().fg(C_WARN))
         } else {
-            Span::styled("Unlocked", Style::default().fg(C_SUCCESS))
+            Span::styled("Unlocked", Style::default().fg(C_TEXT))
         }
     };
     if !manual && summary_auto_managed(model, row) {
-        return Some(Span::styled("auto", Style::default().fg(C_DISABLED)));
+        return Some(Span::styled("auto", Style::default().fg(C_DIM)));
     }
     let span = match row {
         SummaryRow::Mode => text(ds.mode.to_string()),
@@ -1296,7 +1303,7 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
             if ds.muted {
                 Span::styled("YES", Style::default().fg(C_ERROR))
             } else {
-                Span::styled("NO", Style::default().fg(C_SUCCESS))
+                Span::styled("NO", Style::default().fg(C_DIM))
             }
         }
         SummaryRow::Gain if manual => text(format_gain(ds.gain_tenths)),
@@ -1496,7 +1503,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
         let label = if app.demo_mode { "no device" } else { "---" };
         let empty = Gauge::default()
             .block(focus_block("Level", false))
-            .gauge_style(Style::default().fg(C_DISABLED).bg(C_SURFACE))
+            .gauge_style(Style::default().fg(C_DIM).bg(C_SURFACE))
             .ratio(0.0)
             .label(label);
         f.render_widget(empty, area);
@@ -1565,7 +1572,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
 
     let ruler = Paragraph::new(Line::from(Span::styled(
         ruler_str,
-        Style::default().fg(C_DISABLED),
+        Style::default().fg(C_DIM),
     )))
     // 1-char left margin aligns the ruler under the bar (skips the left border char).
     .block(Block::default().padding(ratatui::widgets::Padding::new(1, 0, 0, 0)));
@@ -1705,7 +1712,7 @@ fn draw_status_card(f: &mut UiFrame, focused: bool, card: StatusCard, area: Rect
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         card.hint,
-        Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
+        Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
     )));
 
     f.render_widget(
@@ -1747,7 +1754,7 @@ fn draw_enum_card(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "[Enter] cycle",
-        Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
+        Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
     )));
 
     f.render_widget(
@@ -2007,7 +2014,7 @@ fn eq_band_column(
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("Freq: ", Style::default().fg(C_DIM)),
-        Span::styled(format_band_freq(band), Style::default().fg(C_DIM)),
+        Span::styled(format_band_freq(band), Style::default().fg(C_TEXT)),
     ]));
     if let Some(enabled) = enabled {
         let en_foc = app.focus == Focus::EqBandEnable(band);
@@ -2468,7 +2475,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedSolidR,
                 ds.led_solid_rgb[0],
                 "Solid R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 cols[0],
             );
             draw_led_color_gauge(
@@ -2486,7 +2493,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedSolidB,
                 ds.led_solid_rgb[2],
                 "Solid B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 cols[2],
             );
         }
@@ -2501,7 +2508,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedPulsingR,
                 ds.led_pulsing_rgb[0],
                 "Pulsing R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 cols[0],
             );
             draw_led_color_gauge(
@@ -2519,7 +2526,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedPulsingB,
                 ds.led_pulsing_rgb[2],
                 "Pulsing B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 cols[2],
             );
         }
@@ -2535,7 +2542,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveEdgeR,
                 ds.led_live_edge_rgb[0],
                 "Edge R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 edge_cols[0],
             );
             draw_led_color_gauge(
@@ -2553,7 +2560,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveEdgeB,
                 ds.led_live_edge_rgb[2],
                 "Edge B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 edge_cols[2],
             );
 
@@ -2567,7 +2574,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveMiddleR,
                 ds.led_live_middle_rgb[0],
                 "Middle R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 mid_cols[0],
             );
             draw_led_color_gauge(
@@ -2585,7 +2592,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveMiddleB,
                 ds.led_live_middle_rgb[2],
                 "Middle B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 mid_cols[2],
             );
 
@@ -2599,7 +2606,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveInteriorR,
                 ds.led_live_interior_rgb[0],
                 "Interior R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 int_cols[0],
             );
             draw_led_color_gauge(
@@ -2617,7 +2624,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveInteriorB,
                 ds.led_live_interior_rgb[2],
                 "Interior B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 int_cols[2],
             );
         }
@@ -2775,7 +2782,7 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
             let style = if focused {
                 Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(C_DISABLED)
+                Style::default().fg(C_DIM)
             };
             (String::from("Empty"), color, style)
         }
@@ -2880,7 +2887,7 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
             ),
             Span::styled(
                 "Save current settings here",
-                Style::default().fg(if focused { C_TEXT } else { C_DISABLED }),
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
             ),
         ])
     };
@@ -3271,7 +3278,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         )),
         Line::from(Span::styled(
             "  Press ? or Esc to close",
-            Style::default().fg(C_DISABLED),
+            Style::default().fg(C_DIM),
         )),
     ];
 
