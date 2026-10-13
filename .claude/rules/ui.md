@@ -21,7 +21,7 @@ only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel
   plain values: full lime frames and lime values read as too bright.
 - **Values and headings** are `C_TEXT` white, labels `C_DIM`, frames `C_BORDER`.
 - **Bars:** Mic Level / Monitor Mix, Tone and Reverb Intensity use `C_BLUE`; Playback Level
-  `C_PLAYBACK_LEVEL` orange, so the two adjacent monitor gauges stay distinct.
+  `C_PLAYBACK_LEVEL` prismblue, so the two adjacent monitor gauges stay distinct.
 - **States:** ON and the meter's safe zone `C_SUCCESS` (MOTIV's meter green, bluer than the
   lime), alerts `C_ERROR` (Muted ON is red, not green), warnings `C_WARN`.
 

@@ -870,8 +870,8 @@ fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-// Orange, not Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
-const C_PLAYBACK_LEVEL: Color = Color::Rgb(200, 100, 50);
+// prismblue, brighter than Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
+const C_PLAYBACK_LEVEL: Color = Color::Rgb(65, 211, 248);
 
 /// Renders the Monitor Mix block. Models with two monitor levels
 /// (`has_playback_mix()`) get MOTIV's Mic Level and Playback Level rows and
