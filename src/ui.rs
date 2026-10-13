@@ -47,7 +47,8 @@ const C_SUCCESS: Color = Color::Rgb(0, 200, 83);
 const C_ERROR: Color = Color::Rgb(255, 101, 103);
 const C_WARN: Color = Color::Rgb(255, 170, 0);
 const C_FOCUS: Color = C_ACCENT;
-const C_DISABLED: Color = Color::Rgb(98, 98, 100); // prismgray-s30
+// prismgray-s30: 3:1 on C_BG, below the 4.5:1 text minimum, so only for inactive things.
+const C_DISABLED: Color = Color::Rgb(98, 98, 100);
 // Darker than prismblue (C_PLAYBACK_LEVEL), so the two monitor gauges stay distinct.
 const C_BLUE: Color = Color::Rgb(50, 150, 220);
 
@@ -323,12 +324,12 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
     } else if app.can_flatten_eq() {
         Span::styled(
             " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
-            Style::default().fg(C_DISABLED),
+            Style::default().fg(C_DIM),
         )
     } else {
         Span::styled(
             " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [r] Refresh  [?] Help  [q] Quit",
-            Style::default().fg(C_DISABLED),
+            Style::default().fg(C_DIM),
         )
     };
 
@@ -1571,7 +1572,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
 
     let ruler = Paragraph::new(Line::from(Span::styled(
         ruler_str,
-        Style::default().fg(C_DISABLED),
+        Style::default().fg(C_DIM),
     )))
     // 1-char left margin aligns the ruler under the bar (skips the left border char).
     .block(Block::default().padding(ratatui::widgets::Padding::new(1, 0, 0, 0)));
@@ -1711,7 +1712,7 @@ fn draw_status_card(f: &mut UiFrame, focused: bool, card: StatusCard, area: Rect
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         card.hint,
-        Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
+        Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
     )));
 
     f.render_widget(
@@ -1753,7 +1754,7 @@ fn draw_enum_card(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "[Enter] cycle",
-        Style::default().fg(if focused { C_FOCUS } else { C_DISABLED }),
+        Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
     )));
 
     f.render_widget(
@@ -2013,7 +2014,7 @@ fn eq_band_column(
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("Freq: ", Style::default().fg(C_DIM)),
-        Span::styled(format_band_freq(band), Style::default().fg(C_DIM)),
+        Span::styled(format_band_freq(band), Style::default().fg(C_TEXT)),
     ]));
     if let Some(enabled) = enabled {
         let en_foc = app.focus == Focus::EqBandEnable(band);
@@ -2781,7 +2782,7 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
             let style = if focused {
                 Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(C_DISABLED)
+                Style::default().fg(C_DIM)
             };
             (String::from("Empty"), color, style)
         }
@@ -2886,7 +2887,7 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
             ),
             Span::styled(
                 "Save current settings here",
-                Style::default().fg(if focused { C_TEXT } else { C_DISABLED }),
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
             ),
         ])
     };
@@ -3277,7 +3278,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         )),
         Line::from(Span::styled(
             "  Press ? or Esc to close",
-            Style::default().fg(C_DISABLED),
+            Style::default().fg(C_DIM),
         )),
     ];
 

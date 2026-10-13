@@ -19,7 +19,10 @@ only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel
   selected tab's underline, the active pill in `segmented_span()`, name editing, EQ gains,
   and the Gain and Denoiser level bars (MOTIV's fader fill). Keep it off large areas and off
   plain values: full lime frames and lime values read as too bright.
-- **Values and headings** are `C_TEXT` white, labels `C_DIM`, frames `C_BORDER`.
+- **Values and headings** are `C_TEXT` white, labels and hints `C_DIM`, frames `C_BORDER`.
+  `C_DISABLED` (3:1, below the 4.5:1 text minimum) is only for inactive things: locked tabs,
+  the locked gain bar, "auto" values, empty bar segments. Anything people read is `C_DIM` or
+  brighter.
 - **Bars:** Mic Level / Monitor Mix, Tone and Reverb Intensity use `C_BLUE`; Playback Level
   `C_PLAYBACK_LEVEL` prismblue, so the two adjacent monitor gauges stay distinct.
 - **States:** ON and the meter's safe zone `C_SUCCESS` (MOTIV's meter green, bluer than the
