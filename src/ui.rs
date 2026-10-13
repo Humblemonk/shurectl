@@ -48,7 +48,7 @@ const C_ERROR: Color = Color::Rgb(255, 101, 103);
 const C_WARN: Color = Color::Rgb(255, 170, 0);
 const C_FOCUS: Color = C_ACCENT;
 const C_DISABLED: Color = Color::Rgb(98, 98, 100); // prismgray-s30
-// Muted like C_PLAYBACK_LEVEL; prismblue (65, 211, 248) glares as a full-width bar.
+// Darker than prismblue (C_PLAYBACK_LEVEL), so the two monitor gauges stay distinct.
 const C_BLUE: Color = Color::Rgb(50, 150, 220);
 
 /// A text row clipped to its widget's inner area, including tiny terminals.

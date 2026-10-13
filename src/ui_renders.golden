@@ -23,7 +23,7 @@ Mvx2u Manual adv=false muted=false locked=false Presets band=0 PresetName(2) 35d
 Mvx2u Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) 33b1f8ba830dbb0a
 Mvx2u Manual adv=false muted=false locked=false Presets band=0 PresetName(3) ed267c420aa622b3
 Mvx2u Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) 8b6eddf6b7c4d76a
-Mvx2u Manual adv=false muted=false locked=false Info band=0 DeviceName 68bb2ccf16de5b49
+Mvx2u Manual adv=false muted=false locked=false Info band=0 DeviceName ec6cf808d8225bce
 Mvx2u Manual adv=false muted=true locked=true Main band=0 Gain 55789206092e8c6f
 Mvx2u Manual adv=false muted=true locked=true Main band=0 MonitorMix 5f4dfb79516ba635
 Mvx2u Manual adv=false muted=true locked=true Main band=0 Phantom af36fd56a8a9c5eb
@@ -49,7 +49,7 @@ Mvx2u Manual adv=false muted=true locked=true Presets band=0 PresetName(2) 35ded
 Mvx2u Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) 33b1f8ba830dbb0a
 Mvx2u Manual adv=false muted=true locked=true Presets band=0 PresetName(3) ed267c420aa622b3
 Mvx2u Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) 8b6eddf6b7c4d76a
-Mvx2u Manual adv=false muted=true locked=true Info band=0 DeviceName 68bb2ccf16de5b49
+Mvx2u Manual adv=false muted=true locked=true Info band=0 DeviceName ec6cf808d8225bce
 Mvx2u Auto adv=false muted=false locked=false Main band=0 Mode f9a7c5b2885c68a9
 Mvx2u Auto adv=false muted=false locked=false Main band=0 Mute 86e38319203461a7
 Mvx2u Auto adv=false muted=false locked=false Main band=0 AutoPosition 14f8c52ba536b6bb
@@ -68,7 +68,7 @@ Mvx2u Auto adv=false muted=false locked=false Presets band=0 PresetName(2) c5598
 Mvx2u Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) 961535efaf959016
 Mvx2u Auto adv=false muted=false locked=false Presets band=0 PresetName(3) 6a6d54e36c219c87
 Mvx2u Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) abe2f57654685496
-Mvx2u Auto adv=false muted=false locked=false Info band=0 DeviceName 2321e995305d8265
+Mvx2u Auto adv=false muted=false locked=false Info band=0 DeviceName 23efdad958a3e1ca
 Mvx2u Auto adv=false muted=true locked=true Main band=0 Mode 2a2b82e88a33ae6a
 Mvx2u Auto adv=false muted=true locked=true Main band=0 Mute c0a3409380192524
 Mvx2u Auto adv=false muted=true locked=true Main band=0 AutoPosition c7f399f137770036
@@ -87,7 +87,7 @@ Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetName(2) c5598d9
 Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 961535efaf959016
 Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetName(3) 6a6d54e36c219c87
 Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) abe2f57654685496
-Mvx2u Auto adv=false muted=true locked=true Info band=0 DeviceName 2321e995305d8265
+Mvx2u Auto adv=false muted=true locked=true Info band=0 DeviceName 23efdad958a3e1ca
 Mvx2uGen2 Manual adv=false muted=false locked=false Main band=0 Gain b1c274e6e8ed6ebe
 Mvx2uGen2 Manual adv=false muted=false locked=false Main band=0 GainLock 3897c9c3b057a9cc
 Mvx2uGen2 Manual adv=false muted=false locked=false Main band=0 MonitorMix 4dd265c311d5b3c9
@@ -112,8 +112,8 @@ Mvx2uGen2 Manual adv=false muted=false locked=false Presets band=0 PresetName(2)
 Mvx2uGen2 Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) 17c7f022c1ab6ede
 Mvx2uGen2 Manual adv=false muted=false locked=false Presets band=0 PresetName(3) 02b235112c1cdbdf
 Mvx2uGen2 Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) ee4c17e3899dd4fe
-Mvx2uGen2 Manual adv=false muted=false locked=false Info band=0 DeviceName 64d28663ee70156b
-Mvx2uGen2 Manual adv=false muted=false locked=false Info band=0 FactoryReset 26de9f28571c441f
+Mvx2uGen2 Manual adv=false muted=false locked=false Info band=0 DeviceName dd6be1ab1f7db088
+Mvx2uGen2 Manual adv=false muted=false locked=false Info band=0 FactoryReset cd24d17596e638ac
 Mvx2uGen2 Manual adv=false muted=true locked=true Main band=0 Gain 65ecfc7248c270c3
 Mvx2uGen2 Manual adv=false muted=true locked=true Main band=0 GainLock 33a31177357896a6
 Mvx2uGen2 Manual adv=false muted=true locked=true Main band=0 MonitorMix f43efbf4613d00c0
@@ -138,8 +138,8 @@ Mvx2uGen2 Manual adv=false muted=true locked=true Presets band=0 PresetName(2) c
 Mvx2uGen2 Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) 17c7f022c1ab6ede
 Mvx2uGen2 Manual adv=false muted=true locked=true Presets band=0 PresetName(3) 02b235112c1cdbdf
 Mvx2uGen2 Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) ee4c17e3899dd4fe
-Mvx2uGen2 Manual adv=false muted=true locked=true Info band=0 DeviceName 64d28663ee70156b
-Mvx2uGen2 Manual adv=false muted=true locked=true Info band=0 FactoryReset 26de9f28571c441f
+Mvx2uGen2 Manual adv=false muted=true locked=true Info band=0 DeviceName dd6be1ab1f7db088
+Mvx2uGen2 Manual adv=false muted=true locked=true Info band=0 FactoryReset cd24d17596e638ac
 Mvx2uGen2 Auto adv=false muted=false locked=false Main band=0 Mode 2bbd2f2a7b6efd5d
 Mvx2uGen2 Auto adv=false muted=false locked=false Main band=0 Mute bcfc8a82a8bf1939
 Mvx2uGen2 Auto adv=false muted=false locked=false Main band=0 MonitorMix 589a1322526986c0
@@ -157,8 +157,8 @@ Mvx2uGen2 Auto adv=false muted=false locked=false Presets band=0 PresetName(2) c
 Mvx2uGen2 Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) 17c7f022c1ab6ede
 Mvx2uGen2 Auto adv=false muted=false locked=false Presets band=0 PresetName(3) 02b235112c1cdbdf
 Mvx2uGen2 Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) ee4c17e3899dd4fe
-Mvx2uGen2 Auto adv=false muted=false locked=false Info band=0 DeviceName 64d28663ee70156b
-Mvx2uGen2 Auto adv=false muted=false locked=false Info band=0 FactoryReset 26de9f28571c441f
+Mvx2uGen2 Auto adv=false muted=false locked=false Info band=0 DeviceName dd6be1ab1f7db088
+Mvx2uGen2 Auto adv=false muted=false locked=false Info band=0 FactoryReset cd24d17596e638ac
 Mvx2uGen2 Auto adv=false muted=true locked=true Main band=0 Mode e6a42bfd5ff9f338
 Mvx2uGen2 Auto adv=false muted=true locked=true Main band=0 Mute 5c37790f97474c80
 Mvx2uGen2 Auto adv=false muted=true locked=true Main band=0 MonitorMix d2c0dfe24b5ac6c7
@@ -176,8 +176,8 @@ Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetName(2) c82
 Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 17c7f022c1ab6ede
 Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) 02b235112c1cdbdf
 Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) ee4c17e3899dd4fe
-Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 DeviceName 64d28663ee70156b
-Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset 26de9f28571c441f
+Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 DeviceName dd6be1ab1f7db088
+Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset cd24d17596e638ac
 Mv6 Manual adv=false muted=false locked=false Main band=0 Gain eed4361f87b53a0e
 Mv6 Manual adv=false muted=false locked=false Main band=0 GainLock b4a7ddf1e1ec25a6
 Mv6 Manual adv=false muted=false locked=false Main band=0 MonitorMix af01f1f2cd13f689
@@ -197,7 +197,7 @@ Mv6 Manual adv=false muted=false locked=false Presets band=0 PresetName(2) ca5be
 Mv6 Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) 68ae3314f4d3251b
 Mv6 Manual adv=false muted=false locked=false Presets band=0 PresetName(3) 60b2e1e8ff134648
 Mv6 Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) 5da1ec619b57a94b
-Mv6 Manual adv=false muted=false locked=false Info band=0 DeviceName 99db691b426fcd52
+Mv6 Manual adv=false muted=false locked=false Info band=0 DeviceName 8c8f14cfba92ed55
 Mv6 Manual adv=false muted=true locked=true Main band=0 Gain a3da9ccf92ad70a9
 Mv6 Manual adv=false muted=true locked=true Main band=0 GainLock e770a82babc05ce2
 Mv6 Manual adv=false muted=true locked=true Main band=0 MonitorMix 443c9e24c611eb62
@@ -217,7 +217,7 @@ Mv6 Manual adv=false muted=true locked=true Presets band=0 PresetName(2) ca5be5c
 Mv6 Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) 68ae3314f4d3251b
 Mv6 Manual adv=false muted=true locked=true Presets band=0 PresetName(3) 60b2e1e8ff134648
 Mv6 Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) 5da1ec619b57a94b
-Mv6 Manual adv=false muted=true locked=true Info band=0 DeviceName 99db691b426fcd52
+Mv6 Manual adv=false muted=true locked=true Info band=0 DeviceName 8c8f14cfba92ed55
 Mv6 Auto adv=false muted=false locked=false Main band=0 Mode 3df43ad64e1126ff
 Mv6 Auto adv=false muted=false locked=false Main band=0 Mute c9f0e6d0eb812845
 Mv6 Auto adv=false muted=false locked=false Main band=0 MonitorMix 3e67d484c3c97800
@@ -235,7 +235,7 @@ Mv6 Auto adv=false muted=false locked=false Presets band=0 PresetName(2) ca5be5c
 Mv6 Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) 68ae3314f4d3251b
 Mv6 Auto adv=false muted=false locked=false Presets band=0 PresetName(3) 60b2e1e8ff134648
 Mv6 Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) 5da1ec619b57a94b
-Mv6 Auto adv=false muted=false locked=false Info band=0 DeviceName 99db691b426fcd52
+Mv6 Auto adv=false muted=false locked=false Info band=0 DeviceName 8c8f14cfba92ed55
 Mv6 Auto adv=false muted=true locked=true Main band=0 Mode d1dc1de4e59b4544
 Mv6 Auto adv=false muted=true locked=true Main band=0 Mute 8721cae4b9fbbc56
 Mv6 Auto adv=false muted=true locked=true Main band=0 MonitorMix d330973e322e30f9
@@ -253,7 +253,7 @@ Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetName(2) ca5be5c6b
 Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 68ae3314f4d3251b
 Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) 60b2e1e8ff134648
 Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 5da1ec619b57a94b
-Mv6 Auto adv=false muted=true locked=true Info band=0 DeviceName 99db691b426fcd52
+Mv6 Auto adv=false muted=true locked=true Info band=0 DeviceName 8c8f14cfba92ed55
 Mv6Gen2 Manual adv=false muted=false locked=false Main band=0 Gain b02b80364f0a1857
 Mv6Gen2 Manual adv=false muted=false locked=false Main band=0 GainLock 6355cda7e7b2d27d
 Mv6Gen2 Manual adv=false muted=false locked=false Main band=0 MonitorMix 6013d4cc27cdb0f0
@@ -275,8 +275,8 @@ Mv6Gen2 Manual adv=false muted=false locked=false Presets band=0 PresetName(2) 2
 Mv6Gen2 Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Manual adv=false muted=false locked=false Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Manual adv=false muted=false locked=false Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Manual adv=false muted=false locked=false Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Manual adv=false muted=false locked=false Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Manual adv=false muted=false locked=false Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Manual adv=false muted=true locked=true Main band=0 Gain 241fe1c58c00eec0
 Mv6Gen2 Manual adv=false muted=true locked=true Main band=0 GainLock a2df09e539fede49
 Mv6Gen2 Manual adv=false muted=true locked=true Main band=0 MonitorMix 04ce50555d33be2b
@@ -298,8 +298,8 @@ Mv6Gen2 Manual adv=false muted=true locked=true Presets band=0 PresetName(2) 2ae
 Mv6Gen2 Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Manual adv=false muted=true locked=true Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Manual adv=false muted=true locked=true Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Manual adv=false muted=true locked=true Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Manual adv=false muted=true locked=true Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Manual adv=false muted=true locked=true Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Manual adv=true muted=false locked=false Main band=0 Gain cc763f1515823d3f
 Mv6Gen2 Manual adv=true muted=false locked=false Main band=0 GainLock e74a9ea64d26b555
 Mv6Gen2 Manual adv=true muted=false locked=false Main band=0 MonitorMix 3e6e38755822bd58
@@ -325,8 +325,8 @@ Mv6Gen2 Manual adv=true muted=false locked=false Presets band=0 PresetName(2) 2a
 Mv6Gen2 Manual adv=true muted=false locked=false Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Manual adv=true muted=false locked=false Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Manual adv=true muted=false locked=false Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Manual adv=true muted=false locked=false Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Manual adv=true muted=false locked=false Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Manual adv=true muted=false locked=false Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Manual adv=true muted=false locked=false Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Manual adv=true muted=true locked=true Main band=0 Gain 51f049d2da1681e8
 Mv6Gen2 Manual adv=true muted=true locked=true Main band=0 GainLock 4b3ce93b83d2cef1
 Mv6Gen2 Manual adv=true muted=true locked=true Main band=0 MonitorMix 9239ea32989b5273
@@ -352,8 +352,8 @@ Mv6Gen2 Manual adv=true muted=true locked=true Presets band=0 PresetName(2) 2aef
 Mv6Gen2 Manual adv=true muted=true locked=true Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Manual adv=true muted=true locked=true Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Manual adv=true muted=true locked=true Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Manual adv=true muted=true locked=true Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Manual adv=true muted=true locked=true Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Manual adv=true muted=true locked=true Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Manual adv=true muted=true locked=true Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Auto adv=false muted=false locked=false Main band=0 Mode 5203b10b06a16687
 Mv6Gen2 Auto adv=false muted=false locked=false Main band=0 Mute 68adcb63397ec6a9
 Mv6Gen2 Auto adv=false muted=false locked=false Main band=0 AutoGain 16c0a015cf52fbd8
@@ -375,8 +375,8 @@ Mv6Gen2 Auto adv=false muted=false locked=false Presets band=0 PresetName(2) 2ae
 Mv6Gen2 Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Auto adv=false muted=false locked=false Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Auto adv=false muted=false locked=false Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Auto adv=false muted=false locked=false Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Auto adv=false muted=false locked=false Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Auto adv=false muted=false locked=false Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Auto adv=false muted=true locked=true Main band=0 Mode 948df1203e709c36
 Mv6Gen2 Auto adv=false muted=true locked=true Main band=0 Mute 984342849c92eaf4
 Mv6Gen2 Auto adv=false muted=true locked=true Main band=0 AutoGain 0ebf4dee5e1bee91
@@ -398,8 +398,8 @@ Mv6Gen2 Auto adv=false muted=true locked=true Presets band=0 PresetName(2) 2aef4
 Mv6Gen2 Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Auto adv=false muted=true locked=true Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Auto adv=false muted=true locked=true Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Auto adv=true muted=false locked=false Main band=0 Mode 23327d75287410db
 Mv6Gen2 Auto adv=true muted=false locked=false Main band=0 Mute c87dfb066667fcbd
 Mv6Gen2 Auto adv=true muted=false locked=false Main band=0 AutoGain 1b25d7f4f89dc624
@@ -425,8 +425,8 @@ Mv6Gen2 Auto adv=true muted=false locked=false Presets band=0 PresetName(2) 2aef
 Mv6Gen2 Auto adv=true muted=false locked=false Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Auto adv=true muted=false locked=false Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Auto adv=true muted=false locked=false Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Auto adv=true muted=false locked=false Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Auto adv=true muted=false locked=false Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Auto adv=true muted=false locked=false Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Auto adv=true muted=false locked=false Info band=0 FactoryReset 397e4edd10ce85c1
 Mv6Gen2 Auto adv=true muted=true locked=true Main band=0 Mode 0a4d8f946d34b27e
 Mv6Gen2 Auto adv=true muted=true locked=true Main band=0 Mute 4a045e87550a5e1c
 Mv6Gen2 Auto adv=true muted=true locked=true Main band=0 AutoGain 3a8f9afdebd74891
@@ -452,8 +452,8 @@ Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetName(2) 2aef43
 Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetActions(2) a6d246d8c200ea13
 Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetName(3) a38c70e4329e23d0
 Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetActions(3) 48065e536f7034c3
-Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 DeviceName d81cea883e58e1b6
-Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 FactoryReset a4c401b158e33ae6
+Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 DeviceName cfe4414649add0d1
+Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 FactoryReset 397e4edd10ce85c1
 Mv7 Manual adv=false muted=false locked=false Main band=0 Gain 57c1f3880dc9c6c0
 Mv7 Manual adv=false muted=false locked=false Main band=0 MonitorMix 6b4a06ffdcd182d6
 Mv7 Manual adv=false muted=false locked=false Main band=0 Lock a52a0894293e18a6
@@ -471,7 +471,7 @@ Mv7 Manual adv=false muted=false locked=false Presets band=0 PresetName(2) 593ea
 Mv7 Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) c6ff2003ebdc9085
 Mv7 Manual adv=false muted=false locked=false Presets band=0 PresetName(3) cd2a1e6f2927501a
 Mv7 Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) f64856c21485ddf5
-Mv7 Manual adv=false muted=false locked=false Info band=0 FactoryReset 0369fa1bf7c73584
+Mv7 Manual adv=false muted=false locked=false Info band=0 FactoryReset a55d5183d50e0027
 Mv7 Manual adv=false muted=true locked=true Main band=0 Gain d18382818293f8ff
 Mv7 Manual adv=false muted=true locked=true Main band=0 MonitorMix 1f4c01219494ecb1
 Mv7 Manual adv=false muted=true locked=true Main band=0 Lock 6f809d7cd9275f26
@@ -489,7 +489,7 @@ Mv7 Manual adv=false muted=true locked=true Presets band=0 PresetName(2) 593ea7b
 Mv7 Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) c6ff2003ebdc9085
 Mv7 Manual adv=false muted=true locked=true Presets band=0 PresetName(3) cd2a1e6f2927501a
 Mv7 Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) f64856c21485ddf5
-Mv7 Manual adv=false muted=true locked=true Info band=0 FactoryReset 0369fa1bf7c73584
+Mv7 Manual adv=false muted=true locked=true Info band=0 FactoryReset a55d5183d50e0027
 Mv7 Auto adv=false muted=false locked=false Main band=0 Mode 5677580d57c362d3
 Mv7 Auto adv=false muted=false locked=false Main band=0 Mute 51a0ecfe43273cf9
 Mv7 Auto adv=false muted=false locked=false Main band=0 AutoPosition 04ce9d13f2c1669f
@@ -508,7 +508,7 @@ Mv7 Auto adv=false muted=false locked=false Presets band=0 PresetName(2) 404acd7
 Mv7 Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) 2f1b62aff3454271
 Mv7 Auto adv=false muted=false locked=false Presets band=0 PresetName(3) 902152dae6305f4e
 Mv7 Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) a498348266fedb81
-Mv7 Auto adv=false muted=false locked=false Info band=0 FactoryReset 72e52541881017e0
+Mv7 Auto adv=false muted=false locked=false Info band=0 FactoryReset 72331b8ed742a423
 Mv7 Auto adv=false muted=true locked=true Main band=0 Mode a40efb7ad257366c
 Mv7 Auto adv=false muted=true locked=true Main band=0 Mute ee9e602ae8c5a472
 Mv7 Auto adv=false muted=true locked=true Main band=0 AutoPosition 41d0bf0cc280e368
@@ -527,7 +527,7 @@ Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetName(2) 404acd7aa
 Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 2f1b62aff3454271
 Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) 902152dae6305f4e
 Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) a498348266fedb81
-Mv7 Auto adv=false muted=true locked=true Info band=0 FactoryReset 72e52541881017e0
+Mv7 Auto adv=false muted=true locked=true Info band=0 FactoryReset 72331b8ed742a423
 Mv7Plus Manual adv=false muted=false locked=false Main band=0 Gain 86e0940b3ce6b334
 Mv7Plus Manual adv=false muted=false locked=false Main band=0 MonitorMix 8c15b28c6f0deef7
 Mv7Plus Manual adv=false muted=false locked=false Main band=0 PlaybackMix 62c1f69f970bae52
@@ -555,8 +555,8 @@ Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetName(2) 0
 Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) bb8ba6cb9a562326
 Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetName(3) 01d01c1d8fa865d7
 Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) 8f83b4bf4a1eeea6
-Mv7Plus Manual adv=false muted=false locked=false Info band=0 DeviceName 326efce8e46cd5ff
-Mv7Plus Manual adv=false muted=false locked=false Info band=0 FactoryReset bfc8db7c6f1fb07b
+Mv7Plus Manual adv=false muted=false locked=false Info band=0 DeviceName f072de267644e48c
+Mv7Plus Manual adv=false muted=false locked=false Info band=0 FactoryReset 4d864913a4bddbd8
 Mv7Plus Manual adv=false muted=true locked=true Main band=0 Gain e909f593d7704e67
 Mv7Plus Manual adv=false muted=true locked=true Main band=0 MonitorMix d63fd8faf900dffc
 Mv7Plus Manual adv=false muted=true locked=true Main band=0 PlaybackMix 735564f860f693d7
@@ -584,8 +584,8 @@ Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetName(2) 0ec
 Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) bb8ba6cb9a562326
 Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetName(3) 01d01c1d8fa865d7
 Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) 8f83b4bf4a1eeea6
-Mv7Plus Manual adv=false muted=true locked=true Info band=0 DeviceName 326efce8e46cd5ff
-Mv7Plus Manual adv=false muted=true locked=true Info band=0 FactoryReset bfc8db7c6f1fb07b
+Mv7Plus Manual adv=false muted=true locked=true Info band=0 DeviceName f072de267644e48c
+Mv7Plus Manual adv=false muted=true locked=true Info band=0 FactoryReset 4d864913a4bddbd8
 Mv7Plus Auto adv=false muted=false locked=false Main band=0 Mode 0252586b9db770f8
 Mv7Plus Auto adv=false muted=false locked=false Main band=0 Mute 1e7f4f8fc6beb4ee
 Mv7Plus Auto adv=false muted=false locked=false Main band=0 MonitorMix 643e04bd02f178b1
@@ -612,8 +612,8 @@ Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetName(2) 0ec
 Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) bb8ba6cb9a562326
 Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetName(3) 01d01c1d8fa865d7
 Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) 8f83b4bf4a1eeea6
-Mv7Plus Auto adv=false muted=false locked=false Info band=0 DeviceName 326efce8e46cd5ff
-Mv7Plus Auto adv=false muted=false locked=false Info band=0 FactoryReset bfc8db7c6f1fb07b
+Mv7Plus Auto adv=false muted=false locked=false Info band=0 DeviceName f072de267644e48c
+Mv7Plus Auto adv=false muted=false locked=false Info band=0 FactoryReset 4d864913a4bddbd8
 Mv7Plus Auto adv=false muted=true locked=true Main band=0 Mode fdea8bce98a8a0d3
 Mv7Plus Auto adv=false muted=true locked=true Main band=0 Mute 6ba727b9b8821059
 Mv7Plus Auto adv=false muted=true locked=true Main band=0 MonitorMix 59064ec9d97016dc
@@ -640,5 +640,5 @@ Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetName(2) 0ec5a
 Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) bb8ba6cb9a562326
 Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetName(3) 01d01c1d8fa865d7
 Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 8f83b4bf4a1eeea6
-Mv7Plus Auto adv=false muted=true locked=true Info band=0 DeviceName 326efce8e46cd5ff
-Mv7Plus Auto adv=false muted=true locked=true Info band=0 FactoryReset bfc8db7c6f1fb07b
+Mv7Plus Auto adv=false muted=true locked=true Info band=0 DeviceName f072de267644e48c
+Mv7Plus Auto adv=false muted=true locked=true Info band=0 FactoryReset 4d864913a4bddbd8
