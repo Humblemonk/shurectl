@@ -13,7 +13,9 @@
 //!   shurectl --demo            # Demo MVX2U (default model) without a device
 //!   shurectl --demo mv6        # Demo MV6 without a device
 //!   shurectl --demo mvx2u-gen2 # Demo MVX2U Gen 2 without a device
+//!   shurectl --demo mv6-gen2   # Demo MV6 Gen 2 without a device
 //!   shurectl --demo mv7        # Demo MV7 without a device
+//!   shurectl --demo mv7plus    # Demo MV7+ without a device
 //!   shurectl --list            # List detected devices and exit
 //!   shurectl --device PATH     # Open a specific device by HID path
 //!   shurectl --mute            # Toggle mute (no TUI)
@@ -306,8 +308,9 @@ fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
         .get_state()
         .context("Could not read device state")?
         .state;
-    apply_preset_to_state(&slot, &mut state, model);
-    apply_preset_to_device(&Some(dev), &state, model).context("Could not load preset")?;
+    let write_monitor_mix = apply_preset_to_state(&slot, &mut state, model);
+    apply_preset_to_device(&Some(dev), &state, model, write_monitor_mix)
+        .context("Could not load preset")?;
     println!("Loaded \"{}\".", slot.name);
     Ok(())
 }
@@ -693,10 +696,6 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
             }
             send_if_connected(device, |d| d.set_lock(*locked))
         }
-        DeviceAction::SetMonitorMix(m) => {
-            app.set_ok(format!("Monitor Mix → {m}%"));
-            send_if_connected(device, |d| d.set_monitor_mix(*m))
-        }
         DeviceAction::SetLimiter(en) => {
             app.set_ok(format!("Limiter → {}", if *en { "ON" } else { "OFF" }));
             send_if_connected(device, |d| d.set_limiter(*en))
@@ -800,13 +799,13 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
             });
             send_if_connected(device, |d| d.set_mv6_gain_lock(*locked))
         }
-        DeviceAction::SetMv6MonitorMix(m) => {
+        DeviceAction::SetMonitorMix(m) => {
             app.set_ok(if app.device_model.has_playback_mix() {
                 format!("Mic Level → {m}%")
             } else {
                 format!("Monitor Mix → {m}%")
             });
-            send_if_connected(device, |d| d.set_mv6_monitor_mix(*m))
+            send_if_connected(device, |d| d.set_monitor_mix(*m))
         }
         DeviceAction::SetMv7PlaybackMix(m) => {
             app.set_ok(format!("Playback Level → {m}%"));
@@ -909,10 +908,7 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                 .as_ref()
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| format!("Preset {}", i + 1));
-            let slot = PresetSlot {
-                monitor_mix_is_mic_level: Some(app.device_model.has_playback_mix()),
-                ..PresetSlot::from_device_state(name, &app.device_state)
-            };
+            let slot = PresetSlot::from_device_state(name, &app.device_state, app.device_model);
             match presets::save_preset(*i, &slot) {
                 Ok(()) => {
                     app.set_ok(format!("Saved to \"{}\".", slot.name));
@@ -924,10 +920,16 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
         }
         DeviceAction::LoadPreset(i) => {
             if let Some(slot) = &app.presets[*i].clone() {
-                apply_preset_to_state(slot, &mut app.device_state, app.device_model);
+                let write_monitor_mix =
+                    apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 app.set_ok(format!("Loaded \"{}\".", slot.name));
-                apply_preset_to_device(device, &app.device_state, app.device_model)
-                    .and_then(|()| resync_mv7_state(app, device))
+                apply_preset_to_device(
+                    device,
+                    &app.device_state,
+                    app.device_model,
+                    write_monitor_mix,
+                )
+                .and_then(|()| resync_mv7_state(app, device))
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
                 Ok(())
@@ -1154,16 +1156,21 @@ where
     }
 }
 
-/// Apply `slot` to `state`, fitted to `model`.
-fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, model: DeviceModel) {
+/// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
+/// Monitor Mix applies, for `apply_preset_to_device()`.
+fn apply_preset_to_state(
+    slot: &PresetSlot,
+    state: &mut protocol::DeviceState,
+    model: DeviceModel,
+) -> bool {
     let monitor_mix_before = state.monitor_mix;
     slot.apply_to_device_state(state);
     // A balance and a Mic Level share the field but not the meaning: keep the
     // device's own Monitor Mix rather than translate one into the other.
-    if slot
+    let monitor_mix_applies = !slot
         .monitor_mix_is_mic_level
-        .is_some_and(|mic_level| mic_level != model.has_playback_mix())
-    {
+        .is_some_and(|mic_level| mic_level != model.has_playback_mix());
+    if !monitor_mix_applies {
         state.monitor_mix = monitor_mix_before;
     }
     // Show the gain and EQ the device will actually get: presets are
@@ -1179,12 +1186,13 @@ fn apply_preset_to_state(slot: &PresetSlot, state: &mut protocol::DeviceState, m
     if !model.has_gain_lock() {
         state.mv6_gain_locked = false;
     }
+    monitor_mix_applies
 }
 
 /// Writes a preset's Playback Level, except 0. A preset's 0 means "not saved" (so
 /// the state still holds the device's level), and a 0 in the state can be a
-/// level that was never read (an unanswered GET outside the MVX2U Gen 2, demo
-/// mode, a failed readback), which written would silence playback.
+/// level that was never read (an unanswered GET, demo mode, a failed readback),
+/// which written would silence playback.
 fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
     if level > 0 {
         d.set_mv7_playback_mix(level)?;
@@ -1194,10 +1202,13 @@ fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
 
 /// Send every configurable field of `state` to the device.
 /// Called after loading a preset to bring the hardware into sync.
+/// `write_monitor_mix` is false when the preset's Monitor Mix was of the other
+/// kind, so the device keeps its own (which may never have been read).
 fn apply_preset_to_device(
     device: &Option<ShureDevice>,
     state: &protocol::DeviceState,
     model: DeviceModel,
+    write_monitor_mix: bool,
 ) -> Result<()> {
     send_if_connected(device, |d| {
         d.set_mode(
@@ -1224,13 +1235,15 @@ fn apply_preset_to_device(
         if model.has_hpf() {
             d.set_hpf(&state.hpf)?;
         }
+        if write_monitor_mix {
+            d.set_monitor_mix(state.monitor_mix)?;
+        }
         match model {
             DeviceModel::Mvx2u => {
                 d.set_auto_position(state.auto_position, state.auto_tone)?;
                 d.set_auto_tone(state.auto_position, state.auto_tone)?;
                 d.set_auto_gain(&state.auto_gain)?;
                 d.set_phantom(state.phantom_power)?;
-                d.set_monitor_mix(state.monitor_mix)?;
                 d.set_limiter(state.limiter_enabled)?;
                 d.set_compressor(&state.compressor)?;
                 d.set_eq_enable(state.eq_enabled)?;
@@ -1241,7 +1254,6 @@ fn apply_preset_to_device(
             }
             DeviceModel::Mvx2uGen2 => {
                 d.set_phantom(state.phantom_power)?;
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
                 set_playback_level(d, state.playback_mix)?;
                 d.set_limiter(state.limiter_enabled)?;
                 d.set_compressor(&state.compressor)?;
@@ -1257,7 +1269,6 @@ fn apply_preset_to_device(
                 d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
                 d.set_mv6_tone(state.tone)?;
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
                 set_playback_level(d, state.playback_mix)?;
                 if model == DeviceModel::Mv6Gen2 {
                     d.set_auto_gain(&state.auto_gain)?;
@@ -1275,7 +1286,6 @@ fn apply_preset_to_device(
                     d.set_compressor(&state.compressor)?;
                     d.set_eq_preset(state.eq_preset)?;
                 }
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
                 d.set_led_live_meter(state.led_live_meter)?;
                 d.set_led_night_mode(state.led_night_mode)?;
             }
@@ -1284,7 +1294,6 @@ fn apply_preset_to_device(
                 d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
                 d.set_mv6_tone(state.tone)?;
-                d.set_mv6_monitor_mix(state.monitor_mix)?;
                 d.set_limiter(state.limiter_enabled)?;
                 d.set_compressor(&state.compressor)?;
                 set_playback_level(d, state.playback_mix)?;
@@ -1405,6 +1414,7 @@ mod tests {
         presets[0] = Some(PresetSlot::from_device_state(
             name,
             &protocol::DeviceState::default(),
+            DeviceModel::Mvx2u,
         ));
         App {
             presets,
@@ -1488,14 +1498,19 @@ mod tests {
     fn preset_monitor_mix_loads_only_onto_the_same_kind() {
         let preset = |mic_level: Option<bool>| PresetSlot {
             monitor_mix_is_mic_level: mic_level,
-            ..PresetSlot::from_device_state("P", &protocol::DeviceState::default())
+            ..PresetSlot::from_device_state(
+                "P",
+                &protocol::DeviceState::default(),
+                DeviceModel::Mvx2u,
+            )
         };
         let load = |slot: &PresetSlot, model: DeviceModel| {
             let mut state = protocol::DeviceState {
                 monitor_mix: 80,
                 ..protocol::DeviceState::default()
             };
-            apply_preset_to_state(slot, &mut state, model);
+            let applies = apply_preset_to_state(slot, &mut state, model);
+            assert_eq!(applies, state.monitor_mix != 80, "write only what applies");
             state.monitor_mix
         };
         let balance = preset(Some(false));
@@ -1525,7 +1540,11 @@ mod tests {
             ..protocol::DeviceState::default()
         };
         let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
-        presets[0] = Some(PresetSlot::from_device_state("MV6", &mv6_state));
+        presets[0] = Some(PresetSlot::from_device_state(
+            "MV6",
+            &mv6_state,
+            DeviceModel::Mv6,
+        ));
         let mut app = App {
             device_model: DeviceModel::Mv7Plus,
             presets,
@@ -1573,7 +1592,11 @@ mod tests {
             ..protocol::DeviceState::default()
         };
         let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
-        presets[0] = Some(PresetSlot::from_device_state("MV6", &locked_state));
+        presets[0] = Some(PresetSlot::from_device_state(
+            "MV6",
+            &locked_state,
+            DeviceModel::Mv6,
+        ));
         let mut app = App {
             device_model: DeviceModel::Mvx2uGen2,
             presets,
@@ -1627,7 +1650,7 @@ mod tests {
 
     fn app_with_preset(model: DeviceModel, saved: protocol::DeviceState) -> App {
         let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
-        presets[0] = Some(PresetSlot::from_device_state("saved", &saved));
+        presets[0] = Some(PresetSlot::from_device_state("saved", &saved, model));
         App {
             device_model: model,
             presets,

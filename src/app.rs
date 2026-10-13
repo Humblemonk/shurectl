@@ -999,15 +999,7 @@ impl App {
                 } else {
                     *m = m.saturating_sub(1);
                 }
-                let mix = self.device_state.monitor_mix;
-                match self.device_model {
-                    DeviceModel::Mv6
-                    | DeviceModel::Mv6Gen2
-                    | DeviceModel::Mvx2uGen2
-                    | DeviceModel::Mv7
-                    | DeviceModel::Mv7Plus => Some(DeviceAction::SetMv6MonitorMix(mix)),
-                    DeviceModel::Mvx2u => Some(DeviceAction::SetMonitorMix(mix)),
-                }
+                Some(DeviceAction::SetMonitorMix(self.device_state.monitor_mix))
             }
             Focus::PlaybackMix => {
                 let m = &mut self.device_state.playback_mix;
@@ -1375,7 +1367,6 @@ pub enum DeviceAction {
     SetMute(bool),
     SetPhantom(bool),
     SetLock(bool),
-    SetMonitorMix(u8),
     SetLimiter(bool),
     SetCompressor(CompressorPreset),
     SetHpf(HpfFrequency),
@@ -1392,10 +1383,11 @@ pub enum DeviceAction {
     /// Tone in steps of 1 (−10 to +10); displayed as × 10%.
     SetMv6Tone(i8),
     SetMv6GainLock(bool),
-    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MV7, Mic Level on
-    /// models with `has_playback_mix()`. Same encoding as the MVX2U Gen 1
-    /// (`SetMonitorMix`) but HDR_CONSTANT=0x00 on the wire.
-    SetMv6MonitorMix(u8),
+    /// Monitor Mix, 0–100%: the mic ↔ playback balance on the MVX2U Gen 1 and
+    /// MV7, Mic Level on models with `has_playback_mix()`. The Gen 1 balance is
+    /// FEAT_MIX prefix 0x01 with the standard header; the Mic Level is prefix
+    /// 0x00 with HDR_CONSTANT=0x00.
+    SetMonitorMix(u8),
     /// Playback Level, 0–100% (models with `has_playback_mix()`).
     SetMv7PlaybackMix(u8),
     // ── MV6 Gen 2 actions ─────────────────────────────────────────────────────
@@ -2109,46 +2101,28 @@ mod tests {
     }
 
     #[test]
-    fn adjust_monitor_mix_dispatches_set_mv6_monitor_mix_for_mv6() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 50;
-
-        let action = app.adjust_focused(1);
-        assert_eq!(app.device_state.monitor_mix, 51);
-        assert!(
-            matches!(action, Some(DeviceAction::SetMv6MonitorMix(51))),
-            "MV6 must dispatch SetMv6MonitorMix, got {action:?}"
-        );
-    }
-
-    #[test]
-    fn adjust_monitor_mix_dispatches_set_monitor_mix_for_mvx2u() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2u;
-        app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 50;
-
-        let action = app.adjust_focused(1);
-        assert!(
-            matches!(action, Some(DeviceAction::SetMonitorMix(51))),
-            "MVX2U must dispatch SetMonitorMix, got {action:?}"
-        );
-    }
-
-    #[test]
-    fn adjust_monitor_mix_dispatches_set_mv6_monitor_mix_for_gen2() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2uGen2;
-        app.focus = Focus::MonitorMix;
-        app.device_state.monitor_mix = 50;
-
-        let action = app.adjust_focused(1);
-        assert!(
-            matches!(action, Some(DeviceAction::SetMv6MonitorMix(51))),
-            "Gen 2 must dispatch SetMv6MonitorMix (same wire framing), got {action:?}"
-        );
+    fn adjust_monitor_mix_dispatches_set_monitor_mix_on_every_model() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7,
+            DeviceModel::Mv7Plus,
+        ] {
+            let mut app = App {
+                device_model: model,
+                focus: Focus::MonitorMix,
+                ..App::default()
+            };
+            app.device_state.monitor_mix = 50;
+            let action = app.adjust_focused(1);
+            assert_eq!(app.device_state.monitor_mix, 51, "{model:?}");
+            assert!(
+                matches!(action, Some(DeviceAction::SetMonitorMix(51))),
+                "{model:?}: {action:?}"
+            );
+        }
     }
 
     #[test]
@@ -2701,6 +2675,7 @@ mod tests {
         app.presets[2] = Some(crate::presets::PresetSlot::from_device_state(
             "Test",
             &DeviceState::default(),
+            DeviceModel::Mvx2u,
         ));
 
         let action = app.toggle_focused();
@@ -2897,7 +2872,7 @@ mod tests {
         app.focus = Focus::MonitorMix;
         assert!(matches!(
             app.adjust_focused(1),
-            Some(DeviceAction::SetMv6MonitorMix(1))
+            Some(DeviceAction::SetMonitorMix(1))
         ));
     }
 

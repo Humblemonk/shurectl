@@ -129,10 +129,11 @@
 //!                                    of MOTIV app: HDR_CONSTANT=0x00 (not the usual 0x03),
 //!                                    CMD_SET_FEAT [02 02 02], prefix 0x00, value is 0–100.
 //!                                    GET uses standard framing (HDR_CONSTANT=0x03, prefix
-//!                                    0x00) — confirmed by Wireshark. Device only responds
-//!                                    to GET after at least one SET has been issued; a fresh
-//!                                    device returns nothing (explains why probe sweep missed
-//!                                    it). See cmd_get_mv6_mix() / cmd_set_mv6_mix().
+//!                                    0x00) — confirmed by Wireshark. The MV6 answered this
+//!                                    GET only after a SET (why the probe sweep missed it);
+//!                                    the MVX2U Gen 2 and MV6 Gen 2 answer after a factory
+//!                                    reset and a replug alike (probed 2026-10-12). See
+//!                                    cmd_get_mv6_mix() / cmd_set_mv6_mix().
 //!   Gain lock:       [0x01, 0xF3]  — 1 byte: 0=unlocked, 1=locked (Manual mode only)
 //!                                    Confirmed by probe diff: value changed 0x00→0x01 when
 //!                                    gain lock was enabled in MOTIV Mix. Standard CMD_GET_FEAT
@@ -1701,9 +1702,10 @@ pub fn cmd_get_tone_mode(seq: u8) -> Vec<u8> {
 }
 /// GET for the Mic Level on models with `has_playback_mix()` (named for the MV6,
 /// where it was found). Uses standard framing (HDR_CONSTANT=0x03, prefix=0x00).
-/// Confirmed by Wireshark capture. Note: the device only responds after at least one
-/// SET has been issued — a fresh device returns nothing, which is why the probe sweep
-/// found no response before shurectl first wrote a value.
+/// Confirmed by Wireshark capture. The original MV6 answered only after a SET, which
+/// is why the probe sweep found nothing there before shurectl first wrote a value.
+/// The MVX2U Gen 2 and MV6 Gen 2 answer after a factory reset (100%) and after a
+/// replug (the saved level), probed 2026-10-12. An unanswered read leaves 0.
 pub fn cmd_get_mv6_mix(seq: u8) -> Vec<u8> {
     cmd_get(seq, &FEAT_MIX)
 }

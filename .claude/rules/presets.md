@@ -15,9 +15,9 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   current value when the default means "not saved". Older files and presets from models
   without the setting otherwise zero it on load (Playback Mix 0 = not saved, 73476a4)
 - **Monitor Mix** is a balance on the MVX2U Gen 1 and MV7 but the Mic Level elsewhere.
-  `monitor_mix_is_mic_level` records which (set in `SavePreset`), and
-  `apply_preset_to_state()` skips a Monitor Mix of the other kind. `None` (older files)
-  loads as before
+  `monitor_mix_is_mic_level` records which (`from_device_state()` takes the model), and
+  `apply_preset_to_state()` skips a Monitor Mix of the other kind, without writing it.
+  `None` (older files) loads as before
 - **Gain Lock** in `main.rs::apply_preset_to_device()`: unlock, write the gain, re-lock
   straight away. A locked device ignores gain writes
 - `load_all_presets()` runs at startup; missing files → `None`

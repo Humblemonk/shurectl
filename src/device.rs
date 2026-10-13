@@ -405,7 +405,7 @@ impl ShureDevice {
 
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<Readback> {
-        let mut readback = Readback::for_model(self.model);
+        let mut readback = Readback::default();
         match self.model {
             DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),
@@ -683,10 +683,6 @@ impl ShureDevice {
         self.send_set(&protocol::cmd_set_phantom(self.next_seq(), enabled))
     }
 
-    pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
-        self.send_set(&protocol::cmd_set_mix(self.next_seq(), mix))
-    }
-
     pub fn set_limiter(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_limiter(self.next_seq(), enabled),
@@ -813,7 +809,7 @@ impl ShureDevice {
     }
 
     /// Set the Mic Level, or the mic ↔ playback balance on the MVX2U Gen 1 and MV7.
-    pub fn set_mv6_monitor_mix(&self, mix: u8) -> Result<()> {
+    pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),
             // The Gen 1 balance is prefix 0x01 with the standard header.
@@ -988,29 +984,6 @@ pub struct Readback {
 }
 
 impl Readback {
-    /// An empty readback, seeded with what a silent GET means on `model`.
-    fn for_model(model: DeviceModel) -> Self {
-        let mut readback = Self::default();
-        // Only where a silent FEAT_MIX GET is known to mean the factory 100%:
-        // a Gen 2 that has never had a level SET (checked on hardware after a
-        // factory reset). Unseeded, both levels would show 0% and one → press
-        // would write 1%. The MV6 may also go silent after a power-on with a
-        // level set, so 100% there could be a loud guess; 0% stays the quiet one.
-        let silent_mix_is_factory_100 = match model {
-            DeviceModel::Mvx2uGen2 => true,
-            DeviceModel::Mvx2u
-            | DeviceModel::Mv6
-            | DeviceModel::Mv6Gen2
-            | DeviceModel::Mv7
-            | DeviceModel::Mv7Plus => false,
-        };
-        if silent_mix_is_factory_100 {
-            readback.state.monitor_mix = 100;
-            readback.state.playback_mix = 100;
-        }
-        readback
-    }
-
     /// Apply one binary GET reply, noting it if no setting matches.
     fn apply(&mut self, reply: &Reply) {
         let applied = apply_reply(reply, &mut self.state);
@@ -1122,25 +1095,6 @@ mod tests {
             readback.unrecognised,
             vec!["feature 0x7f 0x7f (prefix 0x00)"]
         );
-    }
-
-    #[test]
-    fn readback_seeds_unanswered_monitor_levels_only_where_confirmed() {
-        for (model, expected) in [
-            (DeviceModel::Mvx2u, (0, 0)),
-            (DeviceModel::Mvx2uGen2, (100, 100)),
-            (DeviceModel::Mv6, (0, 0)),
-            (DeviceModel::Mv6Gen2, (0, 0)),
-            (DeviceModel::Mv7, (0, 0)),
-            (DeviceModel::Mv7Plus, (0, 0)),
-        ] {
-            let state = Readback::for_model(model).state;
-            assert_eq!(
-                (state.monitor_mix, state.playback_mix),
-                expected,
-                "{model:?}"
-            );
-        }
     }
 
     #[test]

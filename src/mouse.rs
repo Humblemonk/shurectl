@@ -300,6 +300,7 @@ mod tests {
         app.presets[0] = Some(PresetSlot::from_device_state(
             "Mouse test",
             &app.device_state,
+            app.device_model,
         ));
         for (label, key) in [
             ("Load", KeyCode::Enter),
@@ -568,7 +569,11 @@ mod tests {
             active_tab: Tab::Presets,
             ..App::default()
         };
-        app.presets[0] = Some(PresetSlot::from_device_state("Test", &app.device_state));
+        app.presets[0] = Some(PresetSlot::from_device_state(
+            "Test",
+            &app.device_state,
+            app.device_model,
+        ));
         let hits = render(&app, 120, 40);
         assert!(click(&mut app, &hits, Target::PresetAction(0, KeyCode::Enter)).is_none());
         assert_eq!(app.focus, Focus::PresetActions(0));
@@ -613,8 +618,16 @@ mod tests {
             focus: Focus::PresetName(0),
             ..App::default()
         };
-        app.presets[0] = Some(PresetSlot::from_device_state("Test", &app.device_state));
-        app.presets[1] = Some(PresetSlot::from_device_state("Other", &app.device_state));
+        app.presets[0] = Some(PresetSlot::from_device_state(
+            "Test",
+            &app.device_state,
+            app.device_model,
+        ));
+        app.presets[1] = Some(PresetSlot::from_device_state(
+            "Other",
+            &app.device_state,
+            app.device_model,
+        ));
         for key in [KeyCode::Enter, KeyCode::Backspace, KeyCode::Char('X')] {
             assert!(crate::handle_key(&mut app, key, KeyModifiers::NONE).is_none());
         }
@@ -774,7 +787,11 @@ mod tests {
             focus: Focus::PresetActions(0),
             ..App::default()
         };
-        app.presets[0] = Some(PresetSlot::from_device_state("Test", &app.device_state));
+        app.presets[0] = Some(PresetSlot::from_device_state(
+            "Test",
+            &app.device_state,
+            app.device_model,
+        ));
         let hits = render(&app, 120, 40);
         let delete = Target::PresetAction(0, KeyCode::Char('d'));
         let save = Target::PresetAction(0, KeyCode::Char('s'));

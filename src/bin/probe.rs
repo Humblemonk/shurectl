@@ -44,8 +44,8 @@
 //! but unconfirmed). The standard sweep reads
 //! that address at all three, so whichever channels a model has show up. (It
 //! used to force 0x01 there, which hid the MV6 family's monitor levels.) The
-//! original MV6 is reported to answer only after a SET since power-on; the MV6
-//! Gen 2 answers straight away.
+//! original MV6 is reported to answer only after a SET since power-on; the MVX2U
+//! Gen 2 and MV6 Gen 2 answer straight away, after a factory reset and a replug.
 //!
 //! Use Wireshark (not this probe) to investigate SET framing, such as the
 //! HDR_CONSTANT=0x00 the MV6 family's mix SETs need.
@@ -112,7 +112,7 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
     ([0x01, 0x85], "AUTO_LEVEL"),
     (
         [0x01, 0x86],
-        "MONITOR_MIX (prefix 0x00: mic level, MV6 family and MV7+; 0x01: Gen1 balance; 0x03: playback level, MV7+ and MV6 Gen 2, MV6 unconfirmed)",
+        "MONITOR_MIX (prefix 0x00: mic level, MVX2U Gen 2, MV6 family, MV7+; 0x01: Gen1 balance; 0x03: playback level, MVX2U Gen 2, MV6 Gen 2, MV7+, MV6 unconfirmed)",
     ),
     (
         [0x01, 0x78],
