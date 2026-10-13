@@ -23,10 +23,10 @@ only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel
 - **Bars:** Mic Level / Monitor Mix, Tone and Reverb Intensity use `C_BLUE`; Playback Level
   `C_PLAYBACK_LEVEL` prismblue, so the two adjacent monitor gauges stay distinct.
 - **States:** ON and the meter's safe zone `C_SUCCESS` (MOTIV's meter green, bluer than the
-  lime), alerts `C_ERROR` (Muted ON is red, not green), warnings `C_WARN`. Gain
-  Lock and Config Lock read LOCKED in `C_WARN` (a chosen state, not an error) and Unlocked in
-  `C_TEXT`. Red is for errors, Muted, clipping and destructive actions, amber for cautions;
-  never use either as decoration.
+  lime), alerts `C_ERROR` (Muted ON is red, not green), warnings `C_WARN`. A locked Gain Lock
+  or Config Lock block shows LOCKED, its title and its frame in `C_WARN` (a chosen state, not
+  an error); Unlocked is `C_TEXT`. Red is for errors, Muted, clipping and destructive actions,
+  amber for cautions; never use either as decoration.
 
 **Controls.** Option strips (Input Mode, Auto Level rows, Mic Preset, Tone Mode) go through
 `segmented_span()`: gray segments with a black-on-lime active pill, pushed with no gap between

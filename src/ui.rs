@@ -80,23 +80,21 @@ fn focus_border(focused: bool) -> Block<'static> {
 
 /// A rounded block whose title and border light up when one of its controls has focus.
 fn focus_block(title: &str, focused: bool) -> Block<'static> {
-    alert_block(title, focused, false)
+    alert_block(title, focused, None)
 }
 
-/// `focus_block()` that turns red while `alert` holds (muted, locked) and it
-/// isn't focused.
-fn alert_block(title: &str, focused: bool, alert: bool) -> Block<'static> {
-    let alerting = alert && !focused;
-    let title_style = if alerting {
-        Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD)
-    } else {
-        focused_style(focused)
+/// `focus_block()` whose title and border take the `alert` color (red while muted,
+/// amber while locked) when it isn't focused.
+fn alert_block(title: &str, focused: bool, alert: Option<Color>) -> Block<'static> {
+    let alert = alert.filter(|_| !focused);
+    let title_style = match alert {
+        Some(color) => Style::default().fg(color).add_modifier(Modifier::BOLD),
+        None => focused_style(focused),
     };
     let block = focus_border(focused).title(Span::styled(format!("  {title}  "), title_style));
-    if alerting {
-        block.border_style(Style::default().fg(C_ERROR))
-    } else {
-        block
+    match alert {
+        Some(color) => block.border_style(Style::default().fg(color)),
+        None => block,
     }
 }
 
@@ -866,7 +864,7 @@ fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(alert_block("Mute", focused, muted));
+    .block(alert_block("Mute", focused, muted.then_some(C_ERROR)));
     f.render_widget(p, area);
 }
 
@@ -989,7 +987,11 @@ fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ),
     ]))
-    .block(alert_block("Gain Lock", lock_focused, gain_locked));
+    .block(alert_block(
+        "Gain Lock",
+        lock_focused,
+        gain_locked.then_some(C_WARN),
+    ));
     f.render_widget(gain_lock_p, area);
 }
 
@@ -1053,7 +1055,11 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
             Span::raw("")
         },
     ]))
-    .block(alert_block("Config Lock", lock_focused, locked));
+    .block(alert_block(
+        "Config Lock",
+        lock_focused,
+        locked.then_some(C_WARN),
+    ));
     f.render_widget(lock_p, area);
 }
 
