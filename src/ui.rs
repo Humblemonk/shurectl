@@ -2475,7 +2475,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedSolidR,
                 ds.led_solid_rgb[0],
                 "Solid R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 cols[0],
             );
             draw_led_color_gauge(
@@ -2493,7 +2493,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedSolidB,
                 ds.led_solid_rgb[2],
                 "Solid B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 cols[2],
             );
         }
@@ -2508,7 +2508,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedPulsingR,
                 ds.led_pulsing_rgb[0],
                 "Pulsing R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 cols[0],
             );
             draw_led_color_gauge(
@@ -2526,7 +2526,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedPulsingB,
                 ds.led_pulsing_rgb[2],
                 "Pulsing B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 cols[2],
             );
         }
@@ -2542,7 +2542,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveEdgeR,
                 ds.led_live_edge_rgb[0],
                 "Edge R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 edge_cols[0],
             );
             draw_led_color_gauge(
@@ -2560,7 +2560,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveEdgeB,
                 ds.led_live_edge_rgb[2],
                 "Edge B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 edge_cols[2],
             );
 
@@ -2574,7 +2574,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveMiddleR,
                 ds.led_live_middle_rgb[0],
                 "Middle R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 mid_cols[0],
             );
             draw_led_color_gauge(
@@ -2592,7 +2592,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveMiddleB,
                 ds.led_live_middle_rgb[2],
                 "Middle B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 mid_cols[2],
             );
 
@@ -2606,7 +2606,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveInteriorR,
                 ds.led_live_interior_rgb[0],
                 "Interior R",
-                Color::Rgb(220, 60, 60),
+                Color::Rgb(240, 90, 90),
                 int_cols[0],
             );
             draw_led_color_gauge(
@@ -2624,7 +2624,7 @@ fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
                 Focus::LedLiveInteriorB,
                 ds.led_live_interior_rgb[2],
                 "Interior B",
-                Color::Rgb(60, 100, 220),
+                Color::Rgb(90, 140, 240),
                 int_cols[2],
             );
         }
