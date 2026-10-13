@@ -12,7 +12,8 @@ Review-site JPEGs and old MOTIV builds have misled us (gray faders, blue accents
 colors against the guide.
 
 **Palette.** Use the `C_*` constants at the top of `ui.rs`, never a new `Color::Rgb`. The
-only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel itself.
+only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel itself,
+lightened so their bar text stays readable.
 
 - **Lime `C_ACCENT`** marks where you are and what is active: the focused control (with a
   `BorderType::Thick` border from `focus_border()`, so focus never relies on color alone), the
@@ -25,6 +26,8 @@ only literal RGBs are the MV7+ LED R/G/B channel sliders, which show the channel
   including "auto" in the Summary and the meter's "no device", is `C_DIM` or brighter.
 - **Bars:** Mic Level / Monitor Mix, Tone and Reverb Intensity use `C_BLUE`; Playback Level
   `C_PLAYBACK_LEVEL` prismblue, so the two adjacent monitor gauges stay distinct.
+  A gauge draws its label in the bar color over the empty part and in `C_SURFACE` over the
+  fill, so every bar color needs 4.5:1 against `C_SURFACE` (pure red or blue falls short).
 - **States:** ON and the meter's safe zone `C_SUCCESS` (MOTIV's meter green, bluer than the
   lime), alerts `C_ERROR` (Muted ON is red, not green), warnings `C_WARN`. A locked Gain Lock
   or Config Lock block shows LOCKED, its title and its frame in `C_WARN` (a chosen state, not
