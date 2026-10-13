@@ -1302,7 +1302,7 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
             if ds.muted {
                 Span::styled("YES", Style::default().fg(C_ERROR))
             } else {
-                Span::styled("NO", Style::default().fg(C_SUCCESS))
+                Span::styled("NO", Style::default().fg(C_DIM))
             }
         }
         SummaryRow::Gain if manual => text(format_gain(ds.gain_tenths)),
