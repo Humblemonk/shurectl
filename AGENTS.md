@@ -21,11 +21,12 @@ cargo run -- --list             # list connected devices
 **Verification gate** — run before calling any change complete:
 
 ```
-cargo clippy --features probe -- -D warnings && cargo build --all-targets --features probe \
-  && cargo fmt --check && cargo test
+cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --features probe,qa \
+  && cargo fmt --check && cargo test && cargo test --features qa --test e2e
 ```
 
-- `--features probe` is required; otherwise clippy skips `shurectl-probe`.
+- `--features probe` is required; otherwise clippy skips `shurectl-probe`. `qa` builds the
+  `--qa` harness; it never ships (see **Testing**).
 - `cargo build --all-targets` catches dead imports in `#[cfg(test)]` code that clippy never
   compiles. Read the `cargo test` output for warnings; don't just grep for `test result`.
 - Clippy isn't run with `--all-targets` yet because of pre-existing
@@ -48,16 +49,23 @@ src/
   ui.rs         # ratatui rendering: the tabs in Tab::ALL + help overlay
   ui_renders.golden  # Render hashes checked by ui.rs `renders_match_golden`
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
+  fake_hid.rs   # Fake device behind device.rs's HidTransport (tests and `--features qa` only)
+  harness.rs    # `--qa` JSON-lines driver over the real event loop step (tests and qa only)
+tests/
+  e2e.rs        # Runs tests/scenarios/*.jsonl through `shurectl --qa` per model; PTY smoke
+  scenarios/    # One JSON-lines file per scenario
 ```
 
-**Control flow:** key event → `handle_key()` → `DeviceAction` → `apply_action()` (main.rs) →
-`device.rs` → `protocol.rs` packet.
+**Control flow:** key event → `step()` → `handle_key()` → `DeviceAction` → `apply_action()`
+(main.rs) → `device.rs` → `HidTransport` → `protocol.rs` packet. `run_event_loop()` and the
+`--qa` harness both call `step()`; only the harness swaps in a fake transport and clock.
 
 **Layering rules (strict):**
 - `apply_action()` in `main.rs` is the *only* place that writes to the device. Never call
   `device.rs` from `ui.rs`, `app.rs` or `mouse.rs`. Mouse input only maps to key actions.
 - Raw protocol byte values live *only* in `protocol.rs` as named constants.
-- `shurectl-probe` must never ship to end users via `cargo install` or Homebrew.
+- `shurectl-probe`, `--qa` and `fake_hid.rs` must never ship to end users via `cargo install`
+  or Homebrew. Keep the `qa` feature and `cfg(any(test, feature = "qa"))` gates intact.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
   the readme Credits and legal section).
 
@@ -81,6 +89,8 @@ Follow this sequence without skipping steps:
 2. `device.rs`: typed `get_*`/`set_*` methods on `ShureDevice`. If it's part of full
    readback, add the getter to the `getters` slice in the `get_state_*()` function of every
    model that supports it (`get_state()` dispatches per model)
+   - 2b. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it.
+     `get_state_reads_back_the_seeded_state_on_every_model` fails until you do
 3. `app.rs`: `DeviceAction` variant if user-triggerable; wire it into `adjust_focused()` or
    `toggle_focused()`
 4. `main.rs`: handle the variant in `apply_action()`
@@ -185,8 +195,9 @@ Shared across all models unless the hardware makes it impossible:
 | New protocol command | One roundtrip test in `protocol.rs` first: the packet bytes (match a usbmon capture when there is one) and `apply_response()` decoding the reply. Length and CRC come from `build_packet()`, so don't re-test them per command |
 | Packet encoding changes (`build_packet()`, `build_packet_hdr0()`, `crc16_ansi()`) | Test CRC correctness and the 64-byte length invariant there |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
-| Focus/navigation changes | Manual test in `--demo` for all six models |
+| Focus/navigation changes | A scenario, or manual test in `--demo` for all six models |
 | `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo`. `every_screen_fits_the_min_size` fails when a screen no longer fits 80×24 (`MIN_SIZE`), or a focus hint is cut mid-word instead of going through `with_hint()` |
+| User-visible behaviour (keys, clicks, status, packet order, reconnects) | A scenario in `tests/scenarios/`, run by `cargo test --features qa --test e2e` on every model in its header, with a fake device and in demo mode. Record one with `shurectl --qa` (`.claude/skills/qa/SKILL.md`) |
 | `main()` / CLI args | No tests |
 
 Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific
@@ -194,8 +205,8 @@ bottleneck has been identified.
 
 ## Review
 
-The verification gate and CI already cover clippy, fmt, tests and jscpd; don't report what
-they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its golden file
+The verification gate and CI already cover clippy, fmt, tests, the e2e scenarios and jscpd;
+don't report what they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its golden file
 is unchanged; a changed golden file lists the screens to look at.
 
 **Severity.** Label each finding and lead with P0 and P1. When there are none, say so
@@ -251,6 +262,8 @@ rather than promoting a lower one.
   possibly stale copy
 - Presets saved before 2.12.0 applying the `phantom_power` they hold. Files from models
   without 48V hold `false` and switch it off; nothing records which model saved them
+- `fake_hid.rs` agreeing with `protocol.rs` by construction: it proves sequencing and
+  routing, never that a packet is right. Don't cite it as protocol evidence
 
 ## Workflow
 

@@ -3318,6 +3318,53 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Test and `--qa` support ───────────────────────────────────────────────────
+
+/// FNV-1a over every cell's symbol and style. Unlike `DefaultHasher`, it
+/// stays the same across Rust releases. Pins screens in the golden file and
+/// in `--qa` scenarios.
+#[cfg(any(test, feature = "qa"))]
+pub fn buffer_hash(buffer: &ratatui::buffer::Buffer) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for cell in &buffer.content {
+        let text = format!(
+            "{}{:?}{:?}{:?}",
+            cell.symbol(),
+            cell.fg,
+            cell.bg,
+            cell.modifier
+        );
+        for byte in text.bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// The palette constant a color is, by name, so `--qa` scenarios assert
+/// `C_ERROR` rather than an RGB value. Aliases (`C_FOCUS`) resolve to the
+/// constant they alias.
+#[cfg(any(test, feature = "qa"))]
+pub fn palette_name(color: Color) -> Option<&'static str> {
+    [
+        ("C_ACCENT", C_ACCENT),
+        ("C_BG", C_BG),
+        ("C_SURFACE", C_SURFACE),
+        ("C_BORDER", C_BORDER),
+        ("C_TEXT", C_TEXT),
+        ("C_DIM", C_DIM),
+        ("C_SUCCESS", C_SUCCESS),
+        ("C_ERROR", C_ERROR),
+        ("C_WARN", C_WARN),
+        ("C_DISABLED", C_DISABLED),
+        ("C_BLUE", C_BLUE),
+        ("C_PLAYBACK_LEVEL", C_PLAYBACK_LEVEL),
+    ]
+    .into_iter()
+    .find(|(_, palette)| *palette == color)
+    .map(|(name, _)| name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3373,25 +3420,6 @@ mod tests {
     // ── Render golden file ────────────────────────────────────────────────────
 
     const GOLDEN_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui_renders.golden");
-
-    /// FNV-1a over every cell's symbol and style. Unlike `DefaultHasher`, it
-    /// stays the same across Rust releases.
-    fn buffer_hash(buffer: &ratatui::buffer::Buffer) -> u64 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for cell in &buffer.content {
-            let text = format!(
-                "{}{:?}{:?}{:?}",
-                cell.symbol(),
-                cell.fg,
-                cell.bg,
-                cell.modifier
-            );
-            for byte in text.bytes() {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-        hash
-    }
 
     fn render_hash(app: &App) -> u64 {
         use ratatui::{Terminal, backend::TestBackend};

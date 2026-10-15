@@ -1,0 +1,27 @@
+{"scenario": "terminal-too-small", "models": "all"}
+{"resize": [79, 24]}
+{"expect": {"fits": false, "screen_contains": ["Terminal size too small:", "Width = 79 Height = 24", "Width = 80 Height = 24"]}}
+{"key": "Down"}
+{"key": "Enter"}
+{"key": "Right"}
+{"click": [10, 3]}
+{"wheel": "up", "at": [10, 6]}
+{"expect": {"focus": "Mode", "no_packets": true, "state": {"mode": "Manual", "muted": false, "gain_tenths": 240}}}
+{"resize": [80, 23]}
+{"expect": {"fits": false}}
+{"resize": [80, 24]}
+{"expect": {"fits": true, "screen_contains": "Mode:"}}
+{"click_on": "Presets"}
+{"key": "s"}
+{"key": "Enter"}
+{"expect": {"editing": true}}
+{"resize": [60, 20]}
+{"key": "q"}
+{"click": [10, 3]}
+{"expect": {"editing": true, "quit": false}}
+{"resize": [80, 24]}
+{"key": "Esc"}
+{"expect": {"editing": false, "screen_contains": "Preset 1", "no_packets": true}}
+{"resize": [60, 20]}
+{"key": "q"}
+{"expect": {"quit": true}}

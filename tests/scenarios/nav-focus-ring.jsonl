@@ -1,0 +1,12 @@
+{"scenario": "nav-focus-ring", "models": "all"}
+{"expect": {"tab": "Main", "focus": "Mode"}}
+{"key": "Down"}
+{"expect": {"focus": "Mute"}}
+{"key": "Down"}
+{"expect": {"focus": "Gain"}}
+{"key": "j"}
+{"key": "k"}
+{"expect": {"focus": "Gain"}}
+{"key": "Up"}
+{"key": "Up"}
+{"expect": {"focus": "Mode", "no_packets": true}}

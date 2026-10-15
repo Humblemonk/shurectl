@@ -1,0 +1,8 @@
+{"scenario": "gain-adjust", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"key": "Down"}
+{"key": "Down"}
+{"expect": {"focus": "Gain", "state": {"gain_tenths": 240}}}
+{"key": "Right"}
+{"expect": {"set": {"feature": "GAIN", "value": 250}, "state": {"gain_tenths": 250}, "status": "Gain → 25 dB", "screen_contains": "25 dB"}}
+{"key": "Left"}
+{"expect": {"set": {"feature": "GAIN", "value": 240}, "state": {"gain_tenths": 240}, "status": "Gain → 24 dB"}}

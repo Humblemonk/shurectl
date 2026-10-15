@@ -1,0 +1,9 @@
+{"scenario": "nav-tab-ring", "models": "all"}
+{"key": "Tab"}
+{"expect": {"tab": "Eq"}}
+{"key": "BackTab", "mods": "shift"}
+{"expect": {"tab": "Main"}}
+{"key": "BackTab", "mods": "shift"}
+{"expect": {"tab": "Info", "screen_contains": "Info"}}
+{"key": "Tab"}
+{"expect": {"tab": "Main", "no_packets": true}}

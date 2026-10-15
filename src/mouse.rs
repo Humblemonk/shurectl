@@ -32,6 +32,12 @@ impl HitMap {
         self.add(area, Target::Control(focus));
     }
 
+    /// Every click region, in drawing order, for `--qa` hitmap queries.
+    #[cfg(any(test, feature = "qa"))]
+    pub fn regions(&self) -> &[(Rect, Target)] {
+        &self.regions
+    }
+
     pub fn target_at(&self, column: u16, row: u16) -> Option<Target> {
         // Later, more specific regions (e.g. an EQ band's enable row) win.
         self.regions

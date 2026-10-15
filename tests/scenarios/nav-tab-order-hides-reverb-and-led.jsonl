@@ -1,0 +1,12 @@
+{"scenario": "nav-tab-order-hides-reverb-and-led", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2"]}
+{"expect": {"screen_contains": "Main  │  EQ  │  Dynamics  │  Presets  │  Info", "screen_not_contains": ["Reverb", "LED  │"]}}
+{"key": "Tab"}
+{"expect": {"tab": "Eq"}}
+{"key": "Tab"}
+{"expect": {"tab": "Dynamics"}}
+{"key": "Tab"}
+{"expect": {"tab": "Presets"}}
+{"key": "Tab"}
+{"expect": {"tab": "Info"}}
+{"key": "Tab"}
+{"expect": {"tab": "Main"}}

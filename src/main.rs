@@ -26,6 +26,12 @@
 
 mod app;
 mod device;
+#[cfg(any(test, feature = "qa"))]
+#[cfg_attr(not(feature = "qa"), allow(dead_code))]
+mod fake_hid;
+#[cfg(any(test, feature = "qa"))]
+#[cfg_attr(not(feature = "qa"), allow(dead_code))]
+mod harness;
 mod meter;
 mod mouse;
 mod presets;
@@ -119,10 +125,33 @@ struct Cli {
     #[arg(long, short = 'p', value_name = "SLOT", conflicts_with = "mute",
           value_parser = clap::value_parser!(u8).range(1..=presets::PRESET_COUNT as i64))]
     preset: Option<u8>,
+
+    /// Maintainers only: drive the app headlessly with JSON lines on stdin and
+    /// stdout, for tests/e2e.rs and agent QA. Needs --demo MODEL or
+    /// --fake-device MODEL; never opens real hardware.
+    #[cfg(feature = "qa")]
+    #[arg(long, conflicts_with_all = ["device", "list", "mute", "preset"])]
+    qa: bool,
+
+    /// With --qa: run against a fake device of this model, which logs every
+    /// packet it receives.
+    #[cfg(feature = "qa")]
+    #[arg(long, value_name = "MODEL", requires = "qa", conflicts_with = "demo")]
+    fake_device: Option<String>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    #[cfg(feature = "qa")]
+    if cli.qa {
+        let (model, fake) = match (&cli.demo, &cli.fake_device) {
+            (Some(model), None) => (model, false),
+            (None, Some(model)) => (model, true),
+            _ => anyhow::bail!("--qa needs --demo MODEL or --fake-device MODEL"),
+        };
+        return harness::run_qa(parse_demo_model(model)?, fake);
+    }
 
     if let Some(action) = cli.mute {
         let path = cli.device.as_deref();
@@ -197,29 +226,7 @@ fn main() -> Result<()> {
         ..App::default()
     };
 
-    if let Some(ref dev) = device {
-        match reload_state(&mut app, dev) {
-            Ok(unrecognised) => {
-                app.set_ok(format!(
-                    "Connected to {} — state loaded.{}",
-                    dev.model.display_name(),
-                    unrecognised_note(&unrecognised)
-                ));
-            }
-            Err(e) => {
-                app.device_connected = !is_disconnect(&e);
-                app.state_unread = true;
-                app.set_err(format!(
-                    "Connected but failed to read state: {e}. Press r to retry."
-                ));
-            }
-        }
-    } else {
-        app.set_ok(format!(
-            "Demo mode ({}) — changes will not be sent to a device.",
-            device_model.display_name()
-        ));
-    }
+    load_initial_state(&mut app, device.as_ref());
 
     app.presets = presets::load_all_presets();
 
@@ -253,6 +260,33 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Read the device's state into `app` at startup, or say it is demo mode.
+fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
+    if let Some(dev) = device {
+        match reload_state(app, dev) {
+            Ok(unrecognised) => {
+                app.set_ok(format!(
+                    "Connected to {} — state loaded.{}",
+                    dev.model.display_name(),
+                    unrecognised_note(&unrecognised)
+                ));
+            }
+            Err(e) => {
+                app.device_connected = !is_disconnect(&e);
+                app.state_unread = true;
+                app.set_err(format!(
+                    "Connected but failed to read state: {e}. Press r to retry."
+                ));
+            }
+        }
+    } else {
+        app.set_ok(format!(
+            "Demo mode ({}) — changes will not be sent to a device.",
+            app.device_model.display_name()
+        ));
+    }
 }
 
 /// Restore the terminal before a panic message prints. Release builds abort on
@@ -395,11 +429,7 @@ fn run_event_loop(
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
-    let mut last_presence_poll = Instant::now();
-    let mut seen_back = false;
-    // The newest wheel adjustment, its control, and when the burst began. Wheel
-    // adjustments carry absolute values, so the newest one supersedes the rest.
-    let mut pending_scroll: Option<(app::Focus, DeviceAction, Instant)> = None;
+    let mut loop_state = LoopState::new(Instant::now());
 
     loop {
         let mut hits = mouse::HitMap::default();
@@ -409,7 +439,7 @@ fn run_event_loop(
             hits = ui::draw(f, app);
         })?;
 
-        let timeout = if pending_scroll.is_some() {
+        let timeout = if loop_state.pending_scroll.is_some() {
             Duration::ZERO
         } else {
             tick_rate
@@ -417,69 +447,20 @@ fn run_event_loop(
                 .unwrap_or_default()
         };
 
-        let queued = event::poll(timeout)?;
-        if queued {
-            let event = event::read()?;
-            let is_scroll = matches!(
-                event,
-                Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::ScrollUp | MouseEventKind::ScrollDown,
-                    ..
-                })
-            );
-            let action = match event {
-                Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
-                    handle_key_too_small(app, key.code, key.modifiers);
-                    None
-                }
-                // Nothing on the notice is clickable, and a click would still
-                // cancel a name edit or a Factory Reset confirmation.
-                Event::Mouse(_) if !fits => None,
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.armed_preset_action = None;
-                    handle_key(app, key.code, key.modifiers)
-                }
-                Event::Mouse(event) => mouse::handle_mouse(app, event, &hits)
-                    .and_then(|key| handle_key(app, key, KeyModifiers::NONE)),
-                Event::Key(_)
-                | Event::Resize(_, _)
-                | Event::FocusGained
-                | Event::FocusLost
-                | Event::Paste(_) => None,
-            };
-            match action {
-                Some(action) if is_scroll => {
-                    let started = match pending_scroll.take() {
-                        Some((focus, _, started)) if focus == app.focus => started,
-                        Some((_, earlier, _)) => {
-                            apply_action(app, device, earlier);
-                            Instant::now()
-                        }
-                        None => Instant::now(),
-                    };
-                    pending_scroll = Some((app.focus, action, started));
-                }
-                Some(action) => {
-                    // Keep device writes in input order.
-                    if let Some((_, earlier, _)) = pending_scroll.take() {
-                        apply_action(app, device, earlier);
-                    }
-                    apply_action(app, device, action);
-                }
-                None => {}
-            }
-        }
-
-        if let Some((_, action, _)) = pending_scroll.take_if(|(_, _, started)| {
-            !queued || app.should_quit || started.elapsed() >= SCROLL_FLUSH_INTERVAL
-        }) {
-            apply_action(app, device, action);
-        }
-
-        if last_presence_poll.elapsed() >= PRESENCE_POLL_INTERVAL {
-            last_presence_poll = Instant::now();
-            poll_presence(app, device, &mut seen_back);
-        }
+        let event = if event::poll(timeout)? {
+            Some(event::read()?)
+        } else {
+            None
+        };
+        step(
+            app,
+            device,
+            &hits,
+            fits,
+            event,
+            Instant::now(),
+            &mut loop_state,
+        );
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
@@ -491,6 +472,105 @@ fn run_event_loop(
     }
 
     Ok(())
+}
+
+/// Event-loop state carried between `step()` calls.
+struct LoopState {
+    last_presence_poll: Instant,
+    seen_back: bool,
+    /// The newest wheel adjustment, its control, and when the burst began. Wheel
+    /// adjustments carry absolute values, so the newest one supersedes the rest.
+    pending_scroll: Option<(app::Focus, DeviceAction, Instant)>,
+}
+
+impl LoopState {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_presence_poll: now,
+            seen_back: false,
+            pending_scroll: None,
+        }
+    }
+}
+
+/// One pass of the event loop after a frame is drawn: route `event` (if any)
+/// through `handle_key()` or the mouse hit map into `apply_action()`, flush a
+/// pending wheel adjustment, and poll for the device every
+/// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
+/// below the minimum size only the notice is on screen, so keys only quit and
+/// mouse events are dropped. `now` is passed in so the `--qa` harness can run
+/// the same code on a fake clock.
+fn step(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    hits: &mouse::HitMap,
+    fits: bool,
+    event: Option<Event>,
+    now: Instant,
+    loop_state: &mut LoopState,
+) {
+    let queued = event.is_some();
+    if let Some(event) = event {
+        let is_scroll = matches!(
+            event,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp | MouseEventKind::ScrollDown,
+                ..
+            })
+        );
+        let action = match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
+                handle_key_too_small(app, key.code, key.modifiers);
+                None
+            }
+            // Nothing on the notice is clickable, and a click would still
+            // cancel a name edit or a Factory Reset confirmation.
+            Event::Mouse(_) if !fits => None,
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                app.armed_preset_action = None;
+                handle_key(app, key.code, key.modifiers)
+            }
+            Event::Mouse(event) => mouse::handle_mouse(app, event, hits)
+                .and_then(|key| handle_key(app, key, KeyModifiers::NONE)),
+            Event::Key(_)
+            | Event::Resize(_, _)
+            | Event::FocusGained
+            | Event::FocusLost
+            | Event::Paste(_) => None,
+        };
+        match action {
+            Some(action) if is_scroll => {
+                let started = match loop_state.pending_scroll.take() {
+                    Some((focus, _, started)) if focus == app.focus => started,
+                    Some((_, earlier, _)) => {
+                        apply_action(app, device, earlier);
+                        now
+                    }
+                    None => now,
+                };
+                loop_state.pending_scroll = Some((app.focus, action, started));
+            }
+            Some(action) => {
+                // Keep device writes in input order.
+                if let Some((_, earlier, _)) = loop_state.pending_scroll.take() {
+                    apply_action(app, device, earlier);
+                }
+                apply_action(app, device, action);
+            }
+            None => {}
+        }
+    }
+
+    if let Some((_, action, _)) = loop_state.pending_scroll.take_if(|(_, _, started)| {
+        !queued || app.should_quit || now.duration_since(*started) >= SCROLL_FLUSH_INTERVAL
+    }) {
+        apply_action(app, device, action);
+    }
+
+    if now.duration_since(loop_state.last_presence_poll) >= PRESENCE_POLL_INTERVAL {
+        loop_state.last_presence_poll = now;
+        poll_presence(app, device, &mut loop_state.seen_back);
+    }
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {

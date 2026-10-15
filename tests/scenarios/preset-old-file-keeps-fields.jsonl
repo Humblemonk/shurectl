@@ -1,0 +1,12 @@
+{"scenario": "preset-old-file-keeps-fields", "models": ["mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"click_on": "Playback Level"}
+{"expect": {"focus": "PlaybackMix"}}
+{"key": "Right"}
+{"key": "Right"}
+{"expect": {"state": {"playback_mix": 2}}}
+{"preset_dir": "fixtures/presets-v2.9"}
+{"click_on": "Presets"}
+{"expect": {"screen_contains": "Old Voice"}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"status": "Loaded \"Old Voice\".", "state": {"playback_mix": 2, "gain_tenths": 300, "monitor_mix": 40}, "set": {"feature": "GAIN", "value": 300}}}

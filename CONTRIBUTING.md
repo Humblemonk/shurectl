@@ -21,11 +21,13 @@ cargo build
 All of the following must pass clean before any commit:
 
 ```bash
-cargo clippy --features probe -- -D warnings && cargo fmt --check && cargo test
+cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --features probe,qa \
+  && cargo fmt --check && cargo test && cargo test --features qa --test e2e
 ```
 
 The `--features probe` flag is required: `shurectl-probe` is feature-gated and would
-otherwise be skipped by clippy entirely.
+otherwise be skipped by clippy entirely. The `qa` feature builds the headless `--qa`
+harness that `tests/e2e.rs` drives; it is for maintainers and CI and never ships.
 
 There are no warnings — only requirements.
 
@@ -66,8 +68,27 @@ src/
 ├── meter.rs      — cpal audio capture; real-time dBFS metering, RollingWindow, PeakWindow
 ├── presets.rs    — Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
 ├── protocol.rs   — USB HID packet encoding, CRC-16/ANSI, command constructors, apply_response()
-└── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
+├── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
+├── fake_hid.rs   — fake device for tests and --qa (never shipped)
+└── harness.rs    — headless --qa driver (never shipped)
+tests/
+├── e2e.rs        — runs tests/scenarios/*.jsonl against every model; PTY smoke test
+└── scenarios/    — end-to-end scenarios, one JSON-lines file each
 ```
+
+### End-to-end scenarios
+
+`cargo test --features qa --test e2e` runs each file in `tests/scenarios/` through
+`shurectl --qa` on every model its header lists, with a fake device and in demo mode, and
+starts the real TUI once under a pseudo-terminal. To write one, drive the app by hand:
+
+```bash
+cargo build --features qa
+printf '{"key":"Down"}\n{"key":"Enter"}\n{"query":"screen"}\n' \
+  | ./target/debug/shurectl --qa --fake-device mv6
+```
+
+`.claude/skills/qa/SKILL.md` lists every line the harness understands.
 
 All USB HID command byte values, feature addresses, and packet structure details are documented inline in `src/protocol.rs`.
 

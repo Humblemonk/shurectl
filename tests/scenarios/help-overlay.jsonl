@@ -1,0 +1,11 @@
+{"scenario": "help-overlay", "models": "all"}
+{"key": "?"}
+{"expect": {"help_visible": true}}
+{"key": "Down"}
+{"click": [2, 6]}
+{"expect": {"help_visible": true, "focus": "Mode", "no_packets": true}}
+{"key": "Esc"}
+{"expect": {"help_visible": false}}
+{"key": "?"}
+{"key": "?"}
+{"expect": {"help_visible": false}}

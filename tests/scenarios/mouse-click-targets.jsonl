@@ -1,0 +1,13 @@
+{"scenario": "mouse-click-targets", "models": "all"}
+{"resize": [80, 24]}
+{"expect": {"fits": true, "click_targets": true}}
+{"resize": [100, 30]}
+{"expect": {"click_targets": true}}
+{"resize": [120, 40]}
+{"expect": {"click_targets": true}}
+{"resize": [120, 50]}
+{"expect": {"click_targets": true}}
+{"click_on": "Dynamics"}
+{"expect": {"tab": "Dynamics", "click_targets": true}}
+{"resize": [80, 24]}
+{"expect": {"click_targets": true, "no_packets": true}}

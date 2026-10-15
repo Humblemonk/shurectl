@@ -1,0 +1,16 @@
+{"scenario": "nav-tab-order-mv7plus", "models": ["mv7plus"]}
+{"expect": {"screen_contains": "Main  │  EQ  │  Dynamics  │  Reverb  │  LED  │  Presets  │  Info"}}
+{"key": "Tab"}
+{"expect": {"tab": "Eq"}}
+{"key": "Tab"}
+{"expect": {"tab": "Dynamics"}}
+{"key": "Tab"}
+{"expect": {"tab": "Reverb"}}
+{"key": "Tab"}
+{"expect": {"tab": "Led"}}
+{"key": "Tab"}
+{"expect": {"tab": "Presets"}}
+{"key": "Tab"}
+{"expect": {"tab": "Info"}}
+{"key": "Tab"}
+{"expect": {"tab": "Main"}}
