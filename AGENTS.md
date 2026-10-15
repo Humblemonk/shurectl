@@ -198,7 +198,7 @@ they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its
 is unchanged; a changed golden file lists the screens to look at.
 
 **Severity.** Label each finding and lead with P0 and P1. When there are none, say so
-rather than promoting a P2.
+rather than promoting a lower one.
 
 - **P0**: harms hardware, ears or privacy: 48V switched on without the user asking (ribbon
   mics), a gain or level jump from a write based on default or stale state (the 36 dB default
@@ -207,7 +207,12 @@ rather than promoting a P2.
 - **P1**: a setting written, read back or shown wrong on some model (48V switched off
   included), a preset load that stops or skips settings, a panic, a failure reported wrong
   either way, a control visible but inert (see Hiding vs. locking)
-- **P2**: everything else (wording, speed, style, rules the gate doesn't check). Keep brief
+- **P2**: users notice, but nothing is written or shown wrong: misleading status, help or
+  readme wording, a refusal without its reason, a cross-model UI divergence, noticeable
+  slowness. Also a broken Rust rule or regression trap that makes a P0/P1 likely later
+  (`_` over `DeviceModel`, a raw byte outside `protocol.rs`, `unwrap()` in production)
+- **P3**: no effect on users yet: naming, comments, duplication within the jscpd budget,
+  refactor preferences. List them in one line at the end, or leave them out
 
 **Regression traps.** Check every diff that touches these:
 
