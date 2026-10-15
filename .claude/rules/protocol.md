@@ -47,7 +47,11 @@ DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives 
 
 - `help` and `help <cmd>` on the device list commands and their syntax. They are safe to
   send; `bootDSP` and `setBlock` with unmapped data are not
-- `[Failed]` also means "value unchanged" (a gain that rounds to the current one)
+- `[Failed]` also means "value unchanged" (a gain that rounds to the current one). Seen for
+  gain and Monitor Mix and assumed for every SET, unchecked on hardware: a preset load
+  (`load_mv7_preset()`) sends only what differs from a fresh readback (all of it if a reply
+  didn't parse) and reports refusals without stopping, and gain and mute re-read the value
+  before calling `[Failed]` an error
 - `[Failed]` and `Locked` carry no command name, so `send_text()` drains queued input before
   every write. Without that, a stale one is read as the reply to the next command
 - `dspMode` holds mode, mic position and tone together, and changing it also resets EQ and

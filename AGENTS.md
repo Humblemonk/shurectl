@@ -197,12 +197,29 @@ The verification gate and CI already cover clippy, fmt, tests and jscpd; don't r
 they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its golden file
 is unchanged; a changed golden file lists the screens to look at.
 
+**Severity.** Label each finding and lead with P0 and P1. When there are none, say so
+rather than promoting a lower one.
+
+- **P0**: harms hardware, ears or privacy: 48V switched on without the user asking (ribbon
+  mics), a gain or level jump from a write based on default or stale state (the 36 dB default
+  gain, 996c882), the mic live while the UI shows Muted, a packet with the wrong encoding or
+  address for the model (a800e26), any firmware-update packet
+- **P1**: a setting written, read back or shown wrong on some model (48V switched off
+  included), a preset load that stops or skips settings, a panic, a failure reported wrong
+  either way, a control visible but inert (see Hiding vs. locking)
+- **P2**: users notice, but nothing is written or shown wrong: misleading status, help or
+  readme wording, a refusal without its reason, a cross-model UI divergence, noticeable
+  slowness. Also a broken Rust rule or regression trap that makes a P0/P1 likely later
+  (`_` over `DeviceModel`, a raw byte outside `protocol.rs`, `unwrap()` in production)
+- **P3**: no effect on users yet: naming, comments, duplication within the jscpd budget,
+  refactor preferences. List them in one line at the end, or leave them out
+
 **Regression traps.** Check every diff that touches these:
 
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
   byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
-- **Gain Lock**: a locked device ignores gain writes. `apply_preset_to_device()` unlocks,
+- **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must
   not zero the setting on load (73476a4). Check `#[serde(default)]` and
@@ -229,6 +246,10 @@ is unchanged; a changed golden file lists the screens to look at.
 - `field_reassign_with_default` in `app.rs` tests (see Commands)
 - The MV7 bypassing `send_set()`/`send_get()` for its text shell
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
+- `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's
+  possibly stale copy
+- Presets saved before 2.12.0 applying the `phantom_power` they hold. Files from models
+  without 48V hold `false` and switch it off; nothing records which model saved them
 
 ## Workflow
 

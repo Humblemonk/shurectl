@@ -268,6 +268,16 @@ impl DeviceModel {
         }
     }
 
+    /// Whether the model has 48V phantom power (the XLR interfaces).
+    pub fn has_phantom_power(&self) -> bool {
+        match self {
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => true,
+            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => {
+                false
+            }
+        }
+    }
+
     pub fn has_hpf(&self) -> bool {
         match self {
             DeviceModel::Mvx2u
@@ -1929,18 +1939,14 @@ pub fn cmd_set_lock(seq: u8, locked: bool) -> Vec<u8> {
     build_packet(seq, &CMD_SET_LOCK, &payload)
 }
 
+/// GET an EQ band's enable. `band` is 0–4; larger values clamp to the last band.
 pub fn cmd_get_eq_band_enable(seq: u8, band: usize) -> Vec<u8> {
-    assert!(
-        band < EQ_BAND_ADDRS.len(),
-        "band index out of range: {band}"
-    );
+    let band = band.min(EQ_BAND_ADDRS.len() - 1);
     cmd_get(seq, &EQ_BAND_ADDRS[band].0)
 }
+/// GET an EQ band's gain. `band` is 0–4; larger values clamp to the last band.
 pub fn cmd_get_eq_band_gain(seq: u8, band: usize) -> Vec<u8> {
-    assert!(
-        band < EQ_BAND_ADDRS.len(),
-        "band index out of range: {band}"
-    );
+    let band = band.min(EQ_BAND_ADDRS.len() - 1);
     cmd_get(seq, &EQ_BAND_ADDRS[band].1)
 }
 
@@ -2721,6 +2727,10 @@ pub mod mv7_text {
         TextCommand::named(INPUT_GAIN, None)
     }
 
+    pub fn get_mute() -> TextCommand {
+        TextCommand::named(MIC_MUTE, None)
+    }
+
     pub fn get_serial() -> TextCommand {
         TextCommand::named(SERIAL_NUM, None)
     }
@@ -2728,7 +2738,7 @@ pub mod mv7_text {
     /// Every query needed for a full state readback.
     pub fn state_queries() -> Vec<TextCommand> {
         vec![
-            TextCommand::named(MIC_MUTE, None),
+            get_mute(),
             get_gain(),
             TextCommand::named(DSP_MODE, None),
             TextCommand::named(LOCK, None),
@@ -2796,6 +2806,59 @@ pub mod mv7_text {
     pub fn set_monitor_mix(mix: u8) -> TextCommand {
         let (playback, mic) = mix_words(mix);
         TextCommand::block(BLOCK_MONITOR_MIX, Some(&format!("{playback:08X}{mic:08X}")))
+    }
+
+    // ── Preset loading ────────────────────────────────────────────────────────
+    //
+    // The MV7 answers [Failed] to a SET that changes nothing, so a preset load
+    // only sends what differs from the mic's current state.
+
+    /// The `dspMode` SET that takes the mic from `current` to `target`'s mode,
+    /// mic position and tone, or `None` if they already match. Changing it has
+    /// side effects (see the module docs), so read the state again after it.
+    /// `current` is `None` when the mic's state isn't fully known; then the
+    /// SET is always sent.
+    pub fn mode_change(current: Option<&DeviceState>, target: &DeviceState) -> Option<TextCommand> {
+        let number =
+            |state: &DeviceState| dsp_mode_number(state.mode, state.auto_position, state.auto_tone);
+        current
+            .is_none_or(|current| number(current) != number(target))
+            .then(|| set_dsp_mode(target.mode, target.auto_position, target.auto_tone))
+    }
+
+    /// The SETs, after the mode, that take the mic from `current` to `target`,
+    /// each with the setting's label for a refusal message. Gain, compressor and
+    /// EQ only apply in Manual, so they are left out unless both `target` and
+    /// the mic (`mic_mode`, read back after a mode change) are in Manual.
+    /// Monitor Mix goes last and only if `monitor_mix`.
+    /// Values are compared as the commands that would set them, so two gains or
+    /// mixes the mic can't tell apart count as equal. With `current` `None`
+    /// (the mic's state isn't fully known), every setting is sent.
+    pub fn setting_changes(
+        current: Option<&DeviceState>,
+        mic_mode: InputMode,
+        target: &DeviceState,
+        monitor_mix: bool,
+    ) -> Vec<(&'static str, TextCommand)> {
+        let mut changes = Vec::new();
+        let mut add = |label: &'static str, set: fn(&DeviceState) -> TextCommand| {
+            let to = set(target);
+            if current.is_none_or(|current| set(current) != to) {
+                changes.push((label, to));
+            }
+        };
+        add("Mute", |state| set_mute(state.muted));
+        if target.mode == InputMode::Manual && mic_mode == InputMode::Manual {
+            add("Gain", |state| set_gain(state.gain_tenths));
+            add("Compressor", |state| set_compressor(state.compressor));
+            add("EQ", |state| set_eq(state.eq_preset));
+        }
+        add("Live Meter", |state| set_live_meter(state.led_live_meter));
+        add("Night Mode", |state| set_night_mode(state.led_night_mode));
+        if monitor_mix {
+            add("Monitor Mix", |state| set_monitor_mix(state.monitor_mix));
+        }
+        changes
     }
 
     // ── Encoding helpers ──────────────────────────────────────────────────────
@@ -3358,6 +3421,146 @@ pub mod mv7_text {
             assert_eq!(
                 find_reply("inputGain=31.50dB\ndspMode=1\n", "dspMode="),
                 Some("dspMode=1")
+            );
+        }
+
+        fn manual_state() -> DeviceState {
+            DeviceState {
+                mode: InputMode::Manual,
+                gain_tenths: 195,
+                monitor_mix: 40,
+                ..DeviceState::default()
+            }
+        }
+
+        fn labels(changes: &[(&'static str, TextCommand)]) -> Vec<&'static str> {
+            changes.iter().map(|(label, _)| *label).collect()
+        }
+
+        #[test]
+        fn mode_change_only_when_the_dsp_mode_differs() {
+            let manual = manual_state();
+            let mut target = manual.clone();
+            // Position and tone don't exist in Manual.
+            target.auto_position = MicPosition::Far;
+            target.auto_tone = AutoTone::Bright;
+            assert_eq!(mode_change(Some(&manual), &target), None);
+
+            target.mode = InputMode::Auto;
+            assert_eq!(
+                mode_change(Some(&manual), &target),
+                Some(set_dsp_mode(
+                    InputMode::Auto,
+                    MicPosition::Far,
+                    AutoTone::Bright
+                ))
+            );
+            let mut far_dark = target.clone();
+            far_dark.auto_tone = AutoTone::Dark;
+            assert!(mode_change(Some(&target), &far_dark).is_some());
+            assert_eq!(mode_change(Some(&target), &target), None);
+        }
+
+        #[test]
+        fn setting_changes_is_empty_for_a_matching_preset() {
+            let state = manual_state();
+            assert!(setting_changes(Some(&state), state.mode, &state, true).is_empty());
+        }
+
+        #[test]
+        fn setting_changes_lists_only_what_differs_in_load_order() {
+            let current = manual_state();
+            let mut target = current.clone();
+            target.monitor_mix = 74;
+            target.muted = true;
+            target.eq_preset = EqPreset::HighPass;
+            target.led_night_mode = true;
+            let changes = setting_changes(Some(&current), current.mode, &target, true);
+            assert_eq!(
+                labels(&changes),
+                ["Mute", "EQ", "Night Mode", "Monitor Mix"]
+            );
+            assert_eq!(changes[0].1, set_mute(true));
+            assert_eq!(changes[3].1, set_monitor_mix(74));
+            // A Monitor Mix of the other kind is left alone.
+            assert_eq!(
+                labels(&setting_changes(
+                    Some(&current),
+                    current.mode,
+                    &target,
+                    false
+                )),
+                ["Mute", "EQ", "Night Mode"]
+            );
+        }
+
+        #[test]
+        fn setting_changes_skips_manual_settings_in_auto() {
+            let current = manual_state();
+            let mut target = current.clone();
+            target.mode = InputMode::Auto;
+            target.gain_tenths = 300;
+            target.compressor = CompressorPreset::Heavy;
+            target.eq_preset = EqPreset::PresenceBoost;
+            assert!(setting_changes(Some(&current), current.mode, &target, true).is_empty());
+        }
+
+        #[test]
+        fn unknown_state_sends_the_mode_and_every_setting() {
+            let target = manual_state();
+            assert!(mode_change(None, &target).is_some());
+            assert_eq!(
+                labels(&setting_changes(None, target.mode, &target, true)),
+                [
+                    "Mute",
+                    "Gain",
+                    "Compressor",
+                    "EQ",
+                    "Live Meter",
+                    "Night Mode",
+                    "Monitor Mix"
+                ]
+            );
+        }
+
+        #[test]
+        fn manual_settings_wait_for_a_mic_still_in_auto() {
+            // The mode change to Manual was refused, so the mic is still in Auto.
+            let mut current = manual_state();
+            current.mode = InputMode::Auto;
+            let mut target = manual_state();
+            target.gain_tenths = 300;
+            target.compressor = CompressorPreset::Heavy;
+            target.muted = true;
+            assert_eq!(
+                labels(&setting_changes(
+                    Some(&current),
+                    current.mode,
+                    &target,
+                    true
+                )),
+                ["Mute"]
+            );
+        }
+
+        #[test]
+        fn setting_changes_treats_values_the_mic_cannot_tell_apart_as_equal() {
+            let mut current = manual_state();
+            current.monitor_mix = 0;
+            let mut target = current.clone();
+            // 20 dB snaps down to the 19.5 dB the mic has; 0–2% all sit on the floor.
+            target.gain_tenths = 200;
+            target.monitor_mix = 2;
+            assert!(setting_changes(Some(&current), current.mode, &target, true).is_empty());
+            target.gain_tenths = 210;
+            assert_eq!(
+                labels(&setting_changes(
+                    Some(&current),
+                    current.mode,
+                    &target,
+                    true
+                )),
+                ["Gain"]
             );
         }
     }

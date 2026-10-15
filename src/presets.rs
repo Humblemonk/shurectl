@@ -48,8 +48,11 @@ pub struct PresetSlot {
     pub auto_tone: SerAutoTone,
     #[serde(default)]
     pub auto_gain: SerAutoGain,
-    #[serde(default)]
-    pub phantom_power: bool,
+    /// 48V phantom power, saved only on models with `has_phantom_power()`.
+    /// `None` keeps the device's current setting on load, so a preset from a
+    /// mic without phantom power can't switch it off under a condenser mic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_power: Option<bool>,
     /// Monitor Mix, as `DeviceState::monitor_mix`: one mic ↔ playback balance,
     /// or the Mic Level on models with `has_playback_mix()`.
     #[serde(default)]
@@ -197,7 +200,7 @@ impl PresetSlot {
             auto_position: SerMicPosition::from(state.auto_position),
             auto_tone: SerAutoTone::from(state.auto_tone),
             auto_gain: SerAutoGain::from(state.auto_gain),
-            phantom_power: state.phantom_power,
+            phantom_power: model.has_phantom_power().then_some(state.phantom_power),
             monitor_mix: state.monitor_mix,
             monitor_mix_is_mic_level: Some(model.has_playback_mix()),
             limiter_enabled: state.limiter_enabled,
@@ -244,7 +247,9 @@ impl PresetSlot {
         state.auto_position = MicPosition::from(self.auto_position);
         state.auto_tone = AutoTone::from(self.auto_tone);
         state.auto_gain = AutoGain::from(self.auto_gain);
-        state.phantom_power = self.phantom_power;
+        if let Some(phantom_power) = self.phantom_power {
+            state.phantom_power = phantom_power;
+        }
         state.monitor_mix = self.monitor_mix.min(100);
         state.limiter_enabled = self.limiter_enabled;
         state.compressor = CompressorPreset::from(self.compressor);
@@ -289,6 +294,16 @@ impl PresetSlot {
     /// The preset's gain formatted the same way as everywhere else in the UI.
     fn gain_str(&self) -> String {
         format_gain(gain_db_to_tenths(self.gain_db))
+    }
+
+    /// The phantom power part of a summary, `" · 48V on"`, or nothing when the
+    /// preset leaves phantom power as it is.
+    fn phantom_part(&self) -> String {
+        match self.phantom_power {
+            Some(true) => " · 48V on".to_string(),
+            Some(false) => " · 48V off".to_string(),
+            None => String::new(),
+        }
     }
 
     /// Format the denoiser state as a display string.
@@ -398,19 +413,13 @@ impl PresetSlot {
                 )
             }
             DeviceModel::Mvx2uGen2 => {
-                let phantom_str = if self.phantom_power {
-                    "48V on"
-                } else {
-                    "48V off"
-                };
+                let phantom = self.phantom_part();
                 let denoiser_str = self.denoiser_str();
                 let popper_str = self.popper_str();
                 let tone_str = self.tone_str();
                 match InputMode::from(self.mode) {
                     InputMode::Auto => {
-                        format!(
-                            "Auto · {phantom_str} · {denoiser_str} · {popper_str} · Tone: {tone_str}"
-                        )
+                        format!("Auto{phantom} · {denoiser_str} · {popper_str} · Tone: {tone_str}")
                     }
                     InputMode::Manual => {
                         let comp_str = CompressorPreset::from(self.compressor).to_string();
@@ -420,30 +429,26 @@ impl PresetSlot {
                             "Limiter off"
                         };
                         format!(
-                            "Manual · {} · {limiter_str} · Comp: {comp_str} · {phantom_str} · {denoiser_str} · {popper_str} · {hpf_str}",
+                            "Manual · {} · {limiter_str} · Comp: {comp_str}{phantom} · {denoiser_str} · {popper_str} · {hpf_str}",
                             self.gain_str()
                         )
                     }
                 }
             }
             DeviceModel::Mvx2u => {
-                let phantom_str = if self.phantom_power {
-                    "48V on"
-                } else {
-                    "48V off"
-                };
+                let phantom = self.phantom_part();
                 match InputMode::from(self.mode) {
                     InputMode::Auto => {
                         let tone = AutoTone::from(self.auto_tone);
                         let gain = AutoGain::from(self.auto_gain);
                         let pos = MicPosition::from(self.auto_position);
-                        format!("Auto · {tone} · {gain} · {pos} · {phantom_str}")
+                        format!("Auto · {tone} · {gain} · {pos}{phantom}")
                     }
                     InputMode::Manual => {
                         let eq_str = if self.eq_enabled { "EQ on" } else { "EQ off" };
                         let comp_str = CompressorPreset::from(self.compressor).to_string();
                         format!(
-                            "Manual · {} · {eq_str} · Comp: {comp_str} · {phantom_str} · {hpf_str}",
+                            "Manual · {} · {eq_str} · Comp: {comp_str}{phantom} · {hpf_str}",
                             self.gain_str()
                         )
                     }
@@ -1035,6 +1040,34 @@ mod tests {
             ..balance
         };
         assert_eq!(toml_roundtrip(&older).monitor_mix_is_mic_level, None);
+    }
+
+    #[test]
+    fn phantom_power_is_saved_only_where_it_exists_and_kept_otherwise() {
+        let state = example_state();
+        let interface = PresetSlot::from_device_state("S", &state, DeviceModel::Mvx2uGen2);
+        assert_eq!(toml_roundtrip(&interface).phantom_power, Some(true));
+
+        let mic = PresetSlot::from_device_state("S", &state, DeviceModel::Mv7Plus);
+        let text = toml::to_string_pretty(&mic).expect("serialise");
+        assert!(!text.contains("phantom_power"), "{text}");
+        assert_eq!(toml_roundtrip(&mic).phantom_power, None);
+        assert!(!mic.summary(DeviceModel::Mvx2u).contains("48V"));
+
+        // Loading a mic's preset onto an interface leaves 48V on.
+        let mut target = DeviceState {
+            phantom_power: true,
+            ..DeviceState::default()
+        };
+        mic.apply_to_device_state(&mut target);
+        assert!(target.phantom_power);
+
+        // Files saved before this still carry the setting and apply it.
+        let older = text.replacen("muted = true", "muted = true\nphantom_power = false", 1);
+        let older: PresetSlot = toml::from_str(&older).expect("deserialise");
+        assert_eq!(older.phantom_power, Some(false));
+        older.apply_to_device_state(&mut target);
+        assert!(!target.phantom_power);
     }
 
     /// Write `slot` to a temp file and reload it, returning the loaded copy.

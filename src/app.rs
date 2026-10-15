@@ -162,6 +162,10 @@ pub struct App {
     /// False after a HID read or write failed (the device was unplugged), until
     /// a refresh reads from it or reconnects. Meaningless in demo mode.
     pub device_connected: bool,
+    /// True while a connected device's settings have never been read, so
+    /// `device_state` holds defaults. Writes based on it are refused until a
+    /// refresh reads the device.
+    pub state_unread: bool,
     pub help_visible: bool,
     /// Which device model is connected. Drives which controls are shown.
     pub device_model: DeviceModel,
@@ -198,6 +202,7 @@ impl Default for App {
             should_quit: false,
             demo_mode: false,
             device_connected: true,
+            state_unread: false,
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
