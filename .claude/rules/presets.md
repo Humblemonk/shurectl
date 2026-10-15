@@ -18,9 +18,12 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   `monitor_mix_is_mic_level` records which (`from_device_state()` takes the model), and
   `apply_preset_to_state()` skips a Monitor Mix of the other kind, without writing it.
   `None` (older files) loads as before
-- **Gain Lock** in `main.rs::apply_preset_to_device()`: unlock, write the gain, re-lock
+- **Phantom power** is saved only on models with `has_phantom_power()`. `None` keeps the
+  device's 48V as it is, so a mic's preset can't cut power to a condenser mic. Older files
+  carry `phantom_power = false` from every model and still apply it
+- **Gain Lock** in `main.rs::apply_binary_preset()`: unlock, write the gain, re-lock
   straight away. A locked device ignores gain writes
 - `load_all_presets()` runs at startup; missing files → `None`
-- `DeviceAction` variants: `SavePreset`, `LoadPreset` (applies, then sends all SETs),
-  `DeletePreset`, `PersistPresetName`
+- `DeviceAction` variants: `SavePreset`, `LoadPreset` (applies, then sends all SETs; the
+  MV7 only the changed ones), `DeletePreset`, `PersistPresetName`
 - Tests use `tempfile` for hermetic temp dirs

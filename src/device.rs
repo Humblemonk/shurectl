@@ -348,30 +348,115 @@ impl ShureDevice {
         Self::check_text_reply(command, &reply)
     }
 
+    /// Send an MV7 SET for the setting `label`. `Ok(None)` if the MV7 took it,
+    /// otherwise how it refused. No reply at all is still an error.
+    fn try_text_set(
+        &self,
+        label: &'static str,
+        command: &mv7_text::TextCommand,
+    ) -> Result<Option<Refusal>> {
+        let reply = self.send_text(command)?;
+        Ok(Refused::from_reply(&reply).map(|how| Refusal { label, how }))
+    }
+
+    /// The MV7's state for comparing a preset against, or `None` if a reply
+    /// didn't parse: a field left at its default could hide a needed write.
+    fn known_mv7_state(&self) -> Result<Option<DeviceState>> {
+        let readback = self.get_state()?;
+        Ok(readback.unrecognised.is_empty().then_some(readback.state))
+    }
+
+    /// Load a preset's settings (`target`) onto the MV7, writing only those that
+    /// differ from what the mic has: it answers `[Failed]` to a SET that changes
+    /// nothing. A refused setting is skipped and the rest still load. Returns
+    /// the refused settings, for the status message.
+    pub fn load_mv7_preset(
+        &self,
+        target: &DeviceState,
+        write_monitor_mix: bool,
+    ) -> Result<Vec<String>> {
+        self.ensure_text_protocol()?;
+        let mut refused = Vec::new();
+        let mut current = self.known_mv7_state()?;
+        let mut sent_blind = current.is_none();
+        // The mic's mode after the mode step; Manual-only settings need Manual.
+        let mut mic_mode = target.mode;
+        if let Some(command) = mv7_text::mode_change(current.as_ref(), target) {
+            let refusal = self.try_text_set(MV7_MODE_LABEL, &command)?;
+            // Read the mic again either way: a mode change resets EQ and
+            // compressor or reports a new gain, and a [Failed] to a mode sent
+            // blind may only mean the mic already had it.
+            let readback = self.get_state()?;
+            if mv7_text::mode_change(Some(&readback.state), target).is_some() {
+                refused.push(refusal.unwrap_or(Refusal {
+                    label: MV7_MODE_LABEL,
+                    how: Refused::Failed,
+                }));
+            }
+            // An unparsed dspMode reply reads as Auto, which skips the Manual
+            // settings rather than send them to a mic in Auto.
+            mic_mode = readback.state.mode;
+            current = readback.unrecognised.is_empty().then_some(readback.state);
+            sent_blind |= current.is_none();
+        }
+        for (label, command) in
+            mv7_text::setting_changes(current.as_ref(), mic_mode, target, write_monitor_mix)
+        {
+            refused.extend(self.try_text_set(label, &command)?);
+        }
+        if sent_blind
+            && refused
+                .iter()
+                .any(|refusal| refusal.label != MV7_MODE_LABEL)
+        {
+            // Sent without knowing the mic's state, a setting it already had is
+            // answered [Failed] too, so keep only refusals for settings that
+            // still differ. A field that didn't parse reads as its default, so
+            // its refusal may be wrong either way. This read only tidies the
+            // message: if it fails, the settings still loaded, so report them all.
+            if let Ok(readback) = self.get_state() {
+                let state = readback.state;
+                let still_differs: Vec<&str> =
+                    mv7_text::setting_changes(Some(&state), state.mode, target, write_monitor_mix)
+                        .into_iter()
+                        .map(|(label, _)| label)
+                        .collect();
+                refused.retain(|refusal| {
+                    refusal.label == MV7_MODE_LABEL || still_differs.contains(&refusal.label)
+                });
+            }
+        }
+        Ok(refused.iter().map(Refusal::describe).collect())
+    }
+
     fn check_text_reply(command: &mv7_text::TextCommand, reply: &str) -> Result<()> {
-        match reply {
-            mv7_text::FAILED_REPLY => Err(anyhow!("The MV7 rejected \"{}\"", command.line)),
-            mv7_text::LOCKED_REPLY => Err(anyhow!(
+        match Refused::from_reply(reply) {
+            None => Ok(()),
+            Some(Refused::Failed) => Err(anyhow!("The MV7 rejected \"{}\"", command.line)),
+            Some(Refused::Locked) => Err(anyhow!(
                 "The MV7 refused \"{}\": the setting is locked",
                 command.line
             )),
-            _ => Ok(()),
         }
     }
 
-    /// The MV7 answers `[Failed]` when a gain rounds to the value it already
-    /// has, so a rejected gain SET is only an error if the gain is still wrong.
-    fn send_text_set_gain(&self, gain_tenths: u16) -> Result<()> {
-        let command = mv7_text::set_gain(gain_tenths);
-        let reply = self.send_text(&command)?;
+    /// Send an MV7 SET whose value the mic may already have. It answers
+    /// `[Failed]` to a SET that changes nothing (a gain that rounds to the
+    /// current one, `--mute on` when muted), so `[Failed]` is only an error if
+    /// `query`'s reply shows the setting is still not `is_set`.
+    fn send_text_set_checked(
+        &self,
+        command: &mv7_text::TextCommand,
+        query: &mv7_text::TextCommand,
+        is_set: impl FnOnce(&DeviceState) -> bool,
+    ) -> Result<()> {
+        let reply = self.send_text(command)?;
         if reply != mv7_text::FAILED_REPLY {
-            return Self::check_text_reply(&command, &reply);
+            return Self::check_text_reply(command, &reply);
         }
         let mut state = DeviceState::default();
-        let reply = self.send_text(&mv7_text::get_gain())?;
-        if mv7_text::apply_reply(&reply, &mut state)
-            && state.gain_tenths == mv7_text::snap_gain(gain_tenths)
-        {
+        let reply = self.send_text(query)?;
+        if mv7_text::apply_reply(&reply, &mut state) && is_set(&state) {
             Ok(())
         } else {
             Err(anyhow!("The MV7 rejected \"{}\"", command.line))
@@ -578,7 +663,13 @@ impl ShureDevice {
     pub fn set_gain(&self, gain_tenths: u16) -> Result<()> {
         let clamped = self.model.snap_gain_tenths(gain_tenths);
         let pkt = match self.model {
-            DeviceModel::Mv7 => return self.send_text_set_gain(clamped),
+            DeviceModel::Mv7 => {
+                return self.send_text_set_checked(
+                    &mv7_text::set_gain(clamped),
+                    &mv7_text::get_gain(),
+                    |state| state.gain_tenths == mv7_text::snap_gain(clamped),
+                );
+            }
             DeviceModel::Mv7Plus => cmd_set_mv7_gain(self.next_seq(), clamped),
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
@@ -611,7 +702,13 @@ impl ShureDevice {
 
     pub fn set_mute(&self, muted: bool) -> Result<()> {
         let pkt = match self.model {
-            DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_mute(muted)),
+            DeviceModel::Mv7 => {
+                return self.send_text_set_checked(
+                    &mv7_text::set_mute(muted),
+                    &mv7_text::get_mute(),
+                    |state| state.muted == muted,
+                );
+            }
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_mute(self.next_seq(), muted),
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
@@ -686,7 +783,11 @@ impl ShureDevice {
     pub fn set_limiter(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_limiter(self.next_seq(), enabled),
-            _ => protocol::cmd_set_limiter(self.next_seq(), enabled),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => protocol::cmd_set_limiter(self.next_seq(), enabled),
         };
         self.send_set(&pkt)
     }
@@ -740,7 +841,11 @@ impl ShureDevice {
     pub fn set_mv6_denoiser(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_denoiser(self.next_seq(), enabled),
-            _ => protocol::cmd_set_mv6_denoiser(self.next_seq(), enabled),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => protocol::cmd_set_mv6_denoiser(self.next_seq(), enabled),
         };
         self.send_set(&pkt)
     }
@@ -764,7 +869,11 @@ impl ShureDevice {
     pub fn set_mv6_popper_stopper(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_popper_stopper(self.next_seq(), enabled),
-            _ => protocol::cmd_set_mv6_popper_stopper(self.next_seq(), enabled),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => protocol::cmd_set_mv6_popper_stopper(self.next_seq(), enabled),
         };
         self.send_set(&pkt)
     }
@@ -781,7 +890,11 @@ impl ShureDevice {
     pub fn set_mv6_tone(&self, tone: i8) -> Result<()> {
         let pkt = match self.model {
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_tone(self.next_seq(), tone),
-            _ => protocol::cmd_set_mv6_tone(self.next_seq(), tone),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => protocol::cmd_set_mv6_tone(self.next_seq(), tone),
         };
         self.send_set(&pkt)
     }
@@ -971,6 +1084,45 @@ impl ShureDevice {
     }
 }
 
+/// Label of the MV7's mode setting in a preset load's refusals.
+const MV7_MODE_LABEL: &str = "Mode";
+
+/// How the MV7 refused a SET.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Refused {
+    /// `[Failed]`: rejected, or it changed nothing.
+    Failed,
+    /// `Locked`: the setting can't change right now.
+    Locked,
+}
+
+impl Refused {
+    /// The refusal `reply` carries, or `None` if the MV7 took the SET.
+    fn from_reply(reply: &str) -> Option<Self> {
+        match reply {
+            mv7_text::FAILED_REPLY => Some(Self::Failed),
+            mv7_text::LOCKED_REPLY => Some(Self::Locked),
+            _ => None,
+        }
+    }
+}
+
+/// A setting the MV7 refused during a preset load.
+struct Refusal {
+    label: &'static str,
+    how: Refused,
+}
+
+impl Refusal {
+    /// The setting's label for the status bar, marked when it was locked.
+    fn describe(&self) -> String {
+        match self.how {
+            Refused::Failed => self.label.to_string(),
+            Refused::Locked => format!("{} (locked)", self.label),
+        }
+    }
+}
+
 /// A full state readback from [`ShureDevice::get_state`]. `unrecognised`
 /// describes replies that arrived but matched no known setting. The caller
 /// reports them: in the TUI that is the status bar, since writing to stderr
@@ -1095,6 +1247,23 @@ mod tests {
             readback.unrecognised,
             vec!["feature 0x7f 0x7f (prefix 0x00)"]
         );
+    }
+
+    #[test]
+    fn refusal_marks_a_locked_setting() {
+        let failed = Refusal {
+            label: "Gain",
+            how: Refused::Failed,
+        };
+        let locked = Refusal {
+            label: MV7_MODE_LABEL,
+            how: Refused::Locked,
+        };
+        assert_eq!(Refused::from_reply("[Failed]"), Some(Refused::Failed));
+        assert_eq!(Refused::from_reply("Locked"), Some(Refused::Locked));
+        assert_eq!(Refused::from_reply("micMute=on"), None);
+        assert_eq!(failed.describe(), "Gain");
+        assert_eq!(locked.describe(), "Mode (locked)");
     }
 
     #[test]
