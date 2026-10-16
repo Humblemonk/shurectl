@@ -18,7 +18,7 @@ cargo run -- --demo mv7plus     # no hardware; also mvx2u, mvx2u-gen2, mv6, mv6-
 cargo run -- --list             # list connected devices
 ```
 
-**Verification gate** — run before calling any change complete:
+**Verification gate** — run before calling any change complete (`mise run check` runs the same):
 
 ```
 cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --features probe,qa \
@@ -32,8 +32,8 @@ cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --f
 - Clippy isn't run with `--all-targets` yet because of pre-existing
   `field_reassign_with_default` warnings in `app.rs` tests. Fold them into struct literals before tightening.
 - CI runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual). Check with
-  `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared helper;
-  don't raise the threshold.
+  `npx jscpd -c .github/linters/.jscpd.json .` (or `mise run jscpd`). Fix duplication by
+  extending a shared helper; don't raise the threshold.
 
 ## Architecture
 

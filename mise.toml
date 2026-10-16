@@ -1,0 +1,24 @@
+[tools]
+# CI builds on the latest stable toolchain; Cargo.toml sets the floor (rust-version).
+rust = { version = "stable", components = "clippy,rustfmt" }
+# Only for jscpd, the duplication check CI runs through super-linter.
+node = "lts"
+"npm:jscpd" = "5.4.1"
+
+[tasks.check]
+description = "Verification gate: clippy, build, fmt, tests and e2e scenarios"
+run = [
+  "cargo clippy --features probe,qa -- -D warnings",
+  "cargo build --all-targets --features probe,qa",
+  "cargo fmt --check",
+  "cargo test",
+  "cargo test --features qa --test e2e",
+]
+
+[tasks.jscpd]
+description = "Duplication check with CI's budget"
+run = "jscpd -c .github/linters/.jscpd.json ."
+
+[tasks.demo]
+description = "Run without hardware: mise run demo [mvx2u|mvx2u-gen2|mv6|mv6-gen2|mv7|mv7plus]"
+run = "cargo run -- --demo {{arg(name='model', default='mv7plus')}}"
