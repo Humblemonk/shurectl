@@ -99,21 +99,41 @@ fn alert_block(title: &str, focused: bool, alert: Option<Color>) -> Block<'stati
     }
 }
 
+/// `spans`, then the focused control's key `hint` while `focused`, as long as
+/// the line still fits `width`. A hint that doesn't fit is left out rather than
+/// cut mid-word; the status bar and help list the same keys.
+fn with_hint<'a>(mut spans: Vec<Span<'a>>, focused: bool, hint: &'a str, width: u16) -> Line<'a> {
+    let hint = Span::styled(hint, Style::default().fg(C_DIM));
+    let used: usize = spans.iter().map(Span::width).sum();
+    if focused && used + hint.width() <= usize::from(width) {
+        spans.push(hint);
+    }
+    Line::from(spans)
+}
+
 /// A slider: its label, the value in bold accent and the adjust hint (while
-/// focused) in the title, and a `color` bar that turns bold on focus. Callers
-/// add the ratio and label.
-fn slider_gauge(label: &str, value: &str, focused: bool, color: Color) -> Gauge<'static> {
-    let block = focus_border(focused).title(Line::from(vec![
-        Span::styled(format!("  {label}  "), focused_style(focused)),
-        Span::styled(
-            format!(" {value} "),
-            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            if focused { "  ◄ ► to adjust" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-    ]));
+/// focused) in the title, and a `color` bar that turns bold on focus, for a
+/// gauge `width` cells wide. Callers add the ratio and label.
+fn slider_gauge(
+    label: &str,
+    value: &str,
+    focused: bool,
+    color: Color,
+    width: u16,
+) -> Gauge<'static> {
+    let title = with_hint(
+        vec![
+            Span::styled(format!("  {label}  "), focused_style(focused)),
+            Span::styled(
+                format!(" {value} "),
+                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+            ),
+        ],
+        focused,
+        "  ◄ ► to adjust",
+        width.saturating_sub(2),
+    );
+    let block = focus_border(focused).title(title);
     let bar_style = Style::default().fg(color).bg(C_SURFACE);
     Gauge::default().block(block).gauge_style(if focused {
         bar_style.add_modifier(Modifier::BOLD)
@@ -155,8 +175,36 @@ fn bool_span(val: bool) -> Span<'static> {
     }
 }
 
+/// The smallest terminal, as (width, height), that shows every control, value,
+/// warning and click target of every model on every tab and focus: the VT100's
+/// 80x24, still the default terminal window and btop's minimum.
+/// `every_screen_fits_the_min_size` checks it.
+pub const MIN_SIZE: (u16, u16) = (80, 24);
+
+/// Whether `area` is at least `MIN_SIZE`. Smaller, `draw()` shows only a notice.
+pub fn fits(area: Rect) -> bool {
+    area.width >= MIN_SIZE.0 && area.height >= MIN_SIZE.1
+}
+
+/// The version on the Info tab. Tests pin it, so a release bump doesn't change
+/// the golden renders.
+#[cfg(not(test))]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(test)]
+const VERSION: &str = "0.0.0";
+
 /// Entry point called once per frame from main.
 pub fn draw(frame: &mut Frame, app: &App) -> HitMap {
+    if fits(frame.area()) {
+        draw_ui(frame, app)
+    } else {
+        draw_too_small(frame);
+        HitMap::default()
+    }
+}
+
+/// The whole UI, whatever the terminal's size.
+fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     let size = frame.area();
     let mut context = UiFrame {
         frame,
@@ -171,8 +219,8 @@ pub fn draw(frame: &mut Frame, app: &App) -> HitMap {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header
-            Constraint::Length(2), // tabs
+            Constraint::Length(1), // header
+            Constraint::Length(1), // tabs
             Constraint::Min(0),    // content
             Constraint::Length(1), // status
         ])
@@ -197,6 +245,44 @@ pub fn draw(frame: &mut Frame, app: &App) -> HitMap {
         draw_help_overlay(f, size);
     }
     context.hits
+}
+
+/// btop's notice: the terminal's size, each side red while it is too small,
+/// and the size shurectl needs.
+fn draw_too_small(f: &mut Frame) {
+    let area = f.area();
+    f.render_widget(Block::default().style(Style::default().bg(C_BG)), area);
+    let (min_width, min_height) = MIN_SIZE;
+    let heading = Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD);
+    let text = Style::default().fg(C_TEXT);
+    let side = |have: u16, need: u16| {
+        Span::styled(
+            have.to_string(),
+            Style::default()
+                .fg(if have < need { C_ERROR } else { C_SUCCESS })
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    let lines = vec![
+        Line::from(Span::styled("Terminal size too small:", heading)),
+        Line::from(vec![
+            Span::styled("Width = ", text),
+            side(area.width, min_width),
+            Span::styled(" Height = ", text),
+            side(area.height, min_height),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Needed for shurectl:", heading)),
+        Line::from(Span::styled(
+            format!("Width = {min_width} Height = {min_height}"),
+            text,
+        )),
+    ];
+    let top = area.height.saturating_sub(lines.len() as u16) / 2;
+    f.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        Rect::new(area.x, area.y + top, area.width, area.height - top),
+    );
 }
 
 fn draw_header(f: &mut UiFrame, app: &App, area: Rect) {
@@ -235,15 +321,8 @@ fn draw_header(f: &mut UiFrame, app: &App, area: Rect) {
         ),
     ];
 
-    let p = Paragraph::new(Line::from(title))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(C_BORDER))
-                .style(Style::default().bg(C_BG)),
-        )
-        .alignment(Alignment::Left);
+    // One row, like the status bar, so the tabs get the height an 80x24 terminal has.
+    let p = Paragraph::new(Line::from(title)).style(Style::default().bg(C_SURFACE));
     f.render_widget(p, area);
 }
 
@@ -291,11 +370,6 @@ fn draw_tabs(f: &mut UiFrame, app: &App, area: Rect) {
 
     let tabs = Tabs::new(titles)
         .select(selected)
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(C_BORDER)),
-        )
         .style(Style::default().fg(C_DIM).bg(C_BG))
         // MOTIV Mix's Mixer / Library tabs: bold white over a lime underline.
         .highlight_style(
@@ -316,27 +390,40 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
         (format!("  {}", app.status_message), C_DIM)
     };
 
-    let hint = if app.editing_name() {
-        Span::styled(
+    // The message comes first so errors are never cut; when the full hint no
+    // longer fits after it, the short one keeps the way to help and out.
+    let (hint, short_hint, hint_color) = if app.editing_name() {
+        (
             " Editing name — [Enter] save  [Esc/click outside] cancel  [Backspace] delete",
-            Style::default().fg(C_ACCENT),
+            " [Enter] save  [Esc] cancel",
+            C_ACCENT,
         )
     } else if app.can_flatten_eq() {
-        Span::styled(
+        (
             " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
-            Style::default().fg(C_DIM),
+            " [?] Help  [q] Quit",
+            C_DIM,
         )
     } else {
-        Span::styled(
+        (
             " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [r] Refresh  [?] Help  [q] Quit",
-            Style::default().fg(C_DIM),
+            " [?] Help  [q] Quit",
+            C_DIM,
         )
+    };
+    let msg = Span::styled(msg, Style::default().fg(color));
+    let gap = Span::raw("   ");
+    let full_width = msg.width() + gap.width() + Span::raw(hint).width();
+    let hint = if full_width <= usize::from(area.width) {
+        hint
+    } else {
+        short_hint
     };
 
     let status_line = vec![
-        Span::styled(msg, Style::default().fg(color)),
-        Span::raw("   "),
-        hint,
+        msg,
+        gap,
+        Span::styled(hint, Style::default().fg(hint_color)),
     ];
 
     f.render_widget(
@@ -379,8 +466,7 @@ fn draw_main_left_mv7plus(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(3), // gain
             Constraint::Length(4), // level meter
             Constraint::Length(4), // monitor mix (mic + playback level)
@@ -389,21 +475,19 @@ fn draw_main_left_mv7plus(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
+    draw_mode_mute_row(f, app, rows[0]);
 
-    draw_gain_gauge(f, app, rows[2]);
+    draw_gain_gauge(f, app, rows[1]);
 
-    draw_meter(f, app, rows[3]);
-    draw_monitor_mix_gauge(f, app, rows[4]);
+    draw_meter(f, app, rows[2]);
+    draw_monitor_mix_gauge(f, app, rows[3]);
 }
 
 fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(4), // level meter
             Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Min(0),    // spacer
@@ -411,10 +495,9 @@ fn draw_main_left_mv7plus_auto(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
-    draw_meter(f, app, rows[2]);
-    draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_mode_mute_row(f, app, rows[0]);
+    draw_meter(f, app, rows[1]);
+    draw_monitor_mix_gauge(f, app, rows[2]);
 }
 
 // MV7 Manual: Mode → Mute → Gain → Meter → MonitorMix → Lock
@@ -422,8 +505,7 @@ fn draw_main_left_mv7_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(3), // gain gauge
             Constraint::Length(4), // level meter
             Constraint::Length(3), // monitor mix
@@ -433,12 +515,11 @@ fn draw_main_left_mv7_manual(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
-    draw_gain_gauge(f, app, rows[2]);
-    draw_meter(f, app, rows[3]);
-    draw_monitor_mix_gauge(f, app, rows[4]);
-    draw_config_lock_block(f, app, rows[5]);
+    draw_mode_mute_row(f, app, rows[0]);
+    draw_gain_gauge(f, app, rows[1]);
+    draw_meter(f, app, rows[2]);
+    draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_config_lock_block(f, app, rows[4]);
 }
 
 // MV7 Auto: Mode → Mute → Auto Level (Position, Tone) → Meter → MonitorMix → Lock
@@ -446,8 +527,7 @@ fn draw_main_left_mv7_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(4), // auto controls (2 rows + 2 borders)
             Constraint::Length(4), // level meter
             Constraint::Length(3), // monitor mix
@@ -457,20 +537,18 @@ fn draw_main_left_mv7_auto(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
-    draw_auto_controls(f, app, rows[2], &[AutoRow::Position, AutoRow::Tone]);
-    draw_meter(f, app, rows[3]);
-    draw_monitor_mix_gauge(f, app, rows[4]);
-    draw_config_lock_block(f, app, rows[5]);
+    draw_mode_mute_row(f, app, rows[0]);
+    draw_auto_controls(f, app, rows[1], &[AutoRow::Position, AutoRow::Tone]);
+    draw_meter(f, app, rows[2]);
+    draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_config_lock_block(f, app, rows[4]);
 }
 
 fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(3), // gain gauge
             Constraint::Length(3), // gain lock
             Constraint::Length(4), // level meter
@@ -481,17 +559,16 @@ fn draw_main_left_mv6_manual(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
+    draw_mode_mute_row(f, app, rows[0]);
 
-    draw_gain_gauge(f, app, rows[2]);
+    draw_gain_gauge(f, app, rows[1]);
 
-    draw_gain_lock_block(f, app, rows[3]);
+    draw_gain_lock_block(f, app, rows[2]);
 
-    draw_meter(f, app, rows[4]);
-    draw_monitor_mix_gauge(f, app, rows[5]);
+    draw_meter(f, app, rows[3]);
+    draw_monitor_mix_gauge(f, app, rows[4]);
     if app.device_model.has_mic_presets() {
-        draw_mic_preset_block(f, app, rows[6]);
+        draw_mic_preset_block(f, app, rows[5]);
     }
 }
 
@@ -505,23 +582,22 @@ fn draw_mic_preset_block(f: &mut UiFrame, app: &App, area: Rect) {
     for preset in MicPreset::ALL {
         spans.push(segmented_span(preset.label(), current == Some(preset)));
     }
-    if current.is_none() {
-        spans.push(Span::styled("  (custom)", Style::default().fg(C_DIM)));
-    }
-    spans.push(Span::styled(
-        if focused { "  [Enter] cycle" } else { "" },
-        Style::default().fg(C_DIM),
-    ));
-    let p = Paragraph::new(Line::from(spans)).block(focus_block("Mic Preset", focused));
-    f.render_widget(p, area);
+    // In the title, so the row still fits an 80-column terminal.
+    let title = if current.is_some() {
+        "Mic Preset"
+    } else {
+        "Mic Preset (custom)"
+    };
+    let block = focus_block(title, focused);
+    let line = with_hint(spans, focused, "  [Enter] cycle", block.inner(area).width);
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(4), // level meter
             Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Min(0),    // spacer
@@ -529,10 +605,9 @@ fn draw_main_left_mv6_auto(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
-    draw_meter(f, app, rows[2]);
-    draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_mode_mute_row(f, app, rows[0]);
+    draw_meter(f, app, rows[1]);
+    draw_monitor_mix_gauge(f, app, rows[2]);
 }
 
 // MV6 Gen 2 Auto: the MV6 Auto layout plus its Auto Level controls, placed where
@@ -542,8 +617,7 @@ fn draw_main_left_mv6_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(4), // auto controls (2 rows + 2 borders)
             Constraint::Length(4), // level meter
             Constraint::Length(4), // monitor mix (mic + playback level)
@@ -553,17 +627,16 @@ fn draw_main_left_mv6_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
+    draw_mode_mute_row(f, app, rows[0]);
     draw_auto_controls(
         f,
         app,
-        rows[2],
+        rows[1],
         &[AutoRow::TargetLevel, AutoRow::AdaptationRate],
     );
-    draw_meter(f, app, rows[3]);
-    draw_monitor_mix_gauge(f, app, rows[4]);
-    draw_mic_preset_block(f, app, rows[5]);
+    draw_meter(f, app, rows[2]);
+    draw_monitor_mix_gauge(f, app, rows[3]);
+    draw_mic_preset_block(f, app, rows[4]);
 }
 
 // Gen 2 Manual: Mode → Mute → Gain → GainLock → Meter → MonitorMix → Phantom
@@ -571,8 +644,7 @@ fn draw_main_left_gen2_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(3), // gain gauge
             Constraint::Length(3), // gain lock
             Constraint::Length(4), // level meter
@@ -583,15 +655,14 @@ fn draw_main_left_gen2_manual(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
+    draw_mode_mute_row(f, app, rows[0]);
 
-    draw_gain_gauge(f, app, rows[2]);
+    draw_gain_gauge(f, app, rows[1]);
 
-    draw_gain_lock_block(f, app, rows[3]);
-    draw_meter(f, app, rows[4]);
-    draw_monitor_mix_gauge(f, app, rows[5]);
-    draw_phantom_block(f, app, rows[6]);
+    draw_gain_lock_block(f, app, rows[2]);
+    draw_meter(f, app, rows[3]);
+    draw_monitor_mix_gauge(f, app, rows[4]);
+    draw_phantom_block(f, app, rows[5]);
 }
 
 // Gen 2 Auto: Mode → Mute → Meter → MonitorMix → Phantom
@@ -599,8 +670,7 @@ fn draw_main_left_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode
-            Constraint::Length(3), // mute
+            Constraint::Length(3), // mode | mute
             Constraint::Length(4), // level meter
             Constraint::Length(4), // monitor mix (mic + playback level)
             Constraint::Length(3), // phantom
@@ -609,19 +679,17 @@ fn draw_main_left_gen2_auto(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
-    draw_meter(f, app, rows[2]);
-    draw_monitor_mix_gauge(f, app, rows[3]);
-    draw_phantom_block(f, app, rows[4]);
+    draw_mode_mute_row(f, app, rows[0]);
+    draw_meter(f, app, rows[1]);
+    draw_monitor_mix_gauge(f, app, rows[2]);
+    draw_phantom_block(f, app, rows[3]);
 }
 
 fn draw_main_left_manual(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode       (1 line + 2 borders)
-            Constraint::Length(3), // mute       (1 line + 2 borders)
+            Constraint::Length(3), // mode | mute
             Constraint::Length(3), // gain gauge (1 bar + 2 borders)
             Constraint::Length(4), // level meter (bar + ruler + 2 borders)
             Constraint::Length(3), // monitor mix (1 bar + 2 borders)
@@ -632,20 +700,18 @@ fn draw_main_left_manual(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
+    draw_mode_mute_row(f, app, rows[0]);
 
-    draw_gain_gauge(f, app, rows[2]);
+    draw_gain_gauge(f, app, rows[1]);
 
-    draw_main_shared(f, app, &rows[3..]);
+    draw_main_shared(f, app, &rows[2..]);
 }
 
 fn draw_main_left_auto(f: &mut UiFrame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // mode          (1 line + 2 borders)
-            Constraint::Length(3), // mute          (1 line + 2 borders)
+            Constraint::Length(3), // mode | mute
             Constraint::Length(5), // auto controls (3 rows + 2 borders)
             Constraint::Length(4), // level meter   (bar + ruler + 2 borders)
             Constraint::Length(3), // monitor mix   (1 bar + 2 borders)
@@ -656,15 +722,14 @@ fn draw_main_left_auto(f: &mut UiFrame, app: &App, area: Rect) {
         .horizontal_margin(1)
         .split(area);
 
-    draw_mode_block(f, app, rows[0]);
-    draw_mute_block(f, app, rows[1]);
+    draw_mode_mute_row(f, app, rows[0]);
     draw_auto_controls(
         f,
         app,
-        rows[2],
+        rows[1],
         &[AutoRow::Position, AutoRow::Tone, AutoRow::Gain],
     );
-    draw_main_shared(f, app, &rows[3..]);
+    draw_main_shared(f, app, &rows[2..]);
 }
 
 /// One row of the Auto Level controls block. Each model passes the rows it has.
@@ -759,11 +824,8 @@ fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, rows: &[AutoRow]) 
         for (label, active) in row.options(app) {
             spans.push(segmented_span(label, active));
         }
-        spans.push(Span::styled(
-            if focused { "  [Enter] cycle" } else { "" },
-            Style::default().fg(C_DIM),
-        ));
-        f.render_widget(Paragraph::new(Line::from(spans)), *row_area);
+        let line = with_hint(spans, focused, "  [Enter] cycle", row_area.width);
+        f.render_widget(Paragraph::new(line), *row_area);
     }
 }
 
@@ -790,25 +852,24 @@ fn draw_gain_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     let gain = app.device_state.gain_tenths;
     let max = app.device_model.max_gain_tenths();
     let gain_locked = app.gain_locked();
-    let title = Line::from(vec![
-        Span::styled("  Gain  ", focused_style(gain_focused)),
-        Span::styled(
-            format!(" {} ", format_gain(gain)),
-            Style::default()
-                .fg(if gain_locked { C_DIM } else { C_TEXT })
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            if gain_focused && !gain_locked {
-                "  ◄ ► or ←→ to adjust"
-            } else if gain_focused && gain_locked {
-                "  🔒 locked"
-            } else {
-                ""
-            },
-            Style::default().fg(C_DIM),
-        ),
-    ]);
+    let title = with_hint(
+        vec![
+            Span::styled("  Gain  ", focused_style(gain_focused)),
+            Span::styled(
+                format!(" {} ", format_gain(gain)),
+                Style::default()
+                    .fg(if gain_locked { C_DIM } else { C_TEXT })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ],
+        gain_focused,
+        if gain_locked {
+            "  🔒 locked"
+        } else {
+            "  ◄ ► or ←→ to adjust"
+        },
+        area.width.saturating_sub(2),
+    );
     let gauge = Gauge::default()
         .block(focus_border(gain_focused).title(title))
         .gauge_style(
@@ -826,23 +887,31 @@ fn draw_gain_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     f.render_widget(gauge, area);
 }
 
+/// Mode and Mute side by side, the first row of every model's Main tab.
+fn draw_mode_mute_row(f: &mut UiFrame, app: &App, area: Rect) {
+    let [mode, mute] = Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)]).areas(area);
+    draw_mode_block(f, app, mode);
+    draw_mute_block(f, app, mute);
+}
+
 /// Renders the Input Mode block (Manual / Auto toggle only).
 fn draw_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::Mode);
     let focused = app.focus == Focus::Mode;
 
     let mode = app.device_state.mode;
-    let p = Paragraph::new(Line::from(vec![
-        Span::styled("Mode:  ", Style::default().fg(C_DIM)),
-        segmented_span(&InputMode::Auto.to_string(), mode == InputMode::Auto),
-        segmented_span(&InputMode::Manual.to_string(), mode == InputMode::Manual),
-        Span::styled(
-            if focused { "  [Enter] toggle" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(focus_block("Input Mode", focused));
-    f.render_widget(p, area);
+    let block = focus_block("Input Mode", focused);
+    let line = with_hint(
+        vec![
+            Span::styled("Mode:  ", Style::default().fg(C_DIM)),
+            segmented_span(&InputMode::Auto.to_string(), mode == InputMode::Auto),
+            segmented_span(&InputMode::Manual.to_string(), mode == InputMode::Manual),
+        ],
+        focused,
+        "  [Enter] toggle",
+        block.inner(area).width,
+    );
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 /// Renders the Mute block as a standalone control. Mute is independent of
@@ -852,21 +921,22 @@ fn draw_mute_block(f: &mut UiFrame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Mute;
     let muted = app.device_state.muted;
 
-    let p = Paragraph::new(Line::from(vec![
-        Span::styled("Mute:  ", Style::default().fg(C_DIM)),
-        // Muted is the alert state, red like the block and the Summary's YES.
-        if muted {
-            bool_span(true).patch_style(Style::default().fg(C_ERROR))
-        } else {
-            bool_span(false)
-        },
-        Span::styled(
-            if focused { "  [Enter] toggle" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(alert_block("Mute", focused, muted.then_some(C_ERROR)));
-    f.render_widget(p, area);
+    let block = alert_block("Mute", focused, muted.then_some(C_ERROR));
+    let line = with_hint(
+        vec![
+            Span::styled("Mute:  ", Style::default().fg(C_DIM)),
+            // Muted is the alert state, red like the block and the Summary's YES.
+            if muted {
+                bool_span(true).patch_style(Style::default().fg(C_ERROR))
+            } else {
+                bool_span(false)
+            },
+        ],
+        focused,
+        "  [Enter] toggle",
+        block.inner(area).width,
+    );
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 // prismblue, brighter than Monitor Mix blue, to tell Mic Level and Playback Level apart at a glance.
@@ -949,7 +1019,7 @@ fn draw_phantom_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::Phantom);
     let ph_focused = app.focus == Focus::Phantom;
     let phantom_p = Paragraph::new(Line::from(vec![
-        Span::styled("48V Phantom Power:  ", Style::default().fg(C_DIM)),
+        Span::styled("48V:  ", Style::default().fg(C_DIM)),
         bool_span(app.device_state.phantom_power),
         Span::styled(
             if ph_focused {
@@ -970,30 +1040,27 @@ fn draw_gain_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
     let lock_focused = app.focus == Focus::GainLock;
     let gain_locked = app.device_state.mv6_gain_locked;
     let lock_icon = if gain_locked { "🔒" } else { "🔓" };
-    let gain_lock_p = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("{lock_icon}  Gain Lock:  "),
-            Style::default().fg(C_DIM),
-        ),
-        if gain_locked {
+    let block = alert_block("Gain Lock", lock_focused, gain_locked.then_some(C_WARN));
+    let line = with_hint(
+        vec![
             Span::styled(
-                "LOCKED",
-                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("Unlocked", Style::default().fg(C_TEXT))
-        },
-        Span::styled(
-            if lock_focused { "  [Enter] toggle" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(alert_block(
-        "Gain Lock",
+                format!("{lock_icon}  Gain Lock:  "),
+                Style::default().fg(C_DIM),
+            ),
+            if gain_locked {
+                Span::styled(
+                    "LOCKED",
+                    Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled("Unlocked", Style::default().fg(C_TEXT))
+            },
+        ],
         lock_focused,
-        gain_locked.then_some(C_WARN),
-    ));
-    f.render_widget(gain_lock_p, area);
+        "  [Enter] toggle",
+        block.inner(area).width,
+    );
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 /// Renders the controls shared by both Manual and Auto layouts that follow
@@ -1030,38 +1097,32 @@ fn draw_config_lock_block(f: &mut UiFrame, app: &App, area: Rect) {
     let lock_focused = app.focus == Focus::Lock;
     let locked = app.device_state.locked;
     let lock_icon = if locked { "🔒" } else { "🔓" };
-    let lock_p = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("{lock_icon}  Config Lock:  "),
-            Style::default().fg(C_DIM),
-        ),
-        if locked {
+    let block = alert_block("Config Lock", lock_focused, locked.then_some(C_WARN));
+    let line = with_hint(
+        vec![
             Span::styled(
-                "LOCKED",
-                Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("Unlocked", Style::default().fg(C_TEXT))
-        },
-        Span::styled(
-            if lock_focused { "  [Enter] toggle" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-        if locked && !lock_focused {
-            Span::styled(
-                "  ⚠ Device ignores changes while locked",
-                Style::default().fg(C_WARN),
-            )
-        } else {
-            Span::raw("")
-        },
-    ]))
-    .block(alert_block(
-        "Config Lock",
+                format!("{lock_icon}  Config Lock:  "),
+                Style::default().fg(C_DIM),
+            ),
+            if locked {
+                Span::styled(
+                    "LOCKED",
+                    Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled("Unlocked", Style::default().fg(C_TEXT))
+            },
+            if locked && !lock_focused {
+                Span::styled("  ⚠ Changes ignored", Style::default().fg(C_WARN))
+            } else {
+                Span::raw("")
+            },
+        ],
         lock_focused,
-        locked.then_some(C_WARN),
-    ));
-    f.render_widget(lock_p, area);
+        "  [Enter] toggle",
+        block.inner(area).width,
+    );
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 /// Rows of the Main tab's Summary, in display order. Models list the rows they
@@ -1619,17 +1680,18 @@ fn draw_tone_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::ToneMode);
     let focused = app.focus == Focus::ToneMode;
     let advanced = app.device_state.tone_advanced;
-    let p = Paragraph::new(Line::from(vec![
-        Span::styled("Tone:  ", Style::default().fg(C_DIM)),
-        segmented_span("Simple", !advanced),
-        segmented_span("Advanced (5-band EQ)", advanced),
-        Span::styled(
-            if focused { "  [Enter] toggle" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(focus_block("Tone Mode", focused));
-    f.render_widget(p, area);
+    let block = focus_block("Tone Mode", focused);
+    let line = with_hint(
+        vec![
+            Span::styled("Tone:  ", Style::default().fg(C_DIM)),
+            segmented_span("Simple", !advanced),
+            segmented_span("Advanced (5-band EQ)", advanced),
+        ],
+        focused,
+        "  [Enter] toggle",
+        block.inner(area).width,
+    );
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 /// The Tone slider (Dark ↔ Natural ↔ Bright), drawn into a 3-row `area`.
@@ -1641,7 +1703,7 @@ fn draw_tone_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     let tone_label = tone_label(tone);
     let tone_ratio = (tone as f64 + 10.0) / 20.0;
 
-    let tone_gauge = slider_gauge("Tone", &tone_label, tone_foc, C_BLUE)
+    let tone_gauge = slider_gauge("Tone", &tone_label, tone_foc, C_BLUE, area.width)
         .ratio(tone_ratio)
         .label(format!("Dark ◄─{:+}─► Bright", pct));
     f.control(area, Focus::Tone);
@@ -1653,13 +1715,37 @@ fn draw_tone_gauge(f: &mut UiFrame, app: &App, area: Rect) {
 //
 // Every model's Dynamics tab is assembled from the same two card shapes, so the
 // labels, wording, and focus styling live here once instead of being repeated
-// in each per-model draw_*_dynamics_tab(). Adding a model means calling these,
+// per model, and draw_card_grid() lays them out. Adding a model means calling these,
 // never copying them.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The bordered frame shared by every Dynamics/Reverb card.
 fn card_block(title: &str, focused: bool) -> Block<'static> {
     focus_block(title, focused).padding(Padding::horizontal(1))
+}
+
+/// Draws one card into its area and registers the card's click target.
+type CardFn = fn(&mut UiFrame, &App, Rect);
+
+/// Narrower than this, "High-Pass Filter" no longer fits in its card's title.
+const MIN_CARD_WIDTH: u16 = 20;
+
+/// Lays `cards` out in reading order, in rows of at least three slots so one
+/// to three cards each keep a third of the width. Cards that would be narrower
+/// than `MIN_CARD_WIDTH` wrap onto more rows instead.
+fn draw_card_grid(f: &mut UiFrame, app: &App, area: Rect, cards: &[CardFn]) {
+    let area = area.inner(Margin::new(1, 0));
+    let fit = usize::from(area.width / MIN_CARD_WIDTH).max(1);
+    let rows = cards.len().div_ceil(fit);
+    let per_row = cards.len().div_ceil(rows.max(1)).max(3).min(fit);
+    let row_areas = Layout::vertical(vec![Constraint::Ratio(1, rows as u32); rows]).split(area);
+    for (row, row_cards) in row_areas.iter().zip(cards.chunks(per_row)) {
+        let slots =
+            Layout::horizontal(vec![Constraint::Ratio(1, per_row as u32); per_row]).split(*row);
+        for (draw_card, slot) in row_cards.iter().zip(slots.iter()) {
+            draw_card(f, app, *slot);
+        }
+    }
 }
 
 /// Card for a boolean control toggled with Enter.
@@ -1917,22 +2003,6 @@ fn draw_hpf_card(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MV6 / MV6 Gen 2 Dynamics Tab — Denoiser, Popper Stopper, Mute Button, HPF
-// ─────────────────────────────────────────────────────────────────────────────
-fn draw_mv6_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, 4); 4])
-        .horizontal_margin(1)
-        .split(area);
-
-    draw_denoiser_card(f, app, cols[0]);
-    draw_popper_stopper_card(f, app, cols[1]);
-    draw_mute_btn_card(f, app, cols[2]);
-    draw_hpf_card(f, app, cols[3]);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // MVX2U Gen 2 EQ Tab — same visual style as Gen 1, no master enable, no per-band enable
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_gen2_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
@@ -1982,13 +2052,17 @@ fn format_band_freq(band: usize) -> String {
 /// Rows above an EQ band's text: the gain bar (8) and a blank row.
 const EQ_BAR_ROWS: u16 = 9;
 
-/// One EQ band column: gain bar, frequency, the On row when `enabled` is given
-/// (the MVX2U Gen 1, at row `EQ_BAR_ROWS + 1`), and gain.
+/// The widest text in an EQ band column: "Gain: +0.0 dB".
+const EQ_BAND_TEXT_WIDTH: u16 = 13;
+
+/// One EQ band column `width` cells wide: gain bar, frequency, the On row when
+/// `enabled` is given (the MVX2U Gen 1, at row `EQ_BAR_ROWS + 1`), and gain.
 fn eq_band_column(
     app: &App,
     band: usize,
     enabled: Option<bool>,
     focused: bool,
+    width: u16,
 ) -> Paragraph<'static> {
     let eq = &app.device_state.eq_bands[band];
     let gain_foc = app.focus == Focus::EqGain(band);
@@ -2041,12 +2115,23 @@ fn eq_band_column(
         ),
     ]));
     Paragraph::new(lines)
-        .block(eq_band_block(band, band == app.eq_selected_band, focused))
+        .block(eq_band_block(
+            band,
+            band == app.eq_selected_band,
+            focused,
+            width,
+        ))
         .style(Style::default().bg(C_BG))
 }
 
-/// One EQ band column's frame; the selected band gets a thick border.
-fn eq_band_block(band: usize, selected: bool, focused: bool) -> Block<'static> {
+/// One EQ band column's frame; the selected band gets a thick border. The text
+/// keeps a cell off each side unless that would cut it, as at 80 columns.
+fn eq_band_block(band: usize, selected: bool, focused: bool, width: u16) -> Block<'static> {
+    let padding = if width >= EQ_BAND_TEXT_WIDTH + 4 {
+        Padding::horizontal(1)
+    } else {
+        Padding::ZERO
+    };
     let border_color = if focused {
         C_FOCUS
     } else if selected {
@@ -2070,7 +2155,7 @@ fn eq_band_block(band: usize, selected: bool, focused: bool) -> Block<'static> {
             BorderType::Rounded
         })
         .border_style(Style::default().fg(border_color))
-        .padding(Padding::horizontal(1))
+        .padding(padding)
 }
 
 /// The 5-band EQ editor (band selector + one column per band) without master or
@@ -2101,44 +2186,11 @@ fn draw_eq_bands(f: &mut UiFrame, app: &App, area: Rect) {
     for (i, band_area) in band_cols.iter().enumerate() {
         f.control(*band_area, Focus::EqGain(i));
         let focused = app.focus == Focus::EqGain(i);
-        f.render_widget(eq_band_column(app, i, None, focused), *band_area);
+        f.render_widget(
+            eq_band_column(app, i, None, focused, band_area.width),
+            *band_area,
+        );
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MVX2U Gen 2 Dynamics Tab — Limiter + Compressor (Gen 1 style) + Denoiser + Popper Stopper + HPF
-// ─────────────────────────────────────────────────────────────────────────────
-fn draw_gen2_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    // Auto mode: only Denoiser, Popper Stopper, HPF are available.
-    // Manual mode: all five controls.
-    let show_limiter_comp = app.device_state.mode != InputMode::Auto;
-    let num_cols = if show_limiter_comp { 5usize } else { 3usize };
-
-    let constraints: Vec<Constraint> = (0..num_cols)
-        .map(|_| Constraint::Ratio(1, num_cols as u32))
-        .collect();
-
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .horizontal_margin(1)
-        .split(area);
-
-    let mut col = 0usize;
-
-    if show_limiter_comp {
-        // Limiter and Compressor render exactly as they do on Gen 1.
-        draw_limiter_card(f, app, cols[col]);
-        col += 1;
-        draw_compressor_card(f, app, cols[col]);
-        col += 1;
-    }
-
-    draw_denoiser_card(f, app, cols[col]);
-    col += 1;
-    draw_popper_stopper_card(f, app, cols[col]);
-    col += 1;
-    draw_hpf_card(f, app, cols[col]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2250,35 +2302,17 @@ fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     {
         f.control(*band_area, Focus::EqGain(i));
         // The enable row sits below the bar and the frequency.
-        let band_inner = band_area.inner(Margin::new(2, 1));
+        let band_inner = band_area.inner(Margin::new(1, 1));
         f.control(
             text_row(band_inner, EQ_BAR_ROWS + 1),
             Focus::EqBandEnable(i),
         );
         let focused = app.focus == Focus::EqBandEnable(i) || app.focus == Focus::EqGain(i);
         f.render_widget(
-            eq_band_column(app, i, Some(band.enabled), focused),
+            eq_band_column(app, i, Some(band.enabled), focused, band_area.width),
             *band_area,
         );
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MV7+ Dynamics Tab — Limiter, Compressor, Denoiser, Popper Stopper, Mute Button, HPF
-// ─────────────────────────────────────────────────────────────────────────────
-fn draw_mv7plus_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, 6); 6])
-        .horizontal_margin(1)
-        .split(area);
-
-    draw_limiter_card(f, app, cols[0]);
-    draw_compressor_card(f, app, cols[1]);
-    draw_denoiser_card(f, app, cols[2]);
-    draw_popper_stopper_card(f, app, cols[3]);
-    draw_mute_btn_card(f, app, cols[4]);
-    draw_hpf_card(f, app, cols[5]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2343,6 +2377,7 @@ fn draw_reverb_tab(f: &mut UiFrame, app: &App, area: Rect) {
         &format!("{intensity}%"),
         rint_foc,
         C_BLUE,
+        rows[1].width,
     )
     .ratio(intensity as f64 / 100.0)
     .label(format!("Dry ◄─{:3}%─► Wet", intensity));
@@ -2364,7 +2399,7 @@ fn draw_led_color_gauge(
 ) {
     f.control(area, focus);
     let focused = app.focus == focus;
-    let gauge = slider_gauge(label, &value.to_string(), focused, color)
+    let gauge = slider_gauge(label, &value.to_string(), focused, color, area.width)
         .ratio(value as f64 / 255.0)
         .label(format!("0 ◄─{:3}─► 255", value));
     f.render_widget(gauge, area);
@@ -2380,21 +2415,22 @@ fn draw_led_cycle_row(
 ) {
     f.control(area, focus);
     let focused = app.focus == focus;
-    let p = Paragraph::new(Line::from(vec![
-        Span::styled(format!("{label}:  "), Style::default().fg(C_DIM)),
-        Span::styled(
-            format!("[ {value} ]"),
-            Style::default()
-                .fg(if focused { C_FOCUS } else { C_TEXT })
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            if focused { "  [Enter] cycle" } else { "" },
-            Style::default().fg(C_DIM),
-        ),
-    ]))
-    .block(card_block(label, focused));
-    f.render_widget(p, area);
+    let block = card_block(label, focused);
+    let line = with_hint(
+        vec![
+            Span::styled(format!("{label}:  "), Style::default().fg(C_DIM)),
+            Span::styled(
+                format!("[ {value} ]"),
+                Style::default()
+                    .fg(if focused { C_FOCUS } else { C_TEXT })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ],
+        focused,
+        "  [Enter] cycle",
+        block.inner(area).width,
+    );
+    f.render_widget(Paragraph::new(line).block(block), area);
 }
 
 fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
@@ -2667,37 +2703,43 @@ fn draw_mv7_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
 // Dynamics Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    if app.device_model == DeviceModel::Mv7Plus {
-        draw_mv7plus_dynamics_tab(f, app, area);
-        return;
-    }
-    if matches!(app.device_model, DeviceModel::Mv6 | DeviceModel::Mv6Gen2) {
-        draw_mv6_dynamics_tab(f, app, area);
-        return;
-    }
-    if app.device_model == DeviceModel::Mvx2uGen2 {
-        draw_gen2_dynamics_tab(f, app, area);
-        return;
-    }
-    if app.device_state.mode == InputMode::Auto {
+    if app.is_tab_locked(Tab::Dynamics) {
         draw_tab_locked_notice(f, area, "Dynamics");
         return;
     }
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, 3); 3])
-        .horizontal_margin(1)
-        .split(area);
-
-    if app.device_model == DeviceModel::Mv7 {
+    let manual = app.device_state.mode == InputMode::Manual;
+    let cards: &[CardFn] = match app.device_model {
+        DeviceModel::Mvx2u => &[draw_limiter_card, draw_compressor_card, draw_hpf_card],
         // The limiter MOTIV shows for the MV7 runs in the app, not on the mic,
         // and the MV7 has no HPF; the compressor is its only dynamics control.
-        draw_compressor_card(f, app, cols[0]);
-        return;
-    }
-    draw_limiter_card(f, app, cols[0]);
-    draw_compressor_card(f, app, cols[1]);
-    draw_hpf_card(f, app, cols[2]);
+        DeviceModel::Mv7 => &[draw_compressor_card],
+        // Gen 2 Auto mode has no Limiter or Compressor.
+        DeviceModel::Mvx2uGen2 if !manual => {
+            &[draw_denoiser_card, draw_popper_stopper_card, draw_hpf_card]
+        }
+        DeviceModel::Mvx2uGen2 => &[
+            draw_limiter_card,
+            draw_compressor_card,
+            draw_denoiser_card,
+            draw_popper_stopper_card,
+            draw_hpf_card,
+        ],
+        DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => &[
+            draw_denoiser_card,
+            draw_popper_stopper_card,
+            draw_mute_btn_card,
+            draw_hpf_card,
+        ],
+        DeviceModel::Mv7Plus => &[
+            draw_limiter_card,
+            draw_compressor_card,
+            draw_denoiser_card,
+            draw_popper_stopper_card,
+            draw_mute_btn_card,
+            draw_hpf_card,
+        ],
+    };
+    draw_card_grid(f, app, area, cards);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2727,8 +2769,9 @@ fn draw_mv7_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
 // Presets Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_presets_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    // Each slot gets a fixed-height card: name row (3) + actions row (3) = 6 lines each.
-    let slot_constraints: Vec<Constraint> = (0..4).map(|_| Constraint::Length(7)).collect();
+    // Each slot gets a fixed-height card: name row (3) + actions row (2) = 5 lines,
+    // so all four fit an 80x24 terminal.
+    let slot_constraints: Vec<Constraint> = (0..4).map(|_| Constraint::Length(5)).collect();
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(slot_constraints)
@@ -2744,7 +2787,7 @@ fn draw_preset_card(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
     // Split the card into name row and actions row.
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(4)])
+        .constraints([Constraint::Length(3), Constraint::Length(2)])
         .split(area);
 
     draw_preset_name_row(f, app, index, rows[0]);
@@ -2903,7 +2946,7 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
         })
         .border_style(Style::default().fg(border_color))
         .padding(Padding::horizontal(1));
-    let action_row = text_row(border.inner(area), 1);
+    let action_row = text_row(border.inner(area), 0);
     let keys: &[KeyCode] = if filled {
         &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('d')]
     } else {
@@ -2921,7 +2964,7 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
         x = x.saturating_add(width);
     }
 
-    let block = Paragraph::new(vec![Line::from(""), actions])
+    let block = Paragraph::new(actions)
         .block(border)
         .style(Style::default().bg(C_BG));
     f.render_widget(block, area);
@@ -3185,11 +3228,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            concat!(
-                "  shurectl v",
-                env!("CARGO_PKG_VERSION"),
-                " — open-source Shure device configurator"
-            ),
+            format!("  shurectl v{VERSION} — open-source Shure device configurator"),
             Style::default().fg(C_DIM),
         )),
     ]);
@@ -3212,57 +3251,28 @@ fn help_row(key: &str, description: &'static str) -> Line<'static> {
 }
 
 fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
-    let popup_width = 58u16.min(area.width.saturating_sub(4));
-    let popup_height = 32u16.min(area.height.saturating_sub(4));
-    let x = (area.width.saturating_sub(popup_width)) / 2;
-    let y = (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(x, y, popup_width, popup_height);
-
-    f.render_widget(Clear, popup_area);
-
-    let lines = vec![
+    let heading = |text| {
         Line::from(Span::styled(
-            "  Keyboard & Mouse",
-            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Navigation",
+            text,
             Style::default()
                 .fg(C_TEXT)
                 .add_modifier(Modifier::UNDERLINED),
-        )]),
+        ))
+    };
+    let lines = vec![
+        heading("  Controls"),
         help_row("Tab / Shift+Tab", "Switch section"),
-        help_row("↑ / k", "Focus previous control"),
-        help_row("↓ / j", "Focus next control"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Adjustment",
-            Style::default()
-                .fg(C_TEXT)
-                .add_modifier(Modifier::UNDERLINED),
-        )]),
-        help_row("← / h", "Decrease value"),
-        help_row("→ / l", "Increase value"),
+        help_row("↑ ↓ / k j", "Focus previous / next control"),
+        help_row("← → / h l", "Decrease / increase value"),
         help_row("Enter / Space", "Toggle boolean / cycle option"),
         help_row("f", "Flatten 5-band EQ (EQ tab)"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "  General",
-            Style::default()
-                .fg(C_TEXT)
-                .add_modifier(Modifier::UNDERLINED),
-        )]),
+        heading("  General"),
         help_row("r", "Refresh state from device"),
         help_row("?", "Toggle this help"),
         help_row("q / Ctrl+C", "Quit"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Presets tab",
-            Style::default()
-                .fg(C_TEXT)
-                .add_modifier(Modifier::UNDERLINED),
-        )]),
+        heading("  Presets tab"),
         help_row("Enter (on name)", "Rename preset"),
         help_row("Enter (on actions)", "Load preset to device"),
         help_row("s", "Save current settings to slot"),
@@ -3276,17 +3286,25 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
             "  Wheel: adjust; click outside name: cancel",
             Style::default().fg(C_DIM),
         )),
-        Line::from(Span::styled(
-            "  Press ? or Esc to close",
-            Style::default().fg(C_DIM),
-        )),
     ];
+
+    // Sized to its lines, so it fits the 80x24 `MIN_SIZE`.
+    let popup_width = 58u16.min(area.width.saturating_sub(4));
+    let popup_height = (lines.len() as u16 + 2).min(area.height.saturating_sub(1));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+    f.render_widget(Clear, popup_area);
 
     let help = Paragraph::new(lines).block(
         Block::default()
             .title(Span::styled(
                 "  Help  ",
                 Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Span::styled(
+                "  ? or Esc to close  ",
+                Style::default().fg(C_DIM),
             ))
             .borders(Borders::ALL)
             .border_type(BorderType::Double)
@@ -3303,6 +3321,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     const MODELS: [DeviceModel; 6] = [
         DeviceModel::Mvx2u,
@@ -3398,12 +3417,9 @@ mod tests {
         ring
     }
 
-    /// One line per model, mode, tab, focus and mute/lock/tone state, with a
-    /// hash of the rendered screen.
-    fn render_all() -> String {
-        use std::fmt::Write;
-
-        let mut out = String::new();
+    /// Calls `visit` with a label and the app for every model, mode, tab, focus
+    /// and mute/lock/tone state, the MV7+ Custom LED zones, and the help overlay.
+    fn for_each_screen(mut visit: impl FnMut(&str, &App)) {
         for model in MODELS {
             let tone_modes: &[bool] = match model {
                 DeviceModel::Mv6Gen2 => &[false, true],
@@ -3422,7 +3438,11 @@ mod tests {
                     })
                 });
             for (mode, tone_advanced, muted, locked) in states {
-                for tab in Tab::ALL {
+                for (tab, led_custom) in Tab::ALL
+                    .into_iter()
+                    .map(|tab| (tab, false))
+                    .chain([(Tab::Led, true)])
+                {
                     let mut app = App {
                         device_model: model,
                         active_tab: if tab == Tab::Main {
@@ -3442,7 +3462,12 @@ mod tests {
                     for (band, gain_db) in state.eq_bands.iter_mut().zip([-80, -20, 0, 20, 60]) {
                         band.gain_db = gain_db;
                     }
-                    if app.is_tab_hidden(tab) {
+                    if led_custom {
+                        // The tallest LED layout: three zones of R/G/B sliders.
+                        state.led_behavior = LedBehavior::Live;
+                        state.led_live_theme = LedLiveTheme::Custom;
+                    }
+                    if app.is_tab_hidden(tab) || (led_custom && model == DeviceModel::Mv7) {
                         continue;
                     }
                     // A locked tab can't be selected and shows only its notice.
@@ -3465,19 +3490,183 @@ mod tests {
                         };
                         for focus in ring {
                             app.focus = focus;
-                            writeln!(
-                                out,
-                                "{model:?} {mode:?} adv={tone_advanced} muted={muted} \
-                                 locked={locked} {tab:?} band={band} {focus:?} {:016x}",
-                                render_hash(&app)
-                            )
-                            .expect("write to String");
+                            let led = if led_custom { " led=custom" } else { "" };
+                            visit(
+                                &format!(
+                                    "{model:?} {mode:?} adv={tone_advanced} muted={muted} \
+                                     locked={locked} {tab:?}{led} band={band} {focus:?}"
+                                ),
+                                &app,
+                            );
                         }
                     }
                 }
             }
+            let help = App {
+                device_model: model,
+                help_visible: true,
+                ..App::default()
+            };
+            visit(&format!("{model:?} help"), &help);
         }
+    }
+
+    /// One line per screen from `for_each_screen()`, with a hash of its render.
+    fn render_all() -> String {
+        use std::fmt::Write;
+
+        let mut out = String::new();
+        for_each_screen(|label, app| {
+            writeln!(out, "{label} {:016x}", render_hash(app)).expect("write to String");
+        });
         out
+    }
+
+    /// The text of a `width`×`height` render of `app` by `render` (`draw` or
+    /// `draw_ui`), one line per row, and its click targets.
+    fn render_text(
+        render: fn(&mut Frame, &App) -> HitMap,
+        app: &App,
+        width: u16,
+        height: u16,
+    ) -> (String, HitMap) {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                hits = render(f, app);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        (text, hits)
+    }
+
+    /// The words and click targets a `width`×`height` render shows, leaving out
+    /// what may be cut short: the status bar (it falls back to a short hint), the
+    /// hints beside the focused control (the status bar and help list those
+    /// keys), and the Info tab's static Capabilities list below its controls.
+    fn visible_content(app: &App, width: u16, height: u16) -> BTreeSet<String> {
+        const FOCUS_HINTS: [&str; 6] = [
+            "[Enter] cycle",
+            "[Enter] toggle",
+            "◄ ► or ←→ to adjust",
+            "◄ ► to adjust",
+            "◄ ► to change band",
+            "[Enter] rename",
+        ];
+        let (text, hits) = render_text(draw_ui, app, width, height);
+        let mut content: BTreeSet<String> = (0..height.saturating_sub(1))
+            .flat_map(|y| (0..width).filter_map(move |x| Some((x, y))))
+            .filter_map(|(x, y)| hits.target_at(x, y))
+            .map(|target| format!("{target:?}"))
+            .collect();
+        let mut text: String = text
+            .lines()
+            .take(usize::from(height.saturating_sub(1)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if app.active_tab == Tab::Info
+            && let Some(capabilities) = text.find("Capabilities")
+        {
+            text.truncate(capabilities);
+        }
+        for hint in FOCUS_HINTS {
+            text = text.replace(hint, " ");
+        }
+        // Borders and bar glyphs separate words but aren't words themselves.
+        content.extend(
+            text.split(|c: char| !(c.is_ascii_alphanumeric() || ".%+-:/[]".contains(c)))
+                .filter(|word| !word.is_empty())
+                .map(str::to_string),
+        );
+        content
+    }
+
+    /// Every screen shows all of its content at `MIN_SIZE`, and a focused
+    /// control's key hint either shows whole or is left out, never cut mid-word.
+    /// Presets are empty here: a saved one's summary line may be cut at 80 columns.
+    #[test]
+    fn every_screen_fits_the_min_size() {
+        let (width, height) = MIN_SIZE;
+        for_each_screen(|label, app| {
+            let (text, _) = render_text(draw, app, width, height);
+            if app.help_visible {
+                // The popup is sized to its rows: its first, last and widest show.
+                for row in [
+                    "Controls",
+                    "Toggle boolean / cycle option",
+                    "Wheel: adjust",
+                    "Esc to close",
+                ] {
+                    assert!(text.contains(row), "{label}: {row:?} missing\n{text}");
+                }
+                return;
+            }
+            let lost: Vec<String> = visible_content(app, 160, 60)
+                .difference(&visible_content(app, width, height))
+                .cloned()
+                .collect();
+            assert!(
+                lost.is_empty(),
+                "{label} at {width}x{height} loses {lost:?}"
+            );
+            let body: String = text
+                .lines()
+                .take(usize::from(height - 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+            // What may follow each hint's start before the frame; a bare "◄ ►"
+            // is the Denoiser level's own marker.
+            for (start, endings) in [
+                ("[Enter]", &["cycle", "toggle", "rename", "Load"][..]),
+                (
+                    "◄ ►",
+                    &["", "to adjust", "or ←→ to adjust", "to change band"][..],
+                ),
+            ] {
+                for (at, _) in body.match_indices(start) {
+                    let rest = &body[at + start.len()..];
+                    let rest = rest[..rest.find(['│', '┃', '\n']).unwrap_or(rest.len())].trim();
+                    assert!(
+                        endings
+                            .iter()
+                            .any(|ending| rest.starts_with(ending) && !ending.is_empty()
+                                || rest.is_empty() && ending.is_empty()),
+                        "{label}: a hint is cut short at {:?}\n{text}",
+                        body[at..].chars().take(20).collect::<String>()
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn too_small_terminal_shows_only_the_needed_size() {
+        let app = App::default();
+        let (width, height) = MIN_SIZE;
+        let (text, hits) = render_text(draw, &app, width + 73, height - 1);
+        assert!(text.contains("Terminal size too small:"), "{text}");
+        assert!(
+            text.contains(&format!("Width = {} Height = {}", width + 73, height - 1)),
+            "{text}"
+        );
+        assert!(text.contains("Needed for shurectl:"), "{text}");
+        assert!(
+            text.contains(&format!("Width = {width} Height = {height}")),
+            "{text}"
+        );
+        assert_eq!(hits.target_at(width / 2, height / 2), None);
+        let (text, _) = render_text(draw, &app, width, height);
+        assert!(!text.contains("too small"), "{text}");
     }
 
     /// Proves a refactor leaves every screen unchanged. After an intended visual
@@ -3524,7 +3713,7 @@ mod tests {
             .expect("draw");
         let buffer = terminal.backend().buffer();
         (0..buffer.area.width)
-            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect()
     }
 

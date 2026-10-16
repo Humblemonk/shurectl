@@ -84,6 +84,9 @@ The mouse works too: click a tab to switch to it, click a control to select it a
 it again to toggle it, or scroll over a slider to adjust it. Factory Reset still needs `Enter`
 to confirm. Most terminals let you hold `Shift` to select text while the mouse is captured.
 
+The TUI needs a terminal of at least 80×24. In a smaller one it shows the size it needs, and
+only `q` and `Ctrl+C` work (`Ctrl+C` alone while a name is being edited).
+
 ## Presets
 
 On the Presets tab, `s` saves the current settings into the focused slot, `Enter` on its

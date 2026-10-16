@@ -124,12 +124,13 @@ Shared across all models unless the hardware makes it impossible:
   they lack; they don't reshuffle
 - **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
   everywhere. dB values, percentages, and enum names render through the same code path
-- **Drawing helpers**: `draw_mode_block()`, `draw_mute_block()`, `draw_gain_gauge()`,
-  `draw_monitor_mix_gauge()`, `draw_gain_lock_block()`, `draw_config_lock_block()`,
-  `draw_phantom_block()`, `draw_auto_controls()`, `segmented_span()`, `draw_main_shared()`;
-  block styles `focus_border()`, `focus_block()`, `alert_block()`, `card_block()`; sliders
-  `slider_gauge()`; EQ `eq_band_column()`; click targets `control_rows()`. Extend a helper
-  with a parameter rather than forking a near-copy
+- **Drawing helpers**: `draw_mode_mute_row()` (`draw_mode_block()`, `draw_mute_block()`),
+  `draw_gain_gauge()`, `draw_monitor_mix_gauge()`, `draw_gain_lock_block()`,
+  `draw_config_lock_block()`, `draw_phantom_block()`, `draw_auto_controls()`,
+  `segmented_span()`, `draw_main_shared()`; block styles `focus_border()`, `focus_block()`,
+  `alert_block()`, `card_block()`; sliders `slider_gauge()`; Dynamics cards
+  `draw_card_grid()`; focus hints `with_hint()`; EQ `eq_band_column()`; click targets
+  `control_rows()`. Extend a helper with a parameter rather than forking a near-copy
 - **Status and error wording**: same phrasing for the same condition on every model
 
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
@@ -185,7 +186,7 @@ Shared across all models unless the hardware makes it impossible:
 | Packet encoding changes (`build_packet()`, `build_packet_hdr0()`, `crc16_ansi()`) | Test CRC correctness and the 64-byte length invariant there |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
 | Focus/navigation changes | Manual test in `--demo` for all six models |
-| `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo` |
+| `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo`. `every_screen_fits_the_min_size` fails when a screen no longer fits 80×24 (`MIN_SIZE`), or a focus hint is cut mid-word instead of going through `with_hint()` |
 | `main()` / CLI args | No tests |
 
 Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific
@@ -227,7 +228,7 @@ rather than promoting a lower one.
 - **Model checks**: use `DeviceModel::has_*()` and exhaustive matches, never a model name or
   `_`. A wildcard sent the MV6 Gen 2 the wrong EQ encoding (a800e26).
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
-  check heights 16-50 (bc3bb3f).
+  check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f). Below 80×24 only a notice draws.
 - **Colors**: new colors use the `C_*` palette constants in `ui.rs`, never a raw
   `Color::Rgb` (the MV7+ LED channel sliders excepted). Lime is reserved for focus and active
   states; values stay white. Red means errors, Muted, clipping and destructive actions, amber
