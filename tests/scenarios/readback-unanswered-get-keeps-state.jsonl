@@ -1,0 +1,7 @@
+{"scenario": "readback-unanswered-get-keeps-state", "models": "all", "modes": ["fake"], "known_bug": "a GET with no usable reply during a refresh leaves its field at DeviceState::default() (36 dB gain) and still reports success"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}}}
+{"device": {"refuse": 2}}
+{"key": "r"}
+{"expect": {"connected": true, "state": {"muted": true, "gain_tenths": 240}, "screen_contains": "24 dB"}}

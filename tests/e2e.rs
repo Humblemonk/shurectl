@@ -9,6 +9,11 @@
 //! `{"scenario": "name", "models": "all" | ["mv6", ...], "modes": ["fake", "demo"], "size": [120, 40]}`
 //! (`modes` and `size` are optional). Every other line is an input or an
 //! `expect` line, as `.claude/skills/qa/SKILL.md` describes.
+//!
+//! A header with `"known_bug": "what is wrong"` records a bug that isn't fixed
+//! yet: its `expect` lines state the intended behaviour, so the run must fail
+//! an expectation. It fails the test once it passes, so whoever fixes the bug
+//! removes the marker and the scenario becomes an ordinary regression test.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,6 +35,8 @@ struct Scenario {
     header: String,
     models: Vec<String>,
     modes: Vec<String>,
+    /// Why the scenario is expected to fail, until the bug is fixed.
+    known_bug: Option<String>,
     /// `(line number in the file, line)`, header excluded.
     lines: Vec<(usize, String)>,
 }
@@ -88,6 +95,7 @@ fn load_scenarios() -> Vec<Scenario> {
                 header,
                 models,
                 modes: string_list(&parsed["modes"], &MODES),
+                known_bug: parsed["known_bug"].as_str().map(String::from),
                 lines,
             }
         })
@@ -183,14 +191,31 @@ fn scenarios() {
                 runs += 1;
                 session.send(r#"{"reset": true}"#);
                 session.send(&scenario.header);
+                let mut failed_expectation = false;
                 for (number, line) in &scenario.lines {
                     let reply = session.send(line);
-                    if reply["ok"] != Value::Bool(true) {
+                    if reply["ok"] == Value::Bool(true) {
+                        continue;
+                    }
+                    // A known bug may fail an expectation, never a line that
+                    // doesn't run (an error, such as a refused packet).
+                    let errors = reply["errors"].as_array().is_some_and(|e| !e.is_empty());
+                    failed_expectation = !errors;
+                    if errors || scenario.known_bug.is_none() {
                         failures.push(describe_failure(
                             scenario, model, mode, *number, line, &reply,
                         ));
-                        break;
                     }
+                    break;
+                }
+                if let Some(bug) = &scenario.known_bug
+                    && !failed_expectation
+                {
+                    failures.push(format!(
+                        "{} [{model}, {mode}]: passes, but its header marks a known bug ({bug}). \
+                         If the bug is fixed, remove \"known_bug\" from the header.\n",
+                        scenario.name
+                    ));
                 }
             }
         }
