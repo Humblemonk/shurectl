@@ -161,9 +161,8 @@ impl HidTransport for HidapiTransport {
     fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
         match same_devices(&api, model, serial).as_slice() {
-            [(info, _)] => {
-                open_hid(&api, info).map_err(|e| anyhow!("{}", e.to_string().replace('\n', " ")))
-            }
+            [(info, _)] => open_hid(&api, info, "device")
+                .map_err(|e| anyhow!("{}", e.to_string().replace('\n', " "))),
             [] => Err(Disconnected(format!("{} not found", model.display_name())).into()),
             [_, _, ..] => Err(anyhow!(
                 "more than one matching {} found; restart shurectl with --device",
@@ -173,13 +172,15 @@ impl HidTransport for HidapiTransport {
     }
 }
 
-/// Open the HID device at `info`'s path, non-blocking.
-fn open_hid(api: &HidApi, info: &hidapi::DeviceInfo) -> Result<Box<dyn HidTransport>> {
-    let c_path = std::ffi::CString::new(info.path().to_string_lossy().as_ref())
-        .map_err(|_| anyhow!("Device path contains a null byte"))?;
+/// Open the HID device at `info`'s path, non-blocking. `what` names it in the
+/// error: "device", or the path the user gave with `--device`.
+fn open_hid(api: &HidApi, info: &hidapi::DeviceInfo, what: &str) -> Result<Box<dyn HidTransport>> {
+    let path = info.path().to_string_lossy();
+    let c_path = std::ffi::CString::new(path.as_ref())
+        .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
     let device = api
         .open_path(c_path.as_c_str())
-        .map_err(|e| anyhow!("Cannot open device: {e}\nHint: {ACCESS_HINT}."))?;
+        .map_err(|e| anyhow!("Cannot open {what}: {e}\nHint: {ACCESS_HINT}."))?;
     device.set_blocking_mode(false).ok();
     Ok(Box::new(HidapiTransport(device)))
 }
@@ -262,7 +263,7 @@ impl ShureDevice {
     }
 
     fn open_info(api: &HidApi, info: &hidapi::DeviceInfo, model: DeviceModel) -> Result<Self> {
-        Ok(Self::with_transport(model, open_hid(api, info)?))
+        Ok(Self::with_transport(model, open_hid(api, info, "device")?))
     }
 
     /// Open a Shure device at a specific HID device path.
@@ -292,16 +293,7 @@ impl ShureDevice {
             ));
         };
 
-        let c_path = std::ffi::CString::new(path)
-            .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
-        let device = api
-            .open_path(c_path.as_c_str())
-            .map_err(|e| anyhow!("Cannot open {path}: {e}\nHint: {ACCESS_HINT}."))?;
-        device.set_blocking_mode(false).ok();
-        Ok(Self::with_transport(
-            model,
-            Box::new(HidapiTransport(device)),
-        ))
+        Ok(Self::with_transport(model, open_hid(&api, info, path)?))
     }
 
     fn next_seq(&self) -> u8 {
