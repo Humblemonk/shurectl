@@ -8,9 +8,6 @@
 - Linux: `libasound2-dev` and `libudev-dev`
 - A supported Shure device for hardware testing, or use `--demo` for UI-only work
 
-Optionally, [mise](https://mise.jdx.dev) installs the toolchain (Rust stable with clippy and
-rustfmt, plus Node and jscpd for the duplication check) from `mise.toml`: run `mise install`.
-
 ### Building
 
 ```bash
@@ -27,8 +24,6 @@ All of the following must pass clean before any commit:
 cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --features probe,qa \
   && cargo fmt --check && cargo test && cargo test --features qa --test e2e
 ```
-
-With mise, `mise run check` runs the same gate and `mise run jscpd` the duplication check.
 
 The `--features probe` flag is required: `shurectl-probe` is feature-gated and would
 otherwise be skipped by clippy entirely. The `qa` feature builds the headless `--qa`
