@@ -1,4 +1,4 @@
-# e2e scenarios
+# End-to-end scenarios
 
 Each `.jsonl` file here is one scenario. `cargo test --features qa --test e2e` runs it through
 `shurectl --qa` on every model in its header, once with a fake device and once in demo mode

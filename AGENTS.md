@@ -205,7 +205,7 @@ bottleneck has been identified.
 
 ## Review
 
-The verification gate and CI already cover clippy, fmt, tests, the e2e scenarios and jscpd;
+The verification gate and CI already cover clippy, fmt, tests, the end-to-end scenarios and jscpd;
 don't report what they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its golden file
 is unchanged; a changed golden file lists the screens to look at.
 

@@ -101,7 +101,7 @@ height, a key only one model answers, a packet sent in demo mode.
 {"record": "save", "as": "tests/scenarios/mute-on-mv6.jsonl", "models": ["mv6"]}
 ```
 
-Paths are relative to where `--qa` runs (`tests/` under the e2e runner). Trim the
+Paths are relative to where `--qa` runs (`tests/` under the end-to-end runner). Trim the
 file to the lines that matter. `cargo test --features qa --test e2e` runs every file
 in `tests/scenarios/` per model in its header and in both fake and demo mode (add
 `"modes": ["fake"]` when it needs the device or the fake's Manual, 24 dB start). The
