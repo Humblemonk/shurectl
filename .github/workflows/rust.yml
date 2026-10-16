@@ -32,11 +32,5 @@ jobs:
       if: matrix.sys-deps != ''
       run: ${{ matrix.sys-deps }}
 
-    - name: Build
-      run: cargo build --verbose
-
-    - name: Run tests
-      run: cargo test --verbose
-
-    - name: Run end-to-end scenarios
-      run: cargo test --verbose --features qa --test e2e
+    - name: Verification gate
+      run: scripts/check.sh
