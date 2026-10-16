@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Rust (edition 2024)
+- Rust via [rustup](https://rustup.rs): `rust-toolchain.toml` selects stable with clippy and rustfmt
 - Linux: `libasound2-dev` and `libudev-dev`
 - A supported Shure device for hardware testing, or use `--demo` for UI-only work
 
