@@ -85,7 +85,7 @@ it again to toggle it, or scroll over a slider to adjust it. Factory Reset still
 to confirm. Most terminals let you hold `Shift` to select text while the mouse is captured.
 
 The TUI needs a terminal of at least 80×24. In a smaller one it shows the size it needs, and
-only `q` / `Ctrl+C` work.
+only `q` and `Ctrl+C` work (`Ctrl+C` alone while a name is being edited).
 
 ## Presets
 

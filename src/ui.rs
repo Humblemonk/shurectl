@@ -880,7 +880,6 @@ fn draw_gain_gauge(f: &mut UiFrame, app: &App, area: Rect) {
     f.render_widget(gauge, area);
 }
 
-/// Renders the Input Mode block (Manual / Auto toggle only).
 /// Mode and Mute side by side, the first row of every model's Main tab.
 fn draw_mode_mute_row(f: &mut UiFrame, app: &App, area: Rect) {
     let [mode, mute] = Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)]).areas(area);
@@ -888,6 +887,7 @@ fn draw_mode_mute_row(f: &mut UiFrame, app: &App, area: Rect) {
     draw_mute_block(f, app, mute);
 }
 
+/// Renders the Input Mode block (Manual / Auto toggle only).
 fn draw_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::Mode);
     let focused = app.focus == Focus::Mode;
@@ -2696,12 +2696,12 @@ fn draw_mv7_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
 // Dynamics Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
+    if app.is_tab_locked(Tab::Dynamics) {
+        draw_tab_locked_notice(f, area, "Dynamics");
+        return;
+    }
     let manual = app.device_state.mode == InputMode::Manual;
     let cards: &[CardFn] = match app.device_model {
-        DeviceModel::Mvx2u | DeviceModel::Mv7 if !manual => {
-            draw_tab_locked_notice(f, area, "Dynamics");
-            return;
-        }
         DeviceModel::Mvx2u => &[draw_limiter_card, draw_compressor_card, draw_hpf_card],
         // The limiter MOTIV shows for the MV7 runs in the app, not on the mic,
         // and the MV7 has no HPF; the compressor is its only dynamics control.
@@ -3590,6 +3590,7 @@ mod tests {
 
     /// Every screen shows all of its content at `MIN_SIZE`, and a focused
     /// control's key hint either shows whole or is left out, never cut mid-word.
+    /// Presets are empty here: a saved one's summary line may be cut at 80 columns.
     #[test]
     fn every_screen_fits_the_min_size() {
         let (width, height) = MIN_SIZE;

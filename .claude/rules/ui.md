@@ -48,6 +48,8 @@ shows only btop's "Terminal size too small" notice. Check a new block at 120x40 
 and 80x24, where Main has 21 content rows and its left column 44 inner columns; the MVX2U Gen 1
 Auto Main already uses all 21. Every control, value, warning and click target must show at 80x24.
 Only these may be left out: focus hints, which go through `with_hint()` so they drop whole; the
-status bar's full hint (it falls back to `[?] Help  [q] Quit`); and the Info tab's Capabilities
-list. `every_screen_fits_the_min_size` checks all of this. Dynamics cards go through
+status bar's full hint (it falls back to `[?] Help  [q] Quit`); the Info tab's Capabilities
+list; and text whose length the user sets, a saved preset's summary line and a long device name
+in the header. `every_screen_fits_the_min_size` checks the demo states with empty presets, and
+compares sets of words, so a word cut in one place passes if it shows elsewhere. Dynamics cards go through
 `draw_card_grid()`, which wraps them onto more rows rather than clip a title.

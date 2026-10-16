@@ -428,11 +428,13 @@ fn run_event_loop(
                 })
             );
             let action = match event {
-                // The too-small notice hides what a key would change, so only quit.
                 Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
-                    app.should_quit = is_quit_key(key.code, key.modifiers);
+                    handle_key_too_small(app, key.code, key.modifiers);
                     None
                 }
+                // Nothing on the notice is clickable, and a click would still
+                // cancel a name edit or a Factory Reset confirmation.
+                Event::Mouse(_) if !fits => None,
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.armed_preset_action = None;
                     handle_key(app, key.code, key.modifiers)
@@ -508,6 +510,15 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         }
         Some(_) | None => Some(action),
     }
+}
+
+/// While the too-small notice hides what a key would change, keys only quit:
+/// Ctrl+C always, and `q` unless it is being typed into a name. Any key still
+/// disarms a half-clicked preset action, as it does normally.
+fn handle_key_too_small(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    app.armed_preset_action = None;
+    let typed = app.editing_name() && !mods.contains(KeyModifiers::CONTROL);
+    app.should_quit = is_quit_key(code, mods) && !typed;
 }
 
 /// The keys that quit: `q` and Ctrl+C.
@@ -1599,6 +1610,26 @@ mod tests {
             name_draft: name.to_owned(),
             ..App::default()
         }
+    }
+
+    #[test]
+    fn too_small_terminal_keys_only_quit_and_keep_a_name_draft() {
+        // `q` would be typed into the name, so it neither quits nor edits.
+        let mut app = editing_preset_name("Quiet");
+        app.armed_preset_action = Some((0, KeyCode::Char('d')));
+        handle_key_too_small(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!app.should_quit);
+        assert_eq!(app.name_draft, "Quiet");
+        assert!(app.editing_preset_name);
+        assert_eq!(app.armed_preset_action, None);
+        handle_key_too_small(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.should_quit);
+
+        let mut app = App::default();
+        handle_key_too_small(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.should_quit);
+        handle_key_too_small(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.should_quit);
     }
 
     #[test]
