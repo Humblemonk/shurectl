@@ -1017,6 +1017,46 @@ mod tests {
         }
     }
 
+    /// `send_set()` must drain every report the device sends after a CONFIRM.
+    /// One left queued (a short drain, 481dc76) shifts every later GET by one,
+    /// and the last reply is never read, so a readback after a SET has to
+    /// match the one before it in every field but the one set. The seed holds
+    /// non-default values, so a field left at its default can't pass.
+    #[test]
+    fn readback_after_a_set_matches_the_one_before_on_every_binary_model() {
+        for model in MODELS {
+            match model {
+                DeviceModel::Mv7 => continue,
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv6Gen2
+                | DeviceModel::Mv7Plus => {}
+            }
+            let seeded = DeviceState {
+                muted: false,
+                ..distinct_state(model)
+            };
+            let fake = FakeDevice::with_state(model, seeded);
+            let device = fake.open();
+            let before = device.get_state().expect("first readback").state;
+            device.set_mute(true).expect("set mute");
+            let after = device.get_state().expect("second readback").state;
+            assert_eq!(
+                after,
+                DeviceState {
+                    muted: true,
+                    ..before
+                },
+                "{model:?}"
+            );
+            assert!(
+                fake.0.borrow().input.is_empty(),
+                "{model:?}: reports left queued"
+            );
+        }
+    }
+
     /// Documents a known bug (481dc76's class), not intended behaviour: after
     /// one ack too many, every later GET reads the reply before its own.
     /// Replies route by address, so most values still land, but the last GET's
