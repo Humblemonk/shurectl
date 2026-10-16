@@ -112,6 +112,21 @@ impl std::fmt::Display for Disconnected {
 
 impl std::error::Error for Disconnected {}
 
+/// The MV7 answered that it didn't take a SET: it is locked, or a re-read
+/// showed the setting unchanged. Unlike a timeout or a bare `[Failed]` (which
+/// can also mean the mic already had the value), the old value is certain, so
+/// `main.rs` can put the screen back to it.
+#[derive(Debug)]
+pub struct Rejected(pub String);
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Rejected {}
+
 fn read_failed(e: anyhow::Error) -> anyhow::Error {
     Disconnected(format!("HID read failed (device disconnected?): {e}")).into()
 }
@@ -420,28 +435,39 @@ impl ShureDevice {
         Ok(readback.unrecognised.is_empty().then_some(readback.state))
     }
 
-    /// Load a preset's settings (`target`) onto the MV7, writing only those that
-    /// differ from what the mic has: it answers `[Failed]` to a SET that changes
-    /// nothing. A refused setting is skipped and the rest still load. Returns
-    /// the refused settings, for the status message.
+    /// Load a preset onto the MV7: `apply_preset` puts its settings onto the
+    /// mic's own readback (or `shown`, the shown state, if that didn't read), and
+    /// only the settings that then differ from what the mic has are written: it
+    /// answers `[Failed]` to a SET that changes nothing. A refused setting is
+    /// skipped and the rest still load. Returns the refused settings, for the
+    /// status message.
     pub fn load_mv7_preset(
         &self,
-        target: &DeviceState,
+        shown: &DeviceState,
+        apply_preset: impl Fn(&mut DeviceState),
         write_monitor_mix: bool,
     ) -> Result<Vec<String>> {
         self.ensure_text_protocol()?;
         let mut refused = Vec::new();
         let mut current = self.known_mv7_state()?;
         let mut sent_blind = current.is_none();
+        // The preset applied to what the mic has (or, if that didn't read, to the
+        // shown state), so a setting the preset didn't save keeps the mic's value.
+        let target_on = |base: Option<&DeviceState>| {
+            let mut target = base.unwrap_or(shown).clone();
+            apply_preset(&mut target);
+            target
+        };
+        let mut target = target_on(current.as_ref());
         // The mic's mode after the mode step; Manual-only settings need Manual.
         let mut mic_mode = target.mode;
-        if let Some(command) = mv7_text::mode_change(current.as_ref(), target) {
+        if let Some(command) = mv7_text::mode_change(current.as_ref(), &target) {
             let refusal = self.try_text_set(MV7_MODE_LABEL, &command)?;
             // Read the mic again either way: a mode change resets EQ and
             // compressor or reports a new gain, and a [Failed] to a mode sent
             // blind may only mean the mic already had it.
             let readback = self.get_state()?;
-            if mv7_text::mode_change(Some(&readback.state), target).is_some() {
+            if mv7_text::mode_change(Some(&readback.state), &target).is_some() {
                 refused.push(refusal.unwrap_or(Refusal {
                     label: MV7_MODE_LABEL,
                     how: Refused::Failed,
@@ -452,9 +478,10 @@ impl ShureDevice {
             mic_mode = readback.state.mode;
             current = readback.unrecognised.is_empty().then_some(readback.state);
             sent_blind |= current.is_none();
+            target = target_on(current.as_ref());
         }
         for (label, command) in
-            mv7_text::setting_changes(current.as_ref(), mic_mode, target, write_monitor_mix)
+            mv7_text::setting_changes(current.as_ref(), mic_mode, &target, write_monitor_mix)
         {
             refused.extend(self.try_text_set(label, &command)?);
         }
@@ -471,7 +498,7 @@ impl ShureDevice {
             if let Ok(readback) = self.get_state() {
                 let state = readback.state;
                 let still_differs: Vec<&str> =
-                    mv7_text::setting_changes(Some(&state), state.mode, target, write_monitor_mix)
+                    mv7_text::setting_changes(Some(&state), state.mode, &target, write_monitor_mix)
                         .into_iter()
                         .map(|(label, _)| label)
                         .collect();
@@ -487,10 +514,11 @@ impl ShureDevice {
         match Refused::from_reply(reply) {
             None => Ok(()),
             Some(Refused::Failed) => Err(anyhow!("The MV7 rejected \"{}\"", command.line)),
-            Some(Refused::Locked) => Err(anyhow!(
+            Some(Refused::Locked) => Err(Rejected(format!(
                 "The MV7 refused \"{}\": the setting is locked",
                 command.line
-            )),
+            ))
+            .into()),
         }
     }
 
@@ -510,10 +538,13 @@ impl ShureDevice {
         }
         let mut state = DeviceState::default();
         let reply = self.send_text(query)?;
-        if mv7_text::apply_reply(&reply, &mut state) && is_set(&state) {
+        if !mv7_text::apply_reply(&reply, &mut state) {
+            // Neither the old nor the new value is certain.
+            Err(anyhow!("The MV7 rejected \"{}\"", command.line))
+        } else if is_set(&state) {
             Ok(())
         } else {
-            Err(anyhow!("The MV7 rejected \"{}\"", command.line))
+            Err(Rejected(format!("The MV7 rejected \"{}\"", command.line)).into())
         }
     }
 

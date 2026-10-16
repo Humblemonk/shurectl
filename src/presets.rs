@@ -26,33 +26,22 @@ pub const PRESET_COUNT: usize = 4;
 
 /// A serializable snapshot of all configurable device settings.
 ///
-/// Fields from every model are included. Fields irrelevant to a given
-/// device model remain at their serde defaults and are not applied to the device.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Fields from every model are included. A setting only some models have is an
+/// `Option`, saved only by a model that has it (see `from_device_state()`).
+/// `None` keeps the device's current value on load, so a preset saved on
+/// another model can't reset a setting that model doesn't have. Presets saved
+/// before this held every field, and still apply them all.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PresetSlot {
     /// Human-readable name shown in the TUI (editable in-app or by hand in TOML).
     pub name: String,
 
-    // ── Shared ───────────────────────────────────────────────────────────────
+    // ── Every model ──────────────────────────────────────────────────────────
     /// Manual gain in dB, e.g. `19.5` (the MV7 steps 1.5 dB). Presets saved
     /// before fractional gain stored a whole number here, which still loads.
     pub gain_db: f32,
     pub mode: SerInputMode,
     pub muted: bool,
-    pub hpf: SerHpfFrequency,
-
-    // ── MVX2U-first (several shared with other models; see DeviceState) ─────
-    #[serde(default)]
-    pub auto_position: SerMicPosition,
-    #[serde(default)]
-    pub auto_tone: SerAutoTone,
-    #[serde(default)]
-    pub auto_gain: SerAutoGain,
-    /// 48V phantom power, saved only on models with `has_phantom_power()`.
-    /// `None` keeps the device's current setting on load, so a preset from a
-    /// mic without phantom power can't switch it off under a condenser mic.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phantom_power: Option<bool>,
     /// Monitor Mix, as `DeviceState::monitor_mix`: one mic ↔ playback balance,
     /// or the Mic Level on models with `has_playback_mix()`.
     #[serde(default)]
@@ -68,81 +57,89 @@ pub struct PresetSlot {
     /// device's current level.
     #[serde(default)]
     pub playback_mix: u8,
-    #[serde(default)]
-    pub limiter_enabled: bool,
-    #[serde(default)]
-    pub compressor: SerCompressorPreset,
-    #[serde(default)]
-    pub eq_enabled: bool,
-    #[serde(default)]
-    pub eq_bands: [SerEqBand; 5],
 
-    // ── MV6-first (also MVX2U Gen 2, MV6 Gen 2, MV7+; see DeviceState) ───────
-    #[serde(default)]
-    pub denoiser_enabled: bool,
-    #[serde(default = "default_popper_stopper")]
-    pub popper_stopper_enabled: bool,
-    #[serde(default)]
-    pub mute_btn_disabled: bool,
+    // ── Only some models (`None` keeps the device's value) ───────────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hpf: Option<SerHpfFrequency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_position: Option<SerMicPosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_tone: Option<SerAutoTone>,
+    /// Auto Gain on the MVX2U Gen 1, Target Level on the MV6 Gen 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_gain: Option<SerAutoGain>,
+    /// 48V phantom power, saved only on models with `has_phantom_power()`, so a
+    /// preset from a mic without it can't switch it off under a condenser mic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_power: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limiter_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressor: Option<SerCompressorPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq_bands: Option<[SerEqBand; 5]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denoiser_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popper_stopper_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mute_btn_disabled: Option<bool>,
     /// Tone: -10 (100% Dark) to +10 (100% Bright), 0 = Natural.
-    #[serde(default)]
-    pub tone: i8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<i8>,
     /// Gain lock (Manual mode only), on models with `has_gain_lock()`.
-    #[serde(default)]
-    pub mv6_gain_locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mv6_gain_locked: Option<bool>,
 
-    // ── MV6 Gen 2-specific (Target Level is `auto_gain`) ─────────────────────
-    #[serde(default)]
-    pub adaptation_rate_fast: bool,
+    // ── MV6 Gen 2 ────────────────────────────────────────────────────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptation_rate_fast: Option<bool>,
     /// Denoiser level, 1–100%.
-    #[serde(default = "default_denoiser_level")]
-    pub denoiser_level: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denoiser_level: Option<u8>,
     /// Advanced tone (the 5-band `eq_bands`) instead of the Tone slider.
-    #[serde(default)]
-    pub tone_advanced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone_advanced: Option<bool>,
 
-    // ── MV7+-specific ────────────────────────────────────────────────────────
-    #[serde(default)]
-    pub reverb_on_output: bool,
-    #[serde(default)]
-    pub reverb_monitoring: bool,
-    #[serde(default)]
-    pub reverb_type: SerReverbType,
-    #[serde(default = "default_reverb_intensity")]
-    pub reverb_intensity: u8,
-    // ── MV7+ LED ─────────────────────────────────────────────────────────────
-    #[serde(default)]
-    pub led_behavior: SerLedBehavior,
-    #[serde(default)]
-    pub led_brightness: SerLedBrightness,
-    #[serde(default)]
-    pub led_live_theme: SerLedLiveTheme,
-    #[serde(default)]
-    pub led_solid_theme: SerLedSolidTheme,
-    #[serde(default)]
-    pub led_pulsing_theme: SerLedPulsingTheme,
-    #[serde(default = "default_led_solid_rgb")]
-    pub led_solid_rgb: [u8; 3],
-    #[serde(default = "default_led_pulsing_rgb")]
-    pub led_pulsing_rgb: [u8; 3],
-    #[serde(default = "default_led_live_edge_rgb")]
-    pub led_live_edge_rgb: [u8; 3],
-    #[serde(default = "default_led_live_middle_rgb")]
-    pub led_live_middle_rgb: [u8; 3],
-    #[serde(default = "default_led_live_interior_rgb")]
-    pub led_live_interior_rgb: [u8; 3],
+    // ── MV7+ ─────────────────────────────────────────────────────────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb_on_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb_monitoring: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb_type: Option<SerReverbType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb_intensity: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_behavior: Option<SerLedBehavior>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_brightness: Option<SerLedBrightness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_live_theme: Option<SerLedLiveTheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_solid_theme: Option<SerLedSolidTheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_pulsing_theme: Option<SerLedPulsingTheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_solid_rgb: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_pulsing_rgb: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_live_edge_rgb: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_live_middle_rgb: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_live_interior_rgb: Option<[u8; 3]>,
 
-    // ── MV7-specific ─────────────────────────────────────────────────────────
-    #[serde(default)]
-    pub eq_preset: SerEqPreset,
-    #[serde(default = "default_led_live_meter")]
-    pub led_live_meter: bool,
-    #[serde(default)]
-    pub led_night_mode: bool,
-}
-
-fn default_led_live_meter() -> bool {
-    true
+    // ── MV7 ──────────────────────────────────────────────────────────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq_preset: Option<SerEqPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_live_meter: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_night_mode: Option<bool>,
 }
 
 /// Preset gain (dB) → tenths of a dB, rounded and clamped to the `u16` range.
@@ -151,144 +148,198 @@ fn gain_db_to_tenths(gain_db: f32) -> u16 {
     (gain_db * 10.0).round().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
-fn default_popper_stopper() -> bool {
-    true
-}
-
-fn default_reverb_intensity() -> u8 {
-    50
-}
-
-fn default_led_solid_rgb() -> [u8; 3] {
-    [0xB2, 0xFF, 0x33]
-}
-
-fn default_led_pulsing_rgb() -> [u8; 3] {
-    [0x10, 0x3F, 0xFB]
-}
-
-fn default_led_live_edge_rgb() -> [u8; 3] {
-    [0xFF, 0xFF, 0xFF]
-}
-
-fn default_denoiser_level() -> u8 {
-    50
-}
-
-fn default_led_live_middle_rgb() -> [u8; 3] {
-    [0x1F, 0x1F, 0x1F]
-}
-
-fn default_led_live_interior_rgb() -> [u8; 3] {
-    [0x00, 0x00, 0x00]
+/// Load a saved setting; `None` (not saved) keeps the current value.
+fn load_saved<T>(field: &mut T, saved: Option<T>) {
+    if let Some(value) = saved {
+        *field = value;
+    }
 }
 
 impl PresetSlot {
-    /// Build a preset snapshot from a live `DeviceState` on `model`, which
-    /// decides what kind of Monitor Mix it records.
+    /// Build a preset snapshot from a live `DeviceState` on `model`. Settings
+    /// only some models have are saved only where `model` has them (the same
+    /// lists `main.rs` writes on load), so the preset can't reset them on
+    /// another model.
     pub fn from_device_state(
         name: impl Into<String>,
         state: &DeviceState,
         model: DeviceModel,
     ) -> Self {
-        Self {
+        let mut slot = Self {
             name: name.into(),
             gain_db: f32::from(state.gain_tenths) / 10.0,
             mode: SerInputMode::from(state.mode),
             muted: state.muted,
-            hpf: SerHpfFrequency::from(state.hpf),
-            auto_position: SerMicPosition::from(state.auto_position),
-            auto_tone: SerAutoTone::from(state.auto_tone),
-            auto_gain: SerAutoGain::from(state.auto_gain),
-            phantom_power: model.has_phantom_power().then_some(state.phantom_power),
             monitor_mix: state.monitor_mix,
             monitor_mix_is_mic_level: Some(model.has_playback_mix()),
-            limiter_enabled: state.limiter_enabled,
-            compressor: SerCompressorPreset::from(state.compressor),
-            eq_enabled: state.eq_enabled,
-            eq_bands: state.eq_bands.map(SerEqBand::from),
-            denoiser_enabled: state.denoiser_enabled,
-            popper_stopper_enabled: state.popper_stopper_enabled,
-            mute_btn_disabled: state.mute_btn_disabled,
-            tone: state.tone,
-            mv6_gain_locked: state.mv6_gain_locked,
-            adaptation_rate_fast: state.adaptation_rate_fast,
-            denoiser_level: state.denoiser_level,
-            tone_advanced: state.tone_advanced,
             playback_mix: state.playback_mix,
-            reverb_on_output: state.reverb_on_output,
-            reverb_monitoring: state.reverb_monitoring,
-            reverb_type: SerReverbType::from(state.reverb_type),
-            reverb_intensity: state.reverb_intensity,
-            led_behavior: SerLedBehavior::from(state.led_behavior),
-            led_brightness: SerLedBrightness::from(state.led_brightness),
-            led_live_theme: SerLedLiveTheme::from(state.led_live_theme),
-            led_solid_theme: SerLedSolidTheme::from(state.led_solid_theme),
-            led_pulsing_theme: SerLedPulsingTheme::from(state.led_pulsing_theme),
-            led_solid_rgb: state.led_solid_rgb,
-            led_pulsing_rgb: state.led_pulsing_rgb,
-            led_live_edge_rgb: state.led_live_edge_rgb,
-            led_live_middle_rgb: state.led_live_middle_rgb,
-            led_live_interior_rgb: state.led_live_interior_rgb,
-            eq_preset: SerEqPreset::from(state.eq_preset),
-            led_live_meter: state.led_live_meter,
-            led_night_mode: state.led_night_mode,
+            hpf: model.has_hpf().then_some(SerHpfFrequency::from(state.hpf)),
+            phantom_power: model.has_phantom_power().then_some(state.phantom_power),
+            mv6_gain_locked: model.has_gain_lock().then_some(state.mv6_gain_locked),
+            denoiser_level: model.has_denoiser_level().then_some(state.denoiser_level),
+            ..Self::default()
+        };
+        match model {
+            DeviceModel::Mvx2u => {
+                slot.save_auto_position_and_tone(state);
+                slot.auto_gain = Some(SerAutoGain::from(state.auto_gain));
+                slot.save_limiter_and_compressor(state);
+                slot.eq_enabled = Some(state.eq_enabled);
+                slot.eq_bands = Some(state.eq_bands.map(SerEqBand::from));
+            }
+            DeviceModel::Mvx2uGen2 => {
+                slot.save_limiter_and_compressor(state);
+                slot.save_voice_settings(state);
+                slot.eq_bands = Some(state.eq_bands.map(SerEqBand::gain_only));
+            }
+            DeviceModel::Mv6 => {
+                slot.save_voice_settings(state);
+                slot.mute_btn_disabled = Some(state.mute_btn_disabled);
+            }
+            DeviceModel::Mv6Gen2 => {
+                slot.save_voice_settings(state);
+                slot.mute_btn_disabled = Some(state.mute_btn_disabled);
+                slot.auto_gain = Some(SerAutoGain::from(state.auto_gain));
+                slot.adaptation_rate_fast = Some(state.adaptation_rate_fast);
+                slot.eq_bands = Some(state.eq_bands.map(SerEqBand::gain_only));
+                slot.tone_advanced = Some(state.tone_advanced);
+            }
+            DeviceModel::Mv7 => {
+                slot.save_auto_position_and_tone(state);
+                slot.compressor = Some(SerCompressorPreset::from(state.compressor));
+                slot.eq_preset = Some(SerEqPreset::from(state.eq_preset));
+                slot.led_live_meter = Some(state.led_live_meter);
+                slot.led_night_mode = Some(state.led_night_mode);
+            }
+            DeviceModel::Mv7Plus => {
+                slot.save_limiter_and_compressor(state);
+                slot.save_voice_settings(state);
+                slot.mute_btn_disabled = Some(state.mute_btn_disabled);
+                slot.reverb_on_output = Some(state.reverb_on_output);
+                slot.reverb_monitoring = Some(state.reverb_monitoring);
+                slot.reverb_type = Some(SerReverbType::from(state.reverb_type));
+                slot.reverb_intensity = Some(state.reverb_intensity);
+                slot.led_behavior = Some(SerLedBehavior::from(state.led_behavior));
+                slot.led_brightness = Some(SerLedBrightness::from(state.led_brightness));
+                slot.led_live_theme = Some(SerLedLiveTheme::from(state.led_live_theme));
+                slot.led_solid_theme = Some(SerLedSolidTheme::from(state.led_solid_theme));
+                slot.led_pulsing_theme = Some(SerLedPulsingTheme::from(state.led_pulsing_theme));
+                slot.led_solid_rgb = Some(state.led_solid_rgb);
+                slot.led_pulsing_rgb = Some(state.led_pulsing_rgb);
+                slot.led_live_edge_rgb = Some(state.led_live_edge_rgb);
+                slot.led_live_middle_rgb = Some(state.led_live_middle_rgb);
+                slot.led_live_interior_rgb = Some(state.led_live_interior_rgb);
+            }
         }
+        slot
+    }
+
+    /// Auto Level's Mic Position and Tone (MVX2U Gen 1, MV7).
+    fn save_auto_position_and_tone(&mut self, state: &DeviceState) {
+        self.auto_position = Some(SerMicPosition::from(state.auto_position));
+        self.auto_tone = Some(SerAutoTone::from(state.auto_tone));
+    }
+
+    /// Limiter and Compressor (MVX2U Gen 1 and Gen 2, MV7+).
+    fn save_limiter_and_compressor(&mut self, state: &DeviceState) {
+        self.limiter_enabled = Some(state.limiter_enabled);
+        self.compressor = Some(SerCompressorPreset::from(state.compressor));
+    }
+
+    /// Denoiser, Popper Stopper and Tone (MVX2U Gen 2, MV6, MV6 Gen 2, MV7+).
+    fn save_voice_settings(&mut self, state: &DeviceState) {
+        self.denoiser_enabled = Some(state.denoiser_enabled);
+        self.popper_stopper_enabled = Some(state.popper_stopper_enabled);
+        self.tone = Some(state.tone);
     }
 
     /// Apply this preset's settings onto a `DeviceState`, preserving
-    /// hardware-identity fields (`serial_number`). Presets are hand-editable, so
-    /// bounded values are clamped to the range the controls work in.
+    /// hardware-identity fields (`serial_number`) and every setting the preset
+    /// didn't save. Presets are hand-editable, so bounded values are clamped to
+    /// the range the controls work in.
     pub fn apply_to_device_state(&self, state: &mut DeviceState) {
         state.gain_tenths = gain_db_to_tenths(self.gain_db);
         state.mode = InputMode::from(self.mode);
         state.muted = self.muted;
-        state.hpf = HpfFrequency::from(self.hpf);
-        state.auto_position = MicPosition::from(self.auto_position);
-        state.auto_tone = AutoTone::from(self.auto_tone);
-        state.auto_gain = AutoGain::from(self.auto_gain);
-        if let Some(phantom_power) = self.phantom_power {
-            state.phantom_power = phantom_power;
-        }
         state.monitor_mix = self.monitor_mix.min(100);
-        state.limiter_enabled = self.limiter_enabled;
-        state.compressor = CompressorPreset::from(self.compressor);
-        state.eq_enabled = self.eq_enabled;
-        state.eq_bands = self.eq_bands.map(|band| EqBand {
-            gain_db: band.gain_db.clamp(-80, 60),
-            ..EqBand::from(band)
-        });
-        state.denoiser_enabled = self.denoiser_enabled;
-        state.popper_stopper_enabled = self.popper_stopper_enabled;
-        state.mute_btn_disabled = self.mute_btn_disabled;
-        state.tone = self.tone.clamp(-10, 10);
-        state.mv6_gain_locked = self.mv6_gain_locked;
-        state.adaptation_rate_fast = self.adaptation_rate_fast;
-        state.denoiser_level = self.denoiser_level.clamp(1, 100);
-        state.tone_advanced = self.tone_advanced;
         // 0 is what every preset holds that wasn't saved on a model reading
         // Playback Mix (and MV6 presets from before it did), so it means "not
         // saved": keep the current level rather than silence headphone playback.
         if self.playback_mix > 0 {
             state.playback_mix = self.playback_mix.min(100);
         }
-        state.reverb_on_output = self.reverb_on_output;
-        state.reverb_monitoring = self.reverb_monitoring;
-        state.reverb_type = ReverbType::from(self.reverb_type);
-        state.reverb_intensity = self.reverb_intensity.min(100);
-        state.led_behavior = LedBehavior::from(self.led_behavior);
-        state.led_brightness = LedBrightness::from(self.led_brightness);
-        state.led_live_theme = LedLiveTheme::from(self.led_live_theme);
-        state.led_solid_theme = LedSolidTheme::from(self.led_solid_theme);
-        state.led_pulsing_theme = LedPulsingTheme::from(self.led_pulsing_theme);
-        state.led_solid_rgb = self.led_solid_rgb;
-        state.led_pulsing_rgb = self.led_pulsing_rgb;
-        state.led_live_edge_rgb = self.led_live_edge_rgb;
-        state.led_live_middle_rgb = self.led_live_middle_rgb;
-        state.led_live_interior_rgb = self.led_live_interior_rgb;
-        state.eq_preset = EqPreset::from(self.eq_preset);
-        state.led_live_meter = self.led_live_meter;
-        state.led_night_mode = self.led_night_mode;
+        load_saved(&mut state.hpf, self.hpf.map(HpfFrequency::from));
+        load_saved(
+            &mut state.auto_position,
+            self.auto_position.map(MicPosition::from),
+        );
+        load_saved(&mut state.auto_tone, self.auto_tone.map(AutoTone::from));
+        load_saved(&mut state.auto_gain, self.auto_gain.map(AutoGain::from));
+        load_saved(&mut state.phantom_power, self.phantom_power);
+        load_saved(&mut state.limiter_enabled, self.limiter_enabled);
+        load_saved(
+            &mut state.compressor,
+            self.compressor.map(CompressorPreset::from),
+        );
+        load_saved(&mut state.eq_enabled, self.eq_enabled);
+        if let Some(bands) = self.eq_bands {
+            for (band, saved) in state.eq_bands.iter_mut().zip(bands) {
+                band.gain_db = saved.gain_db.clamp(-80, 60);
+                load_saved(&mut band.enabled, saved.enabled);
+            }
+        }
+        load_saved(&mut state.denoiser_enabled, self.denoiser_enabled);
+        load_saved(
+            &mut state.popper_stopper_enabled,
+            self.popper_stopper_enabled,
+        );
+        load_saved(&mut state.mute_btn_disabled, self.mute_btn_disabled);
+        load_saved(&mut state.tone, self.tone.map(|tone| tone.clamp(-10, 10)));
+        load_saved(&mut state.mv6_gain_locked, self.mv6_gain_locked);
+        load_saved(&mut state.adaptation_rate_fast, self.adaptation_rate_fast);
+        load_saved(
+            &mut state.denoiser_level,
+            self.denoiser_level.map(|level| level.clamp(1, 100)),
+        );
+        load_saved(&mut state.tone_advanced, self.tone_advanced);
+        load_saved(&mut state.reverb_on_output, self.reverb_on_output);
+        load_saved(&mut state.reverb_monitoring, self.reverb_monitoring);
+        load_saved(
+            &mut state.reverb_type,
+            self.reverb_type.map(ReverbType::from),
+        );
+        load_saved(
+            &mut state.reverb_intensity,
+            self.reverb_intensity.map(|intensity| intensity.min(100)),
+        );
+        load_saved(
+            &mut state.led_behavior,
+            self.led_behavior.map(LedBehavior::from),
+        );
+        load_saved(
+            &mut state.led_brightness,
+            self.led_brightness.map(LedBrightness::from),
+        );
+        load_saved(
+            &mut state.led_live_theme,
+            self.led_live_theme.map(LedLiveTheme::from),
+        );
+        load_saved(
+            &mut state.led_solid_theme,
+            self.led_solid_theme.map(LedSolidTheme::from),
+        );
+        load_saved(
+            &mut state.led_pulsing_theme,
+            self.led_pulsing_theme.map(LedPulsingTheme::from),
+        );
+        load_saved(&mut state.led_solid_rgb, self.led_solid_rgb);
+        load_saved(&mut state.led_pulsing_rgb, self.led_pulsing_rgb);
+        load_saved(&mut state.led_live_edge_rgb, self.led_live_edge_rgb);
+        load_saved(&mut state.led_live_middle_rgb, self.led_live_middle_rgb);
+        load_saved(&mut state.led_live_interior_rgb, self.led_live_interior_rgb);
+        load_saved(&mut state.eq_preset, self.eq_preset.map(EqPreset::from));
+        load_saved(&mut state.led_live_meter, self.led_live_meter);
+        load_saved(&mut state.led_night_mode, self.led_night_mode);
     }
 
     /// The preset's gain formatted the same way as everywhere else in the UI.
@@ -296,165 +347,134 @@ impl PresetSlot {
         format_gain(gain_db_to_tenths(self.gain_db))
     }
 
-    /// The phantom power part of a summary, `" · 48V on"`, or nothing when the
-    /// preset leaves phantom power as it is.
-    fn phantom_part(&self) -> String {
-        match self.phantom_power {
-            Some(true) => " · 48V on".to_string(),
-            Some(false) => " · 48V off".to_string(),
-            None => String::new(),
-        }
+    /// `"<label> on"` / `"<label> off"`, or nothing when the preset didn't save it.
+    fn on_off(label: &str, saved: Option<bool>) -> Option<String> {
+        saved.map(|on| format!("{label} {}", if on { "on" } else { "off" }))
     }
 
-    /// Format the denoiser state as a display string.
-    fn denoiser_str(&self) -> &'static str {
-        if self.denoiser_enabled {
-            "Denoiser on"
-        } else {
-            "Denoiser off"
-        }
+    fn hpf_part(&self) -> Option<String> {
+        self.hpf.map(|hpf| match HpfFrequency::from(hpf) {
+            HpfFrequency::Off => "HPF off".to_string(),
+            freq => format!("HPF {freq}"),
+        })
     }
 
-    /// Format the popper stopper state as a display string.
-    fn popper_str(&self) -> &'static str {
-        if self.popper_stopper_enabled {
-            "Popper on"
-        } else {
-            "Popper off"
-        }
+    /// `"Tone: 20% Bright"`, or nothing when the preset didn't save it.
+    fn tone_part(&self) -> Option<String> {
+        self.tone.map(|tone| match tone {
+            0 => "Tone: Natural".to_string(),
+            t if t > 0 => format!("Tone: {}% Bright", i32::from(t) * 10),
+            t => format!("Tone: {}% Dark", (i32::from(t) * 10).abs()),
+        })
     }
 
-    /// Format the tone value as a display string.
-    fn tone_str(&self) -> String {
-        match self.tone {
-            0 => "Natural".to_string(),
-            t if t > 0 => format!("{}% Bright", t as i32 * 10),
-            t => format!("{}% Dark", (t as i32 * 10).abs()),
-        }
+    fn compressor_part(&self) -> Option<String> {
+        self.compressor
+            .map(|comp| format!("Comp: {}", CompressorPreset::from(comp)))
     }
 
-    /// One-line summary of the key settings for display in the TUI.
+    /// One-line summary of the key settings for display in the TUI. A setting
+    /// the preset didn't save (saved on another model) is left out.
     ///
     /// The model is needed because models have different configurable fields —
     /// showing phantom power on an MV6 (or reverb on an MVX2U) would be
     /// misleading.
     pub fn summary(&self, model: DeviceModel) -> String {
-        let hpf_str = match HpfFrequency::from(self.hpf) {
-            HpfFrequency::Off => "HPF off".to_string(),
-            freq => format!("HPF {freq}"),
-        };
-
-        match model {
+        let auto = InputMode::from(self.mode) == InputMode::Auto;
+        let mode = Some(if auto { "Auto" } else { "Manual" }.to_string());
+        let gain = Some(self.gain_str());
+        let phantom = Self::on_off("48V", self.phantom_power);
+        let denoiser = Self::on_off("Denoiser", self.denoiser_enabled);
+        let popper = Self::on_off("Popper", self.popper_stopper_enabled);
+        let parts = match model {
             DeviceModel::Mv6Gen2 => {
                 // Auto shows the Auto Level settings in place of the unused gain.
-                let level_str = match InputMode::from(self.mode) {
-                    InputMode::Auto => format!(
-                        "Auto · Target {} · {}",
-                        AutoGain::from(self.auto_gain).target_level_label(),
-                        if self.adaptation_rate_fast {
-                            "Fast"
-                        } else {
-                            "Slow"
-                        }
-                    ),
-                    InputMode::Manual => self.gain_str(),
-                };
-                let denoiser_str = if self.denoiser_enabled {
-                    format!("Denoiser {}%", self.denoiser_level)
+                let level = if auto {
+                    vec![
+                        mode,
+                        self.auto_gain.map(|target| {
+                            format!("Target {}", AutoGain::from(target).target_level_label())
+                        }),
+                        self.adaptation_rate_fast
+                            .map(|fast| if fast { "Fast" } else { "Slow" }.to_string()),
+                    ]
                 } else {
-                    "Denoiser off".to_string()
+                    vec![gain]
                 };
-                let tone_str = if self.tone_advanced {
-                    "Tone: 5-band EQ".to_string()
-                } else {
-                    format!("Tone: {}", self.tone_str())
+                let denoiser = match (self.denoiser_enabled, self.denoiser_level) {
+                    (Some(true), Some(level)) => Some(format!("Denoiser {level}%")),
+                    _ => denoiser,
                 };
-                format!(
-                    "{level_str} · {denoiser_str} · {} · {hpf_str} · {tone_str}",
-                    self.popper_str()
-                )
+                let tone = match self.tone_advanced {
+                    Some(true) => Some("Tone: 5-band EQ".to_string()),
+                    Some(false) | None => self.tone_part(),
+                };
+                [level, vec![denoiser, popper, self.hpf_part(), tone]].concat()
             }
-            DeviceModel::Mv6 => {
-                let denoiser_str = self.denoiser_str();
-                let popper_str = self.popper_str();
-                let tone_str = self.tone_str();
-                format!(
-                    "{} · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str}",
-                    self.gain_str()
-                )
-            }
-            DeviceModel::Mv7 => match InputMode::from(self.mode) {
-                InputMode::Auto => {
-                    let pos = MicPosition::from(self.auto_position);
-                    let tone = AutoTone::from(self.auto_tone);
-                    format!("Auto · {pos} · {tone}")
-                }
-                InputMode::Manual => {
-                    let comp_str = CompressorPreset::from(self.compressor).to_string();
-                    let eq_str = EqPreset::from(self.eq_preset).to_string();
-                    format!(
-                        "Manual · {} · Comp: {comp_str} · EQ: {eq_str}",
-                        self.gain_str()
-                    )
-                }
-            },
+            DeviceModel::Mv6 => vec![gain, denoiser, popper, self.hpf_part(), self.tone_part()],
+            DeviceModel::Mv7 if auto => vec![
+                mode,
+                self.auto_position
+                    .map(|pos| MicPosition::from(pos).to_string()),
+                self.auto_tone.map(|tone| AutoTone::from(tone).to_string()),
+            ],
+            DeviceModel::Mv7 => vec![
+                mode,
+                gain,
+                self.compressor_part(),
+                self.eq_preset
+                    .map(|eq| format!("EQ: {}", EqPreset::from(eq))),
+            ],
             DeviceModel::Mv7Plus => {
-                let denoiser_str = self.denoiser_str();
-                let popper_str = self.popper_str();
-                let tone_str = self.tone_str();
-                let reverb_str = if self.reverb_on_output {
-                    format!("Reverb: {} {}%", self.reverb_type, self.reverb_intensity)
-                } else {
-                    "Reverb: off".to_string()
-                };
-                format!(
-                    "{} · {denoiser_str} · {popper_str} · {hpf_str} · Tone: {tone_str} · {reverb_str}",
-                    self.gain_str()
-                )
+                let reverb = self.reverb_on_output.map(|on| {
+                    match (on, self.reverb_type, self.reverb_intensity) {
+                        (true, Some(kind), Some(intensity)) => {
+                            format!("Reverb: {} {intensity}%", ReverbType::from(kind))
+                        }
+                        (true, _, _) => "Reverb: on".to_string(),
+                        (false, _, _) => "Reverb: off".to_string(),
+                    }
+                });
+                vec![
+                    gain,
+                    denoiser,
+                    popper,
+                    self.hpf_part(),
+                    self.tone_part(),
+                    reverb,
+                ]
             }
-            DeviceModel::Mvx2uGen2 => {
-                let phantom = self.phantom_part();
-                let denoiser_str = self.denoiser_str();
-                let popper_str = self.popper_str();
-                let tone_str = self.tone_str();
-                match InputMode::from(self.mode) {
-                    InputMode::Auto => {
-                        format!("Auto{phantom} · {denoiser_str} · {popper_str} · Tone: {tone_str}")
-                    }
-                    InputMode::Manual => {
-                        let comp_str = CompressorPreset::from(self.compressor).to_string();
-                        let limiter_str = if self.limiter_enabled {
-                            "Limiter on"
-                        } else {
-                            "Limiter off"
-                        };
-                        format!(
-                            "Manual · {} · {limiter_str} · Comp: {comp_str}{phantom} · {denoiser_str} · {popper_str} · {hpf_str}",
-                            self.gain_str()
-                        )
-                    }
-                }
+            DeviceModel::Mvx2uGen2 if auto => {
+                vec![mode, phantom, denoiser, popper, self.tone_part()]
             }
-            DeviceModel::Mvx2u => {
-                let phantom = self.phantom_part();
-                match InputMode::from(self.mode) {
-                    InputMode::Auto => {
-                        let tone = AutoTone::from(self.auto_tone);
-                        let gain = AutoGain::from(self.auto_gain);
-                        let pos = MicPosition::from(self.auto_position);
-                        format!("Auto · {tone} · {gain} · {pos}{phantom}")
-                    }
-                    InputMode::Manual => {
-                        let eq_str = if self.eq_enabled { "EQ on" } else { "EQ off" };
-                        let comp_str = CompressorPreset::from(self.compressor).to_string();
-                        format!(
-                            "Manual · {} · {eq_str} · Comp: {comp_str}{phantom} · {hpf_str}",
-                            self.gain_str()
-                        )
-                    }
-                }
-            }
-        }
+            DeviceModel::Mvx2uGen2 => vec![
+                mode,
+                gain,
+                Self::on_off("Limiter", self.limiter_enabled),
+                self.compressor_part(),
+                phantom,
+                denoiser,
+                popper,
+                self.hpf_part(),
+            ],
+            DeviceModel::Mvx2u if auto => vec![
+                mode,
+                self.auto_tone.map(|tone| AutoTone::from(tone).to_string()),
+                self.auto_gain.map(|gain| AutoGain::from(gain).to_string()),
+                self.auto_position
+                    .map(|pos| MicPosition::from(pos).to_string()),
+                phantom,
+            ],
+            DeviceModel::Mvx2u => vec![
+                mode,
+                gain,
+                Self::on_off("EQ", self.eq_enabled),
+                self.compressor_part(),
+                phantom,
+                self.hpf_part(),
+            ],
+        };
+        parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")
     }
 }
 
@@ -568,9 +588,11 @@ pub fn load_all_presets() -> [Option<PresetSlot>; PRESET_COUNT] {
 // free of serde concerns and ensures the on-disk format is stable even if the
 // internal enums evolve.
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerInputMode {
+    /// `DeviceState::default()`'s mode. A preset always records its own.
+    #[default]
     Auto,
     Manual,
 }
@@ -739,7 +761,10 @@ impl From<SerHpfFrequency> for HpfFrequency {
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct SerEqBand {
-    pub enabled: bool,
+    /// Each band's own on/off switch, which only the MVX2U Gen 1 has. `None`
+    /// keeps the device's switch, so a Gen 2 preset can't switch bands off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Gain in tenths of dB, range −80..+60.
     /// Stored as i16 so presets round-trip at 0.5 dB resolution for Gen 2.
     pub gain_db: i16,
@@ -748,16 +773,17 @@ pub struct SerEqBand {
 impl From<EqBand> for SerEqBand {
     fn from(v: EqBand) -> Self {
         Self {
-            enabled: v.enabled,
+            enabled: Some(v.enabled),
             gain_db: v.gain_db,
         }
     }
 }
 
-impl From<SerEqBand> for EqBand {
-    fn from(v: SerEqBand) -> Self {
+impl SerEqBand {
+    /// A band's gain alone, for models whose bands have no on/off switch.
+    fn gain_only(v: EqBand) -> Self {
         Self {
-            enabled: v.enabled,
+            enabled: None,
             gain_db: v.gain_db,
         }
     }
@@ -1088,6 +1114,48 @@ mod tests {
         assert!(!target.phantom_power);
     }
 
+    /// Checked on hardware both ways between an MVX2U Gen 2 and an MV6 Gen 2.
+    #[test]
+    fn preset_from_another_model_keeps_settings_that_model_lacks() {
+        // The MVX2U Gen 2 has no Mute Button setting or Denoiser level.
+        let gen2 =
+            PresetSlot::from_device_state("Gen 2", &DeviceState::default(), DeviceModel::Mvx2uGen2);
+        let text = toml::to_string_pretty(&gen2).expect("serialise");
+        assert!(!text.contains("mute_btn_disabled"), "{text}");
+        assert!(!text.contains("denoiser_level"), "{text}");
+        let mut mv6_gen2 = DeviceState {
+            mute_btn_disabled: true,
+            denoiser_level: 80,
+            ..DeviceState::default()
+        };
+        toml_roundtrip(&gen2).apply_to_device_state(&mut mv6_gen2);
+        assert!(mv6_gen2.mute_btn_disabled);
+        assert_eq!(mv6_gen2.denoiser_level, 80);
+
+        // The MV6 Gen 2 has no Limiter or Compressor.
+        let mv6 = PresetSlot::from_device_state(
+            "MV6 Gen 2",
+            &DeviceState::default(),
+            DeviceModel::Mv6Gen2,
+        );
+        let mut gen2_state = DeviceState {
+            limiter_enabled: true,
+            compressor: CompressorPreset::Medium,
+            ..DeviceState::default()
+        };
+        toml_roundtrip(&mv6).apply_to_device_state(&mut gen2_state);
+        assert!(gen2_state.limiter_enabled);
+        assert_eq!(gen2_state.compressor, CompressorPreset::Medium);
+
+        // A summary leaves out what the preset didn't save.
+        let gen1 =
+            PresetSlot::from_device_state("Gen 1", &DeviceState::default(), DeviceModel::Mvx2u);
+        let summary = gen1.summary(DeviceModel::Mv6);
+        for absent in ["Denoiser", "Popper", "Tone"] {
+            assert!(!summary.contains(absent), "{summary}");
+        }
+    }
+
     /// Write `slot` to a temp file and reload it, returning the loaded copy.
     fn write_and_reload(slot: &PresetSlot) -> PresetSlot {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1108,11 +1176,13 @@ mod tests {
         assert_eq!(decoded.name, "My Preset");
         assert_eq!(decoded.gain_db, 36.0);
         assert!(decoded.muted);
-        assert_eq!(decoded.eq_bands[0].gain_db, 40); // +4.0 dB in tenths
-        assert_eq!(decoded.eq_bands[4].gain_db, -80); // -8.0 dB in tenths
-        assert!(decoded.denoiser_enabled);
-        assert!(!decoded.popper_stopper_enabled);
-        assert_eq!(decoded.tone, -5);
+        let bands = decoded.eq_bands.expect("the Gen 1 saves its EQ bands");
+        assert_eq!(bands[0].gain_db, 40); // +4.0 dB in tenths
+        assert_eq!(bands[4].gain_db, -80); // -8.0 dB in tenths
+        // The Gen 1 has no Denoiser, Popper Stopper or Tone, so it doesn't save them.
+        assert_eq!(decoded.denoiser_enabled, None);
+        assert_eq!(decoded.popper_stopper_enabled, None);
+        assert_eq!(decoded.tone, None);
     }
 
     #[test]
@@ -1138,10 +1208,15 @@ mod tests {
         assert_eq!(target.hpf, HpfFrequency::Hz75);
         assert!(target.eq_enabled);
         assert_eq!(target.eq_bands[0].gain_db, 40); // +4.0 dB in tenths
-        assert!(target.denoiser_enabled);
-        assert!(!target.popper_stopper_enabled);
-        assert!(target.mute_btn_disabled);
-        assert_eq!(target.tone, -5);
+        // The Gen 1 has none of these, so its preset leaves them as they were.
+        let untouched = DeviceState::default();
+        assert_eq!(target.denoiser_enabled, untouched.denoiser_enabled);
+        assert_eq!(
+            target.popper_stopper_enabled,
+            untouched.popper_stopper_enabled
+        );
+        assert_eq!(target.mute_btn_disabled, untouched.mute_btn_disabled);
+        assert_eq!(target.tone, untouched.tone);
         // Identity fields must be untouched.
         assert_eq!(target.serial_number, "OTHER");
     }
@@ -1221,11 +1296,11 @@ mod tests {
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "MV6 Preset");
         assert_eq!(decoded.gain_db, 24.0);
-        assert!(decoded.denoiser_enabled);
-        assert!(decoded.popper_stopper_enabled);
-        assert!(decoded.mute_btn_disabled);
-        assert_eq!(decoded.tone, 5);
-        assert_eq!(decoded.hpf, SerHpfFrequency::Hz75);
+        assert_eq!(decoded.denoiser_enabled, Some(true));
+        assert_eq!(decoded.popper_stopper_enabled, Some(true));
+        assert_eq!(decoded.mute_btn_disabled, Some(true));
+        assert_eq!(decoded.tone, Some(5));
+        assert_eq!(decoded.hpf, Some(SerHpfFrequency::Hz75));
         assert_eq!(
             decoded.monitor_mix, 62,
             "monitor_mix must survive TOML roundtrip"
@@ -1274,19 +1349,10 @@ mod tests {
 
         let loaded = write_and_reload(&slot);
 
-        assert!(
-            loaded.mute_btn_disabled,
-            "mute_btn_disabled must survive a file roundtrip"
-        );
-        assert_eq!(loaded.tone, 5, "tone must survive a file roundtrip");
-        assert!(
-            loaded.denoiser_enabled,
-            "denoiser_enabled must survive a file roundtrip"
-        );
-        assert!(
-            loaded.popper_stopper_enabled,
-            "popper_stopper_enabled must survive a file roundtrip"
-        );
+        assert_eq!(loaded.mute_btn_disabled, Some(true));
+        assert_eq!(loaded.tone, Some(5));
+        assert_eq!(loaded.denoiser_enabled, Some(true));
+        assert_eq!(loaded.popper_stopper_enabled, Some(true));
     }
 
     #[test]
@@ -1316,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn mv6_gen2_settings_roundtrip_and_old_presets_get_defaults() {
+    fn mv6_gen2_settings_roundtrip_and_old_presets_keep_them() {
         let state = DeviceState {
             auto_gain: AutoGain::Loud,
             adaptation_rate_fast: true,
@@ -1341,7 +1407,7 @@ mod tests {
             parsed.summary(DeviceModel::Mv6Gen2)
         );
 
-        // A preset saved before the MV6 Gen 2 fields existed loads the defaults.
+        // A preset saved before the MV6 Gen 2 fields existed keeps the device's.
         let old = toml::to_string(&slot)
             .expect("serialize")
             .lines()
@@ -1353,13 +1419,17 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let parsed: PresetSlot = toml::from_str(&old).expect("parse old preset");
-        assert!(!parsed.adaptation_rate_fast);
-        assert_eq!(parsed.denoiser_level, 50);
-        assert!(!parsed.tone_advanced, "older presets keep the Tone slider");
+        assert_eq!(parsed.adaptation_rate_fast, None);
+        assert_eq!(parsed.denoiser_level, None);
+        assert_eq!(parsed.tone_advanced, None);
+        parsed.apply_to_device_state(&mut restored);
+        assert!(restored.adaptation_rate_fast);
+        assert_eq!(restored.denoiser_level, 37);
+        assert!(restored.tone_advanced);
 
         // A hand-edited level of 0 is clamped onto the 1–100% slider.
         let mut zero = parsed;
-        zero.denoiser_level = 0;
+        zero.denoiser_level = Some(0);
         zero.apply_to_device_state(&mut restored);
         assert_eq!(restored.denoiser_level, 1);
     }
@@ -1436,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_without_mv7_fields_loads_with_defaults() {
+    fn preset_without_mv7_fields_keeps_the_mics_settings() {
         let slot =
             PresetSlot::from_device_state("Pre-MV7", &DeviceState::default(), DeviceModel::Mv7);
         let text: String = toml::to_string_pretty(&slot)
@@ -1450,9 +1520,19 @@ mod tests {
             .map(|line| format!("{line}\n"))
             .collect();
         let loaded: PresetSlot = toml::from_str(&text).expect("parse");
-        assert_eq!(loaded.eq_preset, SerEqPreset::Flat);
-        assert!(loaded.led_live_meter);
-        assert!(!loaded.led_night_mode);
+        assert_eq!(loaded.eq_preset, None);
+        assert_eq!(loaded.led_live_meter, None);
+        assert_eq!(loaded.led_night_mode, None);
+        let mut mic = DeviceState {
+            eq_preset: EqPreset::PresenceBoost,
+            led_live_meter: false,
+            led_night_mode: true,
+            ..DeviceState::default()
+        };
+        loaded.apply_to_device_state(&mut mic);
+        assert_eq!(mic.eq_preset, EqPreset::PresenceBoost);
+        assert!(!mic.led_live_meter);
+        assert!(mic.led_night_mode);
     }
 
     fn mv7_example_state() -> DeviceState {
@@ -1535,10 +1615,14 @@ mod tests {
             PresetSlot::from_device_state("edited", &DeviceState::default(), DeviceModel::Mvx2u);
         slot.monitor_mix = 255;
         slot.playback_mix = 150;
-        slot.reverb_intensity = 101;
-        slot.tone = 100;
-        slot.eq_bands[0].gain_db = 1000;
-        slot.eq_bands[1].gain_db = -1000;
+        slot.reverb_intensity = Some(101);
+        slot.tone = Some(100);
+        let bands = slot
+            .eq_bands
+            .as_mut()
+            .expect("the Gen 1 saves its EQ bands");
+        bands[0].gain_db = 1000;
+        bands[1].gain_db = -1000;
 
         let mut state = DeviceState::default();
         slot.apply_to_device_state(&mut state);
