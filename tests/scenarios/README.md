@@ -10,6 +10,29 @@ intended behaviour and must fail until the bug is fixed (see `"known_bug"` in
 
 Keep this list in step with the files: add a row when you add a scenario.
 
+## Not covered yet
+
+Cases a QA sweep planned but no scenario checks. Remove a line when a scenario covers it.
+
+- Navigation: EQ and Dynamics stay reachable in Auto on the MVX2U Gen 2, MV6s and MV7+;
+  a click on a 🔒 tab does nothing; focus after switching Mode by click; `Q` quits
+- Main: MV6 Gen 2 Auto rows (Target Level, Adaptation Rate); Mic Preset in Auto; the
+  Summary block follows each change; a gain write while Config Lock is on
+- EQ and Dynamics: `f` on a tab without bands sends nothing; a preset that switches the
+  Gen 1 or MV7 to Auto re-locks EQ and Dynamics; MV6 Gen 2 Denoiser level (1–100%);
+  Limiter and Compressor hidden on the Gen 2 in Auto
+- LED (MV7+): every Behavior, and every Theme per Behavior; Custom RGB under Solid and Live
+  (Edge, Middle, Interior)
+- Mouse: click targets on the EQ, Reverb, LED, Presets and Info tabs and in Auto; a second
+  click on a toggle fires it; preset Load/Delete arming by click; resize while editing a name
+- Connection: keys while disconnected; I/O failure (`fail_io`) and recovery with `r`; poll
+  timing (no disconnect before the first poll); `r` in demo mode
+- Presets: an empty slot; one SET per stored setting in the same order on every model;
+  presets from another model (Gain Lock, Monitor Mix kind); name length limit; `s` and `d`
+  on the name row; MODE before EQ and Dynamics on load; loading while disconnected
+- Info: device name length limit; Tab or `q` while Factory Reset is armed; the MV7 Info
+  tab has nothing focusable; the help overlay matches the readme key table
+
 ## Navigation and app shell
 
 | Scenario | Models | Runs in | Checks that |
