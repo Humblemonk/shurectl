@@ -84,7 +84,15 @@ Read **Cross-Device UI Consistency** in `AGENTS.md` first. Then, for every model
 3. Repeat the Main tab at heights 24, 30, 40 and 50 with `click_targets`. Below 80x24 only
    a notice draws (`terminal-too-small`).
 4. Compare models: the same control must have the same label, units, formatting,
-   key, status wording and position relative to its neighbours.
+   key, status wording and position relative to its neighbours. For each shared
+   control check its label and hint (`[Enter] toggle`), value format (`24 dB`,
+   `+2.0 dB`, `75 Hz`), status after the same action (`Mute → ON`), the keys that
+   act on it and that no other key does, its place in the focus ring and in the
+   drawn block order, its colour per state (`screen_styled`), its Summary row, and
+   the wording for shared conditions (disconnected, reconnected, refreshed, empty
+   slot, refused reply). Compare the pairs first (MVX2U Gen 1 and Gen 2, MV6 and MV6
+   Gen 2, MV7 and MV7+), then everything against the MV7+, which has the most
+   controls. The intended differences listed in AGENTS.md are not findings.
 
 Report each divergence as a recorded scenario whose `expect` fails today. Classes
 worth looking for: a focusable control that does nothing on one model, a label or

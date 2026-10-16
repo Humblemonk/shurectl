@@ -126,6 +126,15 @@ ordered `SummaryRow` list; a model picks its rows in `summary_rows()` but can't 
 value formatting, keybinding, and position relative to its neighbours on all of them. Only
 genuinely device-exclusive hardware features may differ.
 
+Intended differences (hardware, not divergence; don't flag them):
+
+- Gain: 0–60 dB on the MVX2U Gen 1 and Gen 2, 0–36 dB elsewhere; 1.5 dB steps on the MV7
+- EQ band steps: 0.5 dB on the MVX2U Gen 2, 2 dB on the Gen 1 and MV6 Gen 2
+- "Monitor Mix" (a balance) on the MVX2U Gen 1 and MV7; "Mic Level" on models with Playback Level
+- "Target Level" on the MV6 Gen 2 and "Auto Gain" on the MVX2U Gen 1 are different settings
+- EQ and Dynamics locked in Auto only on the MVX2U Gen 1 and MV7 (`is_tab_locked()`)
+- Tabs and controls hidden per model, as the readme's Device support table lists
+
 Shared across all models unless the hardware makes it impossible:
 
 - **Tab set and order**: `Tab::ALL` is the source of truth. Models filter it, never reorder it
