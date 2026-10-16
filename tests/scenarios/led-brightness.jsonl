@@ -1,0 +1,12 @@
+{"scenario": "led-brightness", "models": ["mv7plus"]}
+{"click_on": "LED"}
+{"key": "Down"}
+{"expect": {"focus": "LedBrightness", "no_packets": true, "state": {"led_brightness": "High"}}}
+{"key": "Enter"}
+{"expect": {"status": "LED brightness → Max", "set": {"feature": "LED_BRIGHTNESS", "value": "Max"}}}
+{"key": "Enter"}
+{"expect": {"status": "LED brightness → Low", "set": {"feature": "LED_BRIGHTNESS", "value": "Low"}}}
+{"key": "Enter"}
+{"expect": {"status": "LED brightness → Med"}}
+{"key": "Enter"}
+{"expect": {"status": "LED brightness → High", "state": {"led_brightness": "High"}}}

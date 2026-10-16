@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
@@ -37,3 +37,6 @@ jobs:
 
     - name: Run tests
       run: cargo test --verbose
+
+    - name: Run end-to-end scenarios
+      run: cargo test --verbose --features qa --test e2e

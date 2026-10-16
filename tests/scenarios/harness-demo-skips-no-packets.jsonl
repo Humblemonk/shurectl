@@ -1,0 +1,4 @@
+{"scenario": "harness-demo-skips-no-packets", "models": "all"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}, "no_packets": false}}

@@ -1,0 +1,13 @@
+{"scenario": "factory-reset-reconnects", "models": ["mv7plus", "mv6-gen2", "mvx2u-gen2"], "modes": ["fake"]}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}}}
+{"key": "BackTab", "mods": "shift"}
+{"key": "Down"}
+{"key": "Enter"}
+{"key": "Enter"}
+{"expect": {"set": "FACTORY_RESET"}}
+{"tick": 2000}
+{"expect": {"connected": false}}
+{"tick": 4000}
+{"expect": {"connected": true, "status": "Reconnected to", "state": {"muted": false}}}

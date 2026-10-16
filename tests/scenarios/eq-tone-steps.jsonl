@@ -1,0 +1,16 @@
+{"scenario": "eq-tone-steps", "models": ["mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
+{"key": "Enter"}
+{"expect": {"state": {"mode": "Auto"}}}
+{"click_on": "EQ"}
+{"click_on": "Dark ◄"}
+{"expect": {"focus": "Tone", "no_packets": true}}
+{"key": "Right"}
+{"expect": {"status": "Tone → 10% Bright", "set": "TONE"}}
+{"key": "Left"}
+{"expect": {"status": "Tone → Natural"}}
+{"key": "Left", "repeat": 2}
+{"expect": {"status": "Tone → 20% Dark"}}
+{"key": "Right", "repeat": 15}
+{"expect": {"status": "Tone → 100% Bright"}}
+{"key": "f"}
+{"expect": {"no_packets": true, "status": "Tone → 100% Bright"}}

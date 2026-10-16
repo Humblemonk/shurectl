@@ -1,0 +1,11 @@
+{"scenario": "meter-peak-hold-expires", "models": "all", "modes": ["fake"]}
+{"meter": -12.5}
+{"expect": {"screen_contains": ["-12.5 dBFS", "pk -12.5"]}}
+{"tick": 400}
+{"meter": -30}
+{"expect": {"screen_contains": ["-30.0 dBFS", "pk -12.5"]}}
+{"tick": 2700}
+{"meter": -30}
+{"expect": {"screen_contains": ["-30.0 dBFS", "pk -30.0"], "screen_not_contains": "pk -12.5"}}
+{"tick": 3500}
+{"expect": {"screen_contains": "---", "screen_not_contains": ["dBFS", "pk -"]}}

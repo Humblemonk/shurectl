@@ -1,0 +1,6 @@
+{"scenario": "monitor-mix-packets", "models": ["mvx2u"]}
+{"click_on": "Monitor Mix"}
+{"key": "Right"}
+{"expect": {"status": "Monitor Mix → 1%", "set": {"feature": "MONITOR_MIX", "value": 1}}}
+{"key": "Left"}
+{"expect": {"status": "Monitor Mix → 0%", "set": {"feature": "MONITOR_MIX", "value": 0}}}

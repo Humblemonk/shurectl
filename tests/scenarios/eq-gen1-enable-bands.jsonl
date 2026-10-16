@@ -1,0 +1,20 @@
+{"scenario": "eq-gen1-enable-bands", "models": ["mvx2u"], "modes": ["fake"]}
+{"click_on": "EQ"}
+{"expect": {"focus": "EqEnable", "screen_contains": "EQ:  ○ OFF"}}
+{"key": "Enter"}
+{"expect": {"status": "EQ → Enabled", "set": {"feature": "EQ", "value": true}, "state": {"eq_enabled": true}, "screen_contains": "EQ:  ● ON"}}
+{"key": "Down", "repeat": 2}
+{"expect": {"focus": "EqBandEnable(0)"}}
+{"key": "Enter"}
+{"expect": {"status": "EQ Band 1 → ON", "set": {"feature": "EQ_BAND_1_ENABLE", "value": true}, "state": {"eq_band_enables": [true, false, false, false, false]}}}
+{"key": "Up"}
+{"key": "Right", "repeat": 2}
+{"key": "Down"}
+{"expect": {"focus": "EqBandEnable(2)"}}
+{"key": "Space"}
+{"expect": {"status": "EQ Band 3 → ON", "set": {"feature": "EQ_BAND_3_ENABLE", "value": true}, "state": {"eq_band_enables": [true, false, true, false, false]}}}
+{"key": "Enter"}
+{"expect": {"status": "EQ Band 3 → OFF", "set": {"feature": "EQ_BAND_3_ENABLE", "value": false}}}
+{"key": "Up", "repeat": 2}
+{"key": "Enter"}
+{"expect": {"focus": "EqEnable", "status": "EQ → Bypass", "set": {"feature": "EQ", "value": false}, "state": {"eq_enabled": false}}}

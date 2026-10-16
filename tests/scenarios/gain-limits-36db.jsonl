@@ -1,0 +1,7 @@
+{"scenario": "gain-limits-36db", "models": ["mv6", "mv6-gen2", "mv7", "mv7plus"], "modes": ["fake"]}
+{"key": "Down", "repeat": 2}
+{"expect": {"focus": "Gain"}}
+{"key": "Right", "repeat": 20}
+{"expect": {"status": "Gain → 36 dB", "state": {"gain_tenths": 360}, "screen_contains": "36 dB / 36 dB"}}
+{"key": "Left", "repeat": 40}
+{"expect": {"status": "Gain → 0 dB", "state": {"gain_tenths": 0}}}

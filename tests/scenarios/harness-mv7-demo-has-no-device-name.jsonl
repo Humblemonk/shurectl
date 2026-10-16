@@ -1,0 +1,3 @@
+{"scenario": "harness-mv7-demo-has-no-device-name", "models": ["mv7"]}
+{"click_on": "Info"}
+{"expect": {"tab": "Info", "screen_not_contains": ["Device Name", "Fake Shure MV7"]}}

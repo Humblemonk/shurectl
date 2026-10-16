@@ -1,0 +1,3 @@
+{"scenario": "quit-ctrl-c", "models": "all"}
+{"key": "c", "mods": "ctrl"}
+{"expect": {"quit": true}}

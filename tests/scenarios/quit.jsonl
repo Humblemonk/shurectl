@@ -1,0 +1,3 @@
+{"scenario": "quit", "models": "all"}
+{"key": "q"}
+{"expect": {"quit": true, "no_packets": true}}

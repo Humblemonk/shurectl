@@ -1,0 +1,7 @@
+{"scenario": "readback-extra-ack-keeps-serial", "models": ["mv6", "mv7plus"], "modes": ["fake"], "known_bug": "one ack too many shifts the readback, so the last GET's reply (the serial number) is never read"}
+{"key": "Down"}
+{"device": {"extra_acks": 1}}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "MUTE", "value": true}}}
+{"key": "r"}
+{"expect": {"status": "State refreshed from device.", "status_is_error": false, "state": {"muted": true, "factory_serial": "FAKE0001"}}}

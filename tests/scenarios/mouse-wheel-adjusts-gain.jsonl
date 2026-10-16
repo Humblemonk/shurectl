@@ -1,0 +1,8 @@
+{"scenario": "mouse-wheel-adjusts-gain", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
+{"wheel": "up", "at": [30, 3]}
+{"expect": {"focus": "Mode", "no_packets": true, "state": {"mode": "Manual"}}}
+{"wheel": "up", "at": [30, 6]}
+{"expect": {"focus": "Gain", "status": "Gain → 25 dB", "set": {"feature": "GAIN", "value": 250}, "state": {"gain_tenths": 250}}}
+{"wheel": "down", "at": [30, 6]}
+{"wheel": "down", "at": [30, 6]}
+{"expect": {"status": "Gain → 23 dB", "set": {"feature": "GAIN", "value": 230}, "state": {"gain_tenths": 230}}}

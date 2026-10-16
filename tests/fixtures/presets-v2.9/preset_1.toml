@@ -1,0 +1,9 @@
+# A preset as shurectl wrote it before Playback Level and
+# monitor_mix_is_mic_level existed (73476a4): loading it must keep the
+# device's own Playback Level rather than zero it.
+name = "Old Voice"
+gain_db = 30.0
+mode = "manual"
+muted = false
+hpf = "off"
+monitor_mix = 40

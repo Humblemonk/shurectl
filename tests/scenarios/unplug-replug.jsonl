@@ -1,0 +1,16 @@
+{"scenario": "unplug-replug", "models": "all", "modes": ["fake"]}
+{"expect": {"connected": true}}
+{"device": "unplug"}
+{"tick": 2000}
+{"expect": {"connected": false, "status": "disconnected — it reconnects automatically when plugged back in.", "status_is_error": true}}
+{"device": "replug"}
+{"tick": 2000}
+{"expect": {"connected": false}}
+{"tick": 2000}
+{"expect": {"connected": true, "status": "Reconnected to", "status_is_error": false}}
+{"device": "unplug"}
+{"tick": 2000}
+{"expect": {"connected": false}}
+{"device": "replug"}
+{"key": "r"}
+{"expect": {"connected": true, "status": "Reconnected to"}}

@@ -1,6 +1,7 @@
 //! Application state and navigation logic.
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crossterm::event::KeyCode;
 
@@ -188,6 +189,9 @@ pub struct App {
     /// Rolling peak windows shared with the cpal capture thread.
     /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak-hold readout.
     pub peak_window: Arc<Mutex<PeakWindow>>,
+    /// The time the meter is read at; `None` reads the system clock. The `--qa`
+    /// harness sets its fake clock here, so peak-hold expiry follows `tick`.
+    pub meter_clock: Option<Instant>,
 }
 
 impl Default for App {
@@ -213,6 +217,7 @@ impl Default for App {
             confirming_factory_reset: false,
             armed_preset_action: None,
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
+            meter_clock: None,
         }
     }
 }
@@ -2521,7 +2526,6 @@ mod tests {
 
     #[test]
     fn app_default_peak_window_is_empty() {
-        use std::time::Instant;
         let app = App::default();
         let pw = app.peak_window.lock().unwrap();
         assert!(
@@ -2538,7 +2542,6 @@ mod tests {
     fn app_peak_window_arc_is_shared() {
         // Confirm the Arc is real: cloning it and writing through the clone
         // must be visible via app.peak_window.
-        use std::time::Instant;
         let app = App::default();
         let shared = Arc::clone(&app.peak_window);
         shared.lock().unwrap().push(Instant::now(), -200);

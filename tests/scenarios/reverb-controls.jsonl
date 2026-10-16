@@ -1,0 +1,20 @@
+{"scenario": "reverb-controls", "models": ["mv7plus"]}
+{"click_on": "Reverb"}
+{"expect": {"tab": "Reverb", "focus": "ReverbOutput"}}
+{"key": "Enter"}
+{"expect": {"status": "Reverb output → ON", "set": {"feature": "REVERB_OUTPUT", "value": true}}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"focus": "ReverbMonitor", "status": "Reverb monitoring → ON", "set": {"feature": "REVERB_MONITOR", "value": true}}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"focus": "ReverbPreset", "status": "Reverb type → Hall", "set": {"feature": "REVERB_TYPE", "value": "Hall"}}}
+{"key": "Enter", "repeat": 2}
+{"expect": {"state": {"reverb_type": "Plate"}}}
+{"key": "Down"}
+{"key": "Right"}
+{"expect": {"focus": "ReverbIntensity", "status": "Reverb intensity → 51%", "set": {"feature": "REVERB_INTENSITY", "value": 51}}}
+{"key": "Right", "repeat": 60}
+{"expect": {"status": "Reverb intensity → 100%", "state": {"reverb_intensity": 100}}}
+{"key": "Left", "repeat": 100}
+{"expect": {"status": "Reverb intensity → 0%", "state": {"reverb_intensity": 0}}}

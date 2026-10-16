@@ -475,8 +475,26 @@ fn config_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+#[cfg(any(test, feature = "qa"))]
+thread_local! {
+    /// Where the `--qa` harness keeps presets instead of the user's config dir.
+    static DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Keep this thread's presets in `dir` (a temp dir) instead of the user's
+/// config directory, or go back to it with `None`. For the `--qa` harness.
+#[cfg(any(test, feature = "qa"))]
+pub fn set_dir_override(dir: Option<PathBuf>) {
+    DIR_OVERRIDE.with(|cell| *cell.borrow_mut() = dir);
+}
+
 /// Returns the `presets/` directory inside `config_dir()`, creating it if absent.
 fn presets_dir() -> Result<PathBuf> {
+    #[cfg(any(test, feature = "qa"))]
+    if let Some(dir) = DIR_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Ok(dir);
+    }
     let dir = config_dir()?.join("presets");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create preset directory: {}", dir.display()))?;

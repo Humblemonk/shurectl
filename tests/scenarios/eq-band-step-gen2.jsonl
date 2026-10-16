@@ -1,0 +1,13 @@
+{"scenario": "eq-band-step-gen2", "models": ["mvx2u-gen2"], "modes": ["fake"]}
+{"click_on": "EQ"}
+{"expect": {"focus": "EqBandSelect"}}
+{"click": [80, 12]}
+{"expect": {"focus": "EqGain(3)", "no_packets": true}}
+{"key": "Right"}
+{"expect": {"status": "EQ Band 4 → +0.5 dB", "set": "EQ_BAND_4_GAIN", "state": {"eq_band_gains": [0, 0, 0, 5, 0]}}}
+{"key": "Right", "repeat": 20}
+{"expect": {"status": "EQ Band 4 → +6.0 dB", "state": {"eq_band_gains": [0, 0, 0, 60, 0]}}}
+{"key": "Left", "repeat": 40}
+{"expect": {"status": "EQ Band 4 → -8.0 dB", "state": {"eq_band_gains": [0, 0, 0, -80, 0]}}}
+{"key": "f"}
+{"expect": {"status": "EQ flattened.", "state": {"eq_band_gains": [0, 0, 0, 0, 0]}}}

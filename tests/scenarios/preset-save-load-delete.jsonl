@@ -1,0 +1,15 @@
+{"scenario": "preset-save-load-delete", "models": "all"}
+{"click_on": "Presets"}
+{"expect": {"tab": "Presets", "focus": "PresetName(0)", "screen_contains": "Empty"}}
+{"key": "s"}
+{"expect": {"status": "Saved to \"Preset 1\".", "screen_contains": "[Enter] Load"}}
+{"click_on": "Main"}
+{"click_on": "Mute:"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}}}
+{"click_on": "Presets"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"focus": "PresetActions(0)", "status": "Loaded \"Preset 1\".", "state": {"muted": false}}}
+{"key": "d"}
+{"expect": {"status": "Deleted \"Preset 1\".", "no_packets": true, "screen_not_contains": "[Enter] Load"}}

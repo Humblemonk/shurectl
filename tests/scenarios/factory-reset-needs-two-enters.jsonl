@@ -1,0 +1,14 @@
+{"scenario": "factory-reset-needs-two-enters", "models": ["mv7plus", "mv6-gen2", "mvx2u-gen2"]}
+{"key": "BackTab", "mods": "shift"}
+{"key": "Down"}
+{"expect": {"focus": "FactoryReset", "screen_contains": "Factory Reset"}}
+{"key": "Enter"}
+{"expect": {"confirming_factory_reset": true, "status_is_error": true, "no_packets": true}}
+{"key": "Up"}
+{"expect": {"confirming_factory_reset": false, "status": "Factory reset cancelled.", "no_packets": true}}
+{"key": "Enter"}
+{"click": [2, 6]}
+{"expect": {"confirming_factory_reset": false, "status": "Factory reset cancelled.", "no_packets": true}}
+{"key": "Enter"}
+{"key": "Enter"}
+{"expect": {"set": "FACTORY_RESET", "status": "Factory reset sent"}}

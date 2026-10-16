@@ -1,0 +1,6 @@
+{"scenario": "mute-toggle", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "MUTE", "value": true}, "state": {"muted": true}, "status": "Mute → ON", "style": {"text": "● ON", "fg": "C_ERROR"}}}
+{"key": "Space"}
+{"expect": {"set": {"feature": "MUTE", "value": false}, "state": {"muted": false}, "status": "Mute → OFF", "screen_contains": "○ OFF"}}

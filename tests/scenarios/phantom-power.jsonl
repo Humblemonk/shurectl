@@ -1,0 +1,10 @@
+{"scenario": "phantom-power", "models": ["mvx2u", "mvx2u-gen2"]}
+{"click_on": "48V:"}
+{"expect": {"focus": "Phantom", "no_packets": true, "screen_contains": "48V:  ○ OFF"}}
+{"key": "Enter"}
+{"expect": {"status": "Phantom → 48V ON", "set": {"feature": "PHANTOM", "value": true}, "state": {"phantom_power": true}, "screen_contains": "48V:  ● ON"}}
+{"key": "Left"}
+{"key": "Right"}
+{"expect": {"no_packets": true, "state": {"phantom_power": true}}}
+{"key": "Space"}
+{"expect": {"status": "Phantom → OFF", "set": {"feature": "PHANTOM", "value": false}, "state": {"phantom_power": false}}}

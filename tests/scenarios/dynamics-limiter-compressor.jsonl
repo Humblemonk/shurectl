@@ -1,0 +1,15 @@
+{"scenario": "dynamics-limiter-compressor", "models": ["mvx2u", "mvx2u-gen2", "mv7plus"], "modes": ["fake"]}
+{"click_on": "Dynamics"}
+{"expect": {"focus": "Limiter"}}
+{"key": "Enter"}
+{"expect": {"status": "Limiter → ON", "set": {"feature": "LIMITER", "value": true}, "state": {"limiter_enabled": true}}}
+{"key": "Space"}
+{"expect": {"status": "Limiter → OFF", "set": {"feature": "LIMITER", "value": false}}}
+{"click_on": "Compressor"}
+{"expect": {"focus": "Compressor", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Compressor → Light", "set": "COMPRESSOR"}}
+{"key": "Enter", "repeat": 2}
+{"expect": {"status": "Compressor → Heavy"}}
+{"key": "Enter"}
+{"expect": {"status": "Compressor → Off", "screen_contains": "▶ Off"}}

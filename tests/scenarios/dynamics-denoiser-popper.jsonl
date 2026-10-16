@@ -1,0 +1,15 @@
+{"scenario": "dynamics-denoiser-popper", "models": ["mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"click_on": "Dynamics"}
+{"click_on": "Popper Stopper"}
+{"click_on": "Denoiser"}
+{"expect": {"focus": "Denoiser", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Denoiser → ON", "set": {"feature": "DENOISER", "value": true}, "state": {"denoiser_enabled": true}}}
+{"key": "Enter"}
+{"expect": {"status": "Denoiser → OFF", "set": {"feature": "DENOISER", "value": false}}}
+{"click_on": "Popper Stopper"}
+{"expect": {"focus": "PopperStopper", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Popper Stopper → OFF", "set": {"feature": "POPPER_STOPPER", "value": false}, "state": {"popper_stopper_enabled": false}}}
+{"key": "Enter"}
+{"expect": {"status": "Popper Stopper → ON"}}

@@ -1,0 +1,7 @@
+{"scenario": "mode-auto-locks-eq", "models": ["mvx2u"], "modes": ["fake"]}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "MODE", "value": "Auto"}, "state": {"mode": "Auto"}, "status": "Mode → Auto Level", "screen_contains": ["EQ 🔒", "Dynamics 🔒"]}}
+{"key": "Tab"}
+{"expect": {"tab": "Presets"}}
+{"key": "BackTab", "mods": "shift"}
+{"expect": {"tab": "Main"}}

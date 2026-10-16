@@ -1,0 +1,7 @@
+{"scenario": "gain-limits-60db", "models": ["mvx2u", "mvx2u-gen2"], "modes": ["fake"]}
+{"key": "Down", "repeat": 2}
+{"expect": {"focus": "Gain"}}
+{"key": "Right", "repeat": 40}
+{"expect": {"status": "Gain → 60 dB", "set": {"feature": "GAIN", "value": 600}, "state": {"gain_tenths": 600}, "screen_contains": "60 dB / 60 dB"}}
+{"key": "Left", "repeat": 70}
+{"expect": {"status": "Gain → 0 dB", "set": {"feature": "GAIN", "value": 0}, "state": {"gain_tenths": 0}}}

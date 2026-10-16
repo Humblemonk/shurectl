@@ -1,0 +1,11 @@
+{"scenario": "readback-extra-ack-keeps-eq-band-5", "models": ["mvx2u-gen2"], "modes": ["fake"], "known_bug": "one ack too many shifts the readback, so the last GET's reply (EQ band 5 gain) is never read"}
+{"click_on": "EQ"}
+{"key": "Enter"}
+{"wheel": "down", "at": [100, 20]}
+{"expect": {"screen_contains": "Gain: -"}}
+{"device": {"extra_acks": 1}}
+{"key": "Down"}
+{"key": "Up"}
+{"wheel": "down", "at": [100, 20]}
+{"key": "r"}
+{"expect": {"status": "State refreshed from device.", "status_is_error": false, "screen_contains": "Gain: -"}}

@@ -1,0 +1,8 @@
+{"scenario": "mute-button-setting", "models": ["mv6", "mv6-gen2", "mv7plus"]}
+{"click_on": "Dynamics"}
+{"click_on": "Pressing it:"}
+{"expect": {"focus": "MuteBtnDisable", "no_packets": true, "screen_contains": "Works", "screen_not_contains": "Ignored"}}
+{"key": "Enter"}
+{"expect": {"status": "Mute button → Ignored", "set": {"feature": "MUTE_BUTTON", "value": true}, "state": {"mute_btn_disabled": true}, "screen_contains": "Ignored"}}
+{"key": "Enter"}
+{"expect": {"status": "Mute button → Works", "set": {"feature": "MUTE_BUTTON", "value": false}, "state": {"mute_btn_disabled": false}}}

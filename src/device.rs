@@ -32,6 +32,13 @@
 //! device echoes this number in its response. We track it in `ShureDevice` and
 //! increment after every `write()`.
 //!
+//! # Transport
+//!
+//! `ShureDevice` talks to a [`HidTransport`]: [`HidapiTransport`] for real
+//! hardware, and `fake_hid::FakeHid` in tests and the `--qa` harness. Everything
+//! above the transport (sequence numbers, ack draining, readback) runs the same
+//! for both.
+//!
 //! # Multi-device
 //!
 //! If only one Shure device is plugged in, `open()` opens it automatically.
@@ -105,16 +112,96 @@ impl std::fmt::Display for Disconnected {
 
 impl std::error::Error for Disconnected {}
 
-fn read_failed(e: hidapi::HidError) -> anyhow::Error {
+fn read_failed(e: anyhow::Error) -> anyhow::Error {
     Disconnected(format!("HID read failed (device disconnected?): {e}")).into()
 }
 
 /// Shown, and matched on reconnect, when a device reports no USB serial number.
 const UNKNOWN_SERIAL: &str = "(unknown)";
 
+/// The byte pipe under [`ShureDevice`]. Any error from `write()` or
+/// `read_timeout()` means the device is gone.
+pub trait HidTransport {
+    /// Send one output report. Returns the number of bytes written.
+    fn write(&self, packet: &[u8]) -> Result<usize>;
+    /// Read one input report into `buf`, waiting up to `timeout_ms`. `Ok(0)` is a timeout.
+    fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize>;
+    /// The USB descriptor serial number, if the device reports one.
+    fn serial_number(&self) -> Option<String>;
+    /// Whether a device with this model and USB serial is still in the OS
+    /// device list. Nothing is sent to the device.
+    fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool>;
+    /// A new handle to the same device after it was unplugged and plugged back in.
+    fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>>;
+}
+
+/// The only transport in a normal build: hidapi on the device's HID path.
+pub struct HidapiTransport(HidDevice);
+
+impl HidTransport for HidapiTransport {
+    fn write(&self, packet: &[u8]) -> Result<usize> {
+        Ok(self.0.write(packet)?)
+    }
+
+    fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize> {
+        Ok(self.0.read_timeout(buf, timeout_ms)?)
+    }
+
+    fn serial_number(&self) -> Option<String> {
+        self.0.get_serial_number_string().ok().flatten()
+    }
+
+    fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool> {
+        let api = HidApi::new().context("Failed to initialise hidapi")?;
+        Ok(!same_devices(&api, model, serial).is_empty())
+    }
+
+    /// A replugged device usually gets a new HID path, so it is found by model
+    /// and USB serial number instead. Errors are one line, for the status bar.
+    fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>> {
+        let api = HidApi::new().context("Failed to initialise hidapi")?;
+        match same_devices(&api, model, serial).as_slice() {
+            [(info, _)] => open_hid(&api, info, "device")
+                .map_err(|e| anyhow!("{}", e.to_string().replace('\n', " "))),
+            [] => Err(Disconnected(format!("{} not found", model.display_name())).into()),
+            [_, _, ..] => Err(anyhow!(
+                "more than one matching {} found; restart shurectl with --device",
+                model.display_name()
+            )),
+        }
+    }
+}
+
+/// Open the HID device at `info`'s path, non-blocking. `what` names it in the
+/// error: "device", or the path the user gave with `--device`.
+fn open_hid(api: &HidApi, info: &hidapi::DeviceInfo, what: &str) -> Result<Box<dyn HidTransport>> {
+    let path = info.path().to_string_lossy();
+    let c_path = std::ffi::CString::new(path.as_ref())
+        .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
+    let device = api
+        .open_path(c_path.as_c_str())
+        .map_err(|e| anyhow!("Cannot open {what}: {e}\nHint: {ACCESS_HINT}."))?;
+    device.set_blocking_mode(false).ok();
+    Ok(Box::new(HidapiTransport(device)))
+}
+
+/// Supported devices in `api`'s list with this model and USB serial.
+fn same_devices<'a>(
+    api: &'a HidApi,
+    model: DeviceModel,
+    serial: &str,
+) -> Vec<(&'a hidapi::DeviceInfo, DeviceModel)> {
+    shure_devices(api)
+        .into_iter()
+        .filter(|(info, found)| {
+            *found == model && info.serial_number().unwrap_or(UNKNOWN_SERIAL) == serial
+        })
+        .collect()
+}
+
 /// A connected Shure USB microphone or interface.
 pub struct ShureDevice {
-    device: HidDevice,
+    transport: Box<dyn HidTransport>,
     /// Which device model this is — drives protocol and UI decisions.
     pub model: DeviceModel,
     /// Packet sequence number. Increments after every write; wraps at 256.
@@ -124,15 +211,13 @@ pub struct ShureDevice {
 }
 
 impl ShureDevice {
-    fn from_hid_device(device: HidDevice, model: DeviceModel) -> Self {
-        device.set_blocking_mode(false).ok();
-        let serial_number = device
-            .get_serial_number_string()
-            .ok()
-            .flatten()
+    /// A device on `transport`. The fake device in `fake_hid.rs` comes in here.
+    pub fn with_transport(model: DeviceModel, transport: Box<dyn HidTransport>) -> Self {
+        let serial_number = transport
+            .serial_number()
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
         Self {
-            device,
+            transport,
             model,
             seq: AtomicU8::new(0),
             serial_number,
@@ -163,48 +248,22 @@ impl ShureDevice {
     }
 
     /// Open the same physical device again after it was unplugged and plugged
-    /// back in, when this handle has gone stale. A replugged device usually gets
-    /// a new HID path, so it is found by model and USB serial number instead.
-    /// Errors are one line, for the status bar.
+    /// back in, when this handle has gone stale. Errors are one line, for the
+    /// status bar.
     pub fn reopen(&self) -> Result<Self> {
-        let api = HidApi::new().context("Failed to initialise hidapi")?;
-        match self.same_devices(&api).as_slice() {
-            [(info, model)] => Self::open_info(&api, info, *model)
-                .map_err(|e| anyhow!("{}", e.to_string().replace('\n', " "))),
-            [] => Err(Disconnected(format!("{} not found", self.model.display_name())).into()),
-            [_, _, ..] => Err(anyhow!(
-                "more than one matching {} found; restart shurectl with --device",
-                self.model.display_name()
-            )),
-        }
+        let transport = self.transport.reopen(self.model, &self.serial_number)?;
+        Ok(Self::with_transport(self.model, transport))
     }
 
     /// Whether this device is still plugged in, from the OS device list alone.
     /// Nothing is sent to the device, so polling this cannot disturb the
     /// protocol or a command MOTIV has in flight.
     pub fn is_present(&self) -> Result<bool> {
-        let api = HidApi::new().context("Failed to initialise hidapi")?;
-        Ok(!self.same_devices(&api).is_empty())
-    }
-
-    /// Supported devices in `api`'s list with this device's model and USB serial.
-    fn same_devices<'a>(&self, api: &'a HidApi) -> Vec<(&'a hidapi::DeviceInfo, DeviceModel)> {
-        shure_devices(api)
-            .into_iter()
-            .filter(|(info, model)| {
-                *model == self.model
-                    && info.serial_number().unwrap_or(UNKNOWN_SERIAL) == self.serial_number
-            })
-            .collect()
+        self.transport.is_present(self.model, &self.serial_number)
     }
 
     fn open_info(api: &HidApi, info: &hidapi::DeviceInfo, model: DeviceModel) -> Result<Self> {
-        let c_path = std::ffi::CString::new(info.path().to_string_lossy().as_ref())
-            .map_err(|_| anyhow!("Device path contains a null byte"))?;
-        let device = api
-            .open_path(c_path.as_c_str())
-            .map_err(|e| anyhow!("Cannot open device: {e}\nHint: {ACCESS_HINT}."))?;
-        Ok(Self::from_hid_device(device, model))
+        Ok(Self::with_transport(model, open_hid(api, info, "device")?))
     }
 
     /// Open a Shure device at a specific HID device path.
@@ -234,12 +293,7 @@ impl ShureDevice {
             ));
         };
 
-        let c_path = std::ffi::CString::new(path)
-            .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
-        let device = api
-            .open_path(c_path.as_c_str())
-            .map_err(|e| anyhow!("Cannot open {path}: {e}\nHint: {ACCESS_HINT}."))?;
-        Ok(Self::from_hid_device(device, model))
+        Ok(Self::with_transport(model, open_hid(&api, info, path)?))
     }
 
     fn next_seq(&self) -> u8 {
@@ -248,7 +302,7 @@ impl ShureDevice {
 
     fn write(&self, packet: &[u8]) -> Result<()> {
         let written = self
-            .device
+            .transport
             .write(packet)
             .map_err(|e| Disconnected(format!("HID write failed: {e}")))?;
         if written == 0 {
@@ -262,7 +316,7 @@ impl ShureDevice {
     /// SET). A failed read is, since it means the device is gone.
     fn read(&self) -> Result<Option<Vec<u8>>> {
         let mut buf = vec![0u8; PACKET_SIZE];
-        match self.device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
+        match self.transport.read_timeout(&mut buf, READ_TIMEOUT_MS) {
             Ok(0) => Ok(None),
             Ok(n) => Ok(Some(buf[..n].to_vec())),
             Err(e) => Err(read_failed(e)),
@@ -292,7 +346,7 @@ impl ShureDevice {
         // a timeout, so a late first ack is still caught by the second read.
         let mut buf = vec![0u8; PACKET_SIZE];
         for _ in 0..self.model.reports_after_confirm() {
-            let _ = self.device.read_timeout(&mut buf, ACK_TIMEOUT_MS);
+            let _ = self.transport.read_timeout(&mut buf, ACK_TIMEOUT_MS);
         }
         Ok(())
     }
@@ -313,7 +367,7 @@ impl ShureDevice {
         let deadline = Instant::now() + MV7_REPLY_TIMEOUT;
         while Instant::now() < deadline {
             let n = self
-                .device
+                .transport
                 .read_timeout(&mut buf, READ_TIMEOUT_MS)
                 .map_err(read_failed)?;
             if n == 0 {
@@ -334,7 +388,7 @@ impl ShureDevice {
     /// otherwise be read as the answer to the next command.
     fn drain_text_input(&self, buf: &mut [u8]) -> Result<()> {
         for _ in 0..MV7_DRAIN_MAX_REPORTS {
-            let n = self.device.read_timeout(buf, 0).map_err(read_failed)?;
+            let n = self.transport.read_timeout(buf, 0).map_err(read_failed)?;
             if n == 0 {
                 return Ok(());
             }

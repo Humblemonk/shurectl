@@ -1,0 +1,23 @@
+{"scenario": "readback-failed-reconnect-refuses-writes", "models": "all", "modes": ["fake"]}
+{"device": "unplug"}
+{"tick": 2000}
+{"device": "replug"}
+{"tick": 2000}
+{"device": {"refuse": 100}}
+{"tick": 2000}
+{"expect": {"connected": true, "status": "No response from the device to any state query", "status_is_error": true}}
+{"device": {"refuse": 0}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"focus": "Mute", "status": "Settings not read from the device yet — press r to retry.", "status_is_error": true, "no_packets": true, "state": {"muted": false}, "screen_contains": "○ OFF"}}
+{"key": "Down"}
+{"key": "Right"}
+{"expect": {"focus": "Gain", "status": "Settings not read from the device yet", "no_packets": true, "state": {"gain_tenths": 240}, "screen_contains": "24 dB"}}
+{"key": "Tab"}
+{"key": "BackTab", "mods": "shift"}
+{"expect": {"tab": "Main", "no_packets": true}}
+{"key": "r"}
+{"expect": {"status": "State refreshed from device.", "status_is_error": false}}
+{"key": "Up"}
+{"key": "Enter"}
+{"expect": {"focus": "Mute", "state": {"muted": true}, "status": "Mute → ON"}}

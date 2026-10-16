@@ -1,0 +1,12 @@
+{"scenario": "gain-lock-blocks-gain", "models": ["mv6", "mv6-gen2", "mvx2u-gen2"], "modes": ["fake"]}
+{"key": "Down"}
+{"key": "Down"}
+{"expect": {"focus": "Gain"}}
+{"key": "Right"}
+{"expect": {"set": {"feature": "GAIN", "value": 250}}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"focus": "GainLock", "set": {"feature": "GAIN_LOCK", "value": true}, "state": {"mv6_gain_locked": true}, "status": "Gain locked.", "screen_contains": "LOCKED", "style": {"text": "LOCKED", "fg": "C_WARN"}}}
+{"key": "Up"}
+{"key": "Right"}
+{"expect": {"no_packets": true, "state": {"gain_tenths": 250}}}

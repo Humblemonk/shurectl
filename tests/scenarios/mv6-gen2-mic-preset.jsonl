@@ -1,0 +1,13 @@
+{"scenario": "mv6-gen2-mic-preset", "models": ["mv6-gen2"], "modes": ["fake"]}
+{"click_on": "Preset:   "}
+{"expect": {"focus": "MicPreset", "no_packets": true}}
+{"key": "Enter"}
+{"key": "Enter"}
+{"expect": {"status": "Mic Preset → Speech", "set": {"feature": "MIC_PRESET", "value": "00"}}}
+{"key": "Enter"}
+{"expect": {"status": "Mic Preset → Singing", "set": {"feature": "MIC_PRESET", "value": "01"}}}
+{"key": "Enter"}
+{"expect": {"status": "Mic Preset → Instrument", "set": {"feature": "MIC_PRESET", "value": "03"}}}
+{"key": "Left"}
+{"key": "Right"}
+{"expect": {"no_packets": true, "status": "Mic Preset → Instrument"}}

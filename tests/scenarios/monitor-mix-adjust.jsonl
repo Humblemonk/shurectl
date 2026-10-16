@@ -1,0 +1,10 @@
+{"scenario": "monitor-mix-adjust", "models": "all"}
+{"click_on": "Monitor Mix"}
+{"expect": {"focus": "MonitorMix", "no_packets": true}}
+{"key": "Right", "repeat": 10}
+{"expect": {"status": "→ 10%", "status_is_error": false, "state": {"monitor_mix": 10}, "screen_contains": "10%"}}
+{"key": "Right", "repeat": 100}
+{"expect": {"status": "→ 100%", "state": {"monitor_mix": 100}}}
+{"key": "Left", "repeat": 100}
+{"key": "Left"}
+{"expect": {"status": "→ 0%", "state": {"monitor_mix": 0}}}

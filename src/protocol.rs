@@ -445,6 +445,10 @@ const RES_GET_FEAT: [u8; 3] = [0x03, 0x02, 0x02];
 const RES_SET_FEAT: [u8; 3] = [0x04, 0x02, 0x02];
 const RES_GET_LOCK: [u8; 3] = [0x03, 0x02, 0x01];
 const RES_SET_LOCK: [u8; 3] = [0x04, 0x02, 0x01];
+/// The CONFIRM ack the MV7+ and MVX2U Gen 2 send (see `reports_after_confirm()`).
+/// Only the fake device sends it; `parse_response()` ignores it like any CONFIRM reply.
+#[cfg(any(test, feature = "qa"))]
+const RES_CONFIRM_ACK: [u8; 3] = [0x09, 0x00, 0x00];
 
 // ── Feature addresses (2 bytes each) ─────────────────────────────────────────
 /// Config lock lives on page 0x00 with the identity strings, unlike the DSP
@@ -1610,6 +1614,202 @@ pub fn parse_response(buf: &[u8]) -> Option<Reply> {
     })
 }
 
+// ── Fake device wire support ──────────────────────────────────────────────────
+
+/// Request parsing and reply framing for the fake device in `fake_hid.rs`, so
+/// the byte layout stays in this file. Built only for tests and `--features qa`.
+#[cfg(any(test, feature = "qa"))]
+pub mod fake_wire {
+    use super::{
+        CMD_CONFIRM, CMD_GET_FEAT, CMD_GET_LOCK, CMD_SET_FEAT, CMD_SET_LOCK, DATA_START,
+        DeviceModel, HDR_CONSTANT, HDR_END, HEADER_MAGIC, PACKET_SIZE, PREFIX_OFFSET, REPORT_ID,
+        RES_CONFIRM_ACK, RES_GET_FEAT, RES_GET_LOCK, RES_SET_FEAT, RES_SET_LOCK, Reply,
+        build_packet, crc16_ansi, encode_lp_string,
+    };
+
+    /// The MVX2U Gen 2's ack to a SET, sent before the CONFIRM ack (checked on
+    /// hardware). `parse_response()` doesn't decode it. What follows the command
+    /// bytes is not captured; the fake sends the SET's prefix and address.
+    const RES_SET_ACK: [u8; 3] = [0x0a, 0x02, 0x02];
+
+    /// The header byte `build_packet_hdr0()` writes in place of `HDR_CONSTANT`.
+    const HDR_ZERO: u8 = 0x00;
+
+    /// The two command classes. A GET and a SET of one setting share a class.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Class {
+        Feature,
+        Lock,
+    }
+
+    /// Where a request points: its class, then the prefix byte and the 2-byte
+    /// feature address exactly as the request carries them.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Key {
+        pub class: Class,
+        pub addr: [u8; 3],
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Request {
+        Get(Key),
+        Set(Key, Vec<u8>),
+        Confirm,
+    }
+
+    /// The header byte a packet was built with: `build_packet()` or
+    /// `build_packet_hdr0()`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Framing {
+        Standard,
+        Hdr0,
+    }
+
+    /// One parsed host packet, with the framing and sequence byte it carried.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Parsed {
+        pub request: Request,
+        pub framing: Framing,
+        pub seq: u8,
+    }
+
+    /// The framing a SET must use on `model`, given the framing of the
+    /// constructor that builds it for the other binary models. Every MV7+ SET
+    /// uses `build_packet_hdr0()` (MOTIV capture, firmware 1.6); elsewhere the
+    /// constructor decides (Mic and Playback Level, the mute button and factory
+    /// reset use it too).
+    pub fn set_framing(model: DeviceModel, constructor: Framing) -> Framing {
+        match model {
+            DeviceModel::Mv7Plus => Framing::Hdr0,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => constructor,
+        }
+    }
+
+    /// The framing every GET and CONFIRM uses.
+    pub const QUERY_FRAMING: Framing = Framing::Standard;
+
+    /// Parse one host packet. `None` unless it is a well-formed 64-byte packet
+    /// with a valid CRC, one of the two header bytes and a known command.
+    /// Whether that header byte is the right one for the command, and the
+    /// sequence byte the next one, is for the caller to check.
+    pub fn parse_request(buf: &[u8]) -> Option<Parsed> {
+        if buf.len() != PACKET_SIZE || buf[0] != REPORT_ID || buf[2..4] != HEADER_MAGIC {
+            return None;
+        }
+        let framing = match buf[5] {
+            HDR_CONSTANT => Framing::Standard,
+            HDR_ZERO => Framing::Hdr0,
+            _ => return None,
+        };
+        let seq = buf[4];
+        let request = parse_command(buf)?;
+        Some(Parsed {
+            request,
+            framing,
+            seq,
+        })
+    }
+
+    fn parse_command(buf: &[u8]) -> Option<Request> {
+        let contents_end = usize::from(buf[1]);
+        if contents_end < PREFIX_OFFSET || contents_end + 2 > buf.len() {
+            return None;
+        }
+        let crc = u16::from_be_bytes([buf[contents_end], buf[contents_end + 1]]);
+        let data_len = usize::from(buf[7]);
+        if crc != crc16_ansi(&buf[2..contents_end])
+            || buf[6] != HDR_END
+            || buf[8] != DATA_START
+            || buf[9] != buf[7]
+            || data_len + 8 != contents_end
+        {
+            return None;
+        }
+        let cmd: [u8; 3] = buf[10..PREFIX_OFFSET].try_into().ok()?;
+        if cmd == CMD_CONFIRM {
+            return (contents_end == PREFIX_OFFSET).then_some(Request::Confirm);
+        }
+        let addr: [u8; 3] = buf.get(PREFIX_OFFSET..PREFIX_OFFSET + 3)?.try_into().ok()?;
+        if contents_end < PREFIX_OFFSET + 3 {
+            return None;
+        }
+        let value = buf[PREFIX_OFFSET + 3..contents_end].to_vec();
+        let key = |class| Key { class, addr };
+        match cmd {
+            c if c == CMD_GET_FEAT && value.is_empty() => Some(Request::Get(key(Class::Feature))),
+            c if c == CMD_GET_LOCK && value.is_empty() => Some(Request::Get(key(Class::Lock))),
+            c if c == CMD_SET_FEAT => Some(Request::Set(key(Class::Feature), value)),
+            c if c == CMD_SET_LOCK => Some(Request::Set(key(Class::Lock), value)),
+            _ => None,
+        }
+    }
+
+    /// A GET reply carrying `value`, echoing the request's sequence byte,
+    /// prefix and address.
+    pub fn reply(seq: u8, key: Key, value: &[u8]) -> Vec<u8> {
+        let cmd = match key.class {
+            Class::Feature => RES_GET_FEAT,
+            Class::Lock => RES_GET_LOCK,
+        };
+        let mut payload = key.addr.to_vec();
+        payload.extend_from_slice(value);
+        build_packet(seq, &cmd, &payload)
+    }
+
+    /// The unsolicited reports a binary model sends after a CONFIRM, in order,
+    /// for the SET it confirmed (`None` for a CONFIRM with no SET before it).
+    /// `DeviceModel::reports_after_confirm()` says how many `send_set()` reads.
+    ///
+    /// - MV7+ (checked on hardware): the CONFIRM ack (`09 00 00`), then an echo
+    ///   of the SET (`04 02 02` and its address; `04 02 01` for the lock class).
+    ///   The fake assumes the echo carries the SET's value too. It parses as a
+    ///   reply, so an echo left unread is decoded by a later GET.
+    /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`), then the
+    ///   CONFIRM ack.
+    /// - MVX2U Gen 1, MV6 and MV6 Gen 2: unchecked; the fake assumes the MV7+
+    ///   order, the one a readback can misread.
+    /// - MV7: no binary acks.
+    pub fn acks_after_confirm(model: DeviceModel, set: Option<(Key, &[u8])>) -> Vec<Vec<u8>> {
+        let confirm = build_packet(0, &RES_CONFIRM_ACK, &[]);
+        let Some((key, value)) = set else {
+            return vec![confirm];
+        };
+        let mut payload = key.addr.to_vec();
+        match model {
+            DeviceModel::Mvx2uGen2 => {
+                vec![build_packet(0, &RES_SET_ACK, &payload), confirm]
+            }
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => {
+                let echo = match key.class {
+                    Class::Feature => RES_SET_FEAT,
+                    Class::Lock => RES_SET_LOCK,
+                };
+                payload.extend_from_slice(value);
+                vec![confirm, build_packet(0, &echo, &payload)]
+            }
+            DeviceModel::Mv7 => Vec::new(),
+        }
+    }
+
+    /// `value` as the device would hold it, decoded as if it were a GET reply.
+    pub fn as_reply(key: Key, value: &[u8]) -> Reply {
+        Reply {
+            prefix: key.addr[0],
+            feat: [key.addr[1], key.addr[2]],
+            value: value.to_vec(),
+        }
+    }
+
+    /// An identity string (firmware version, serial) as its GET reply carries it.
+    pub fn lp_string(text: &str) -> Vec<u8> {
+        encode_lp_string(text.as_bytes())
+    }
+}
+
 // ── Command constructors ──────────────────────────────────────────────────────
 
 /// Like `build_packet` but uses HDR_CONSTANT=0x00 instead of 0x03.
@@ -1908,12 +2108,19 @@ fn device_name_payload(name: &str) -> Vec<u8> {
         .take(DEVICE_NAME_MAX_LEN)
         .map(|c| c as u8)
         .collect();
-    // At most 2 + DEVICE_NAME_MAX_LEN, so it always fits a u16.
-    let len = (2 + ascii.len()) as u16;
     let mut payload = vec![0x00, FEAT_DEVICE_NAME[0], FEAT_DEVICE_NAME[1]];
-    payload.extend_from_slice(&len.to_be_bytes());
-    payload.extend_from_slice(&ascii);
+    payload.extend_from_slice(&encode_lp_string(&ascii));
     payload
+}
+
+/// The inverse of `decode_lp_string()`: `[len_hi, len_lo, bytes…]`, where the
+/// length counts itself. Callers keep `text` short (at most a device name or an
+/// identity string), so the length always fits a u16.
+fn encode_lp_string(text: &[u8]) -> Vec<u8> {
+    let len = (2 + text.len()) as u16;
+    let mut value = len.to_be_bytes().to_vec();
+    value.extend_from_slice(text);
+    value
 }
 
 /// Build a GET packet for the firmware version string (e.g. "1.2.0.6").
@@ -3118,6 +3325,139 @@ pub mod mv7_text {
                 }
             }
             _ => false,
+        }
+    }
+
+    /// A stand-in for the MV7 command shell, for the fake device in `fake_hid.rs`.
+    /// It answers the commands shurectl sends the way the protocol notes describe:
+    /// `name=value`, `block <id> <data>`, `[Failed]` for an unknown command or a
+    /// gain that changes nothing, and `Locked` for a gain in Auto Level. It does
+    /// not model the side effects of `dspMode` (EQ and compressor resets).
+    #[cfg(any(test, feature = "qa"))]
+    pub mod shell {
+        use std::collections::BTreeMap;
+
+        use super::{
+            BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_MONITOR_MIX, BLOCK_REPLY, DIM_MODE, DSP_MODE,
+            DSP_MODE_MANUAL, DSP_MODE_MAX, FAILED_REPLY, FW_VERSION, GAIN_UNIT, GET_BLOCK,
+            INPUT_GAIN, LOCK, LOCKED_REPLY, METER_MODE, MIC_MUTE, OFF, ON, SERIAL_NUM, SET_BLOCK,
+            parse_gain, set_compressor, set_dsp_mode, set_eq, set_gain, set_live_meter, set_lock,
+            set_monitor_mix, set_mute, set_night_mode, snap_gain,
+        };
+        use crate::protocol::DeviceState;
+
+        pub struct Shell {
+            /// Reply values by command name (`micMute`) or block (`block 19`).
+            values: BTreeMap<String, String>,
+        }
+
+        impl Shell {
+            /// A shell holding `state`, stored through the same SET commands
+            /// `device.rs` sends.
+            pub fn new(state: &DeviceState) -> Self {
+                let mut shell = Self {
+                    values: BTreeMap::new(),
+                };
+                for command in [
+                    set_mute(state.muted),
+                    set_gain(state.gain_tenths),
+                    set_dsp_mode(state.mode, state.auto_position, state.auto_tone),
+                    set_lock(state.locked),
+                    set_live_meter(state.led_live_meter),
+                    set_night_mode(state.led_night_mode),
+                    set_compressor(state.compressor),
+                    set_eq(state.eq_preset),
+                    set_monitor_mix(state.monitor_mix),
+                ] {
+                    shell.store(&command.line);
+                }
+                shell
+                    .values
+                    .insert(FW_VERSION.into(), state.firmware_version.clone());
+                shell
+                    .values
+                    .insert(SERIAL_NUM.into(), state.factory_serial.clone());
+                shell
+            }
+
+            /// Store a SET line without the checks `answer()` makes.
+            fn store(&mut self, line: &str) {
+                // Seeding a locked Auto Level state must still store the gain.
+                let mode = self.values.remove(DSP_MODE);
+                self.answer(line);
+                if let Some(mode) = mode {
+                    self.values.entry(DSP_MODE.into()).or_insert(mode);
+                }
+            }
+
+            /// The reply line to one command line (without its newline).
+            pub fn answer(&mut self, line: &str) -> String {
+                let (name, arg) = match line.split_once(' ') {
+                    Some((name, arg)) => (name, Some(arg)),
+                    None => (line, None),
+                };
+                match (name, arg) {
+                    (GET_BLOCK, Some(id)) => self.block_reply(id),
+                    (SET_BLOCK, Some(arg)) => match arg.split_once(' ') {
+                        Some((id, data))
+                            if [BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_MONITOR_MIX].contains(&id) =>
+                        {
+                            self.values
+                                .insert(format!("{BLOCK_REPLY} {id}"), data.into());
+                            self.block_reply(id)
+                        }
+                        // setBlock with unmapped data is not safe on hardware.
+                        _ => FAILED_REPLY.into(),
+                    },
+                    (name, None) => match self.values.get(name) {
+                        Some(value) => format!("{name}={value}"),
+                        None => FAILED_REPLY.into(),
+                    },
+                    (INPUT_GAIN, Some(value)) => self.set_gain(value),
+                    (DSP_MODE, Some(value)) => match value.parse::<u8>() {
+                        Ok(number) if (DSP_MODE_MANUAL..=DSP_MODE_MAX).contains(&number) => {
+                            self.set_value(DSP_MODE, value)
+                        }
+                        _ => FAILED_REPLY.into(),
+                    },
+                    (MIC_MUTE | LOCK | METER_MODE | DIM_MODE, Some(value @ (ON | OFF))) => {
+                        self.set_value(name, value)
+                    }
+                    (_, Some(_)) => FAILED_REPLY.into(),
+                }
+            }
+
+            fn set_value(&mut self, name: &str, value: &str) -> String {
+                self.values.insert(name.into(), value.into());
+                format!("{name}={value}")
+            }
+
+            fn block_reply(&self, id: &str) -> String {
+                match self.values.get(&format!("{BLOCK_REPLY} {id}")) {
+                    Some(data) => format!("{BLOCK_REPLY} {id} {data}"),
+                    None => FAILED_REPLY.into(),
+                }
+            }
+
+            fn set_gain(&mut self, value: &str) -> String {
+                let Some(gain_tenths) = parse_gain(&format!("{value}{GAIN_UNIT}")) else {
+                    return FAILED_REPLY.into();
+                };
+                let manual = self
+                    .values
+                    .get(DSP_MODE)
+                    .and_then(|mode| mode.parse::<u8>().ok())
+                    .is_none_or(|mode| mode == DSP_MODE_MANUAL);
+                if !manual {
+                    return LOCKED_REPLY.into();
+                }
+                let snapped = snap_gain(gain_tenths);
+                let reply = format!("{}.{}0{GAIN_UNIT}", snapped / 10, snapped % 10);
+                if self.values.get(INPUT_GAIN) == Some(&reply) {
+                    return FAILED_REPLY.into();
+                }
+                self.set_value(INPUT_GAIN, &reply)
+            }
         }
     }
 

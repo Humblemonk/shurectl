@@ -1,0 +1,19 @@
+{"scenario": "preset-name-edit", "models": "all"}
+{"click_on": "Presets"}
+{"key": "s"}
+{"key": "Enter"}
+{"expect": {"editing": true}}
+{"key": "Backspace", "repeat": 8}
+{"type": "Quiet q"}
+{"key": "c", "mods": "ctrl"}
+{"expect": {"editing": true, "quit": false, "screen_contains": "Quiet q"}}
+{"key": "Enter"}
+{"expect": {"editing": false, "status": "Renamed to \"Quiet q\".", "screen_contains": "Quiet q", "no_packets": true}}
+{"key": "Enter"}
+{"type": "xyz"}
+{"key": "Esc"}
+{"expect": {"editing": false, "screen_contains": "Quiet q", "screen_not_contains": "Quiet qxyz"}}
+{"key": "Enter"}
+{"type": "abc"}
+{"click_on": "Info"}
+{"expect": {"editing": false, "tab": "Presets", "screen_not_contains": "Quiet qabc"}}

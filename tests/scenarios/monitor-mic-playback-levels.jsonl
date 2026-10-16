@@ -1,0 +1,11 @@
+{"scenario": "monitor-mic-playback-levels", "models": ["mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"click_on": "Mic Level"}
+{"expect": {"focus": "MonitorMix", "no_packets": true}}
+{"key": "Right"}
+{"expect": {"status": "Mic Level → 1%", "set": {"feature": "MIC_LEVEL", "value": 1}, "state": {"monitor_mix": 1}}}
+{"click_on": "Playback Level"}
+{"expect": {"focus": "PlaybackMix", "no_packets": true}}
+{"key": "Right", "repeat": 25}
+{"expect": {"status": "Playback Level → 25%", "set": {"feature": "PLAYBACK_LEVEL", "value": 25}, "state": {"playback_mix": 25, "monitor_mix": 1}}}
+{"key": "Left", "repeat": 30}
+{"expect": {"status": "Playback Level → 0%", "state": {"playback_mix": 0}}}

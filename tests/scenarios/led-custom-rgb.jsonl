@@ -1,0 +1,25 @@
+{"scenario": "led-custom-rgb", "models": ["mv7plus"]}
+{"click_on": "LED"}
+{"expect": {"focus": "LedBehavior"}}
+{"key": "Enter"}
+{"expect": {"status": "LED behavior → Pulsing", "set": {"feature": "LED_BEHAVIOR", "value": "Pulsing"}}}
+{"key": "Down", "repeat": 2}
+{"key": "Down"}
+{"expect": {"focus": "LedBehavior"}}
+{"key": "Down", "repeat": 2}
+{"key": "Enter"}
+{"expect": {"focus": "LedTheme", "status": "LED pulsing theme → Custom", "set": "LED_PULSING_THEME"}}
+{"key": "Down"}
+{"expect": {"focus": "LedPulsingR"}}
+{"key": "Right"}
+{"expect": {"status": "LED pulsing color → #113FFB", "set": {"feature": "LED_PULSING_COLOR", "value": [17, 63, 251]}}}
+{"key": "Down", "repeat": 2}
+{"key": "Right", "repeat": 10}
+{"expect": {"focus": "LedPulsingB", "state": {"led_pulsing_rgb": [17, 63, 255]}}}
+{"key": "Down"}
+{"expect": {"focus": "LedBehavior"}}
+{"key": "Down", "repeat": 2}
+{"key": "Enter"}
+{"expect": {"status": "LED pulsing theme → Shure"}}
+{"key": "Down"}
+{"expect": {"focus": "LedBehavior"}}
