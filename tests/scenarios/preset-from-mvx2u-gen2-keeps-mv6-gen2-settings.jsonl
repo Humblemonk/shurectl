@@ -1,0 +1,12 @@
+{"scenario": "preset-from-mvx2u-gen2-keeps-mv6-gen2-settings", "models": ["mv6-gen2"], "modes": ["fake"]}
+{"click_on": "Dynamics"}
+{"key": "Enter"}
+{"key": "Right", "repeat": 30}
+{"key": "Down", "repeat": 2}
+{"key": "Enter"}
+{"expect": {"focus": "MuteBtnDisable", "state": {"denoiser_enabled": true, "denoiser_level": 80, "mute_btn_disabled": true}}}
+{"preset_dir": "fixtures/presets-mvx2u-gen2"}
+{"click_on": "Presets"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"status": "Loaded \"MVX2U Gen 2 Voice\".", "state": {"denoiser_enabled": false, "denoiser_level": 80, "mute_btn_disabled": true}}}

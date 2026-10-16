@@ -1,0 +1,8 @@
+{"scenario": "write-failed-keeps-screen", "models": "all", "modes": ["fake"]}
+{"key": "Down"}
+{"device": {"fail_io": true}}
+{"key": "Enter"}
+{"expect": {"focus": "Mute", "connected": false, "status_is_error": true, "state": {"muted": false}, "screen_not_contains": "● ON"}}
+{"key": "Down"}
+{"key": "Right"}
+{"expect": {"focus": "Gain", "connected": false, "state": {"gain_tenths": 240}, "screen_contains": "24 dB"}}

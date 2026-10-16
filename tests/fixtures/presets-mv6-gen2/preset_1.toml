@@ -1,0 +1,39 @@
+# Saved on the MV6 Gen 2 by shurectl 2.13.1, which saves only the settings the model has
+# (no Limiter or Compressor). Loading it elsewhere must keep those.
+name = "MV6 Gen 2 Voice"
+gain_db = 24.0
+mode = "manual"
+muted = false
+monitor_mix = 0
+monitor_mix_is_mic_level = true
+playback_mix = 0
+hpf = "off"
+auto_gain = "normal"
+denoiser_enabled = false
+popper_stopper_enabled = true
+mute_btn_disabled = false
+tone = 0
+mv6_gain_locked = false
+adaptation_rate_fast = false
+denoiser_level = 50
+tone_advanced = false
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0

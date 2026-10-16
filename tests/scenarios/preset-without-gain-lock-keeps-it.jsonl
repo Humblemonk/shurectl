@@ -1,0 +1,9 @@
+{"scenario": "preset-without-gain-lock-keeps-it", "models": ["mv6", "mv6-gen2", "mvx2u-gen2"], "modes": ["fake"]}
+{"key": "Down", "repeat": 3}
+{"key": "Enter"}
+{"expect": {"focus": "GainLock", "state": {"mv6_gain_locked": true}}}
+{"preset_dir": "fixtures/presets-mv7plus"}
+{"click_on": "Presets"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"status": "Loaded \"MV7+ Voice\".", "sets": [{"feature": "GAIN_LOCK", "value": false}, {"feature": "GAIN", "value": 240}, {"feature": "GAIN_LOCK", "value": true}], "state": {"mv6_gain_locked": true}}}
