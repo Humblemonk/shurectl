@@ -189,7 +189,8 @@ mod tests {
         terminal
             .draw(|frame| hits = crate::ui::draw(frame, app))
             .unwrap();
-        let rows = if tab_row_only { 3..4 } else { 6..50 };
+        // Row 0 is the header, row 1 the tabs, and the tab content starts below.
+        let rows = if tab_row_only { 1..2 } else { 2..50 };
         let Some((column, row)) = find_label(terminal.backend().buffer(), label, rows) else {
             panic!("label not rendered: {label}");
         };

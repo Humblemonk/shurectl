@@ -403,7 +403,11 @@ fn run_event_loop(
 
     loop {
         let mut hits = mouse::HitMap::default();
-        terminal.draw(|f| hits = ui::draw(f, app))?;
+        let mut fits = true;
+        terminal.draw(|f| {
+            fits = ui::fits(f.area());
+            hits = ui::draw(f, app);
+        })?;
 
         let timeout = if pending_scroll.is_some() {
             Duration::ZERO
@@ -424,6 +428,11 @@ fn run_event_loop(
                 })
             );
             let action = match event {
+                // The too-small notice hides what a key would change, so only quit.
+                Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
+                    app.should_quit = is_quit_key(key.code, key.modifiers);
+                    None
+                }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.armed_preset_action = None;
                     handle_key(app, key.code, key.modifiers)
@@ -501,6 +510,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     }
 }
 
+/// The keys that quit: `q` and Ctrl+C.
+fn is_quit_key(code: KeyCode, mods: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
+        || (code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL))
+}
+
 /// The action a key asks for, after applying its UI-only effects.
 fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {
     // ── Preset or device name editing mode ────────────────────────────────────
@@ -551,9 +566,7 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         return None;
     }
 
-    if matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
-        || (code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL))
-    {
+    if is_quit_key(code, mods) {
         app.should_quit = true;
         return None;
     }

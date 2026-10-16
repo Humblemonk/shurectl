@@ -43,6 +43,11 @@ ON/OFF/Enabled for anything but the mute state itself: the mute-button setting r
 "Pressing it: Works / Ignored" (`mute_btn_span()`). Card descriptions are one sentence that
 wraps; don't break lines by hand.
 
-**Size.** Check a new block at 120x40 (the golden size) and 80x24. Main's left column has fixed
-block heights, and the MVX2U Gen 2 and MV6 Gen 2 Manual Main already need 23 rows of the 18
-that 80x24 leaves, so it squashes blocks there.
+**Size.** Every screen of every model fits 80x24 (`MIN_SIZE`, btop's minimum); below it `draw()`
+shows only btop's "Terminal size too small" notice. Check a new block at 120x40 (the golden size)
+and 80x24, where Main has 21 content rows and its left column 44 inner columns; the MVX2U Gen 1
+Auto Main already uses all 21. Every control, value, warning and click target must show at 80x24.
+Only these may be left out: focus hints, which go through `with_hint()` so they drop whole; the
+status bar's full hint (it falls back to `[?] Help  [q] Quit`); and the Info tab's Capabilities
+list. `every_screen_fits_the_min_size` checks all of this. Dynamics cards go through
+`draw_card_grid()`, which wraps them onto more rows rather than clip a title.
