@@ -18,22 +18,23 @@ cargo run -- --demo mv7plus     # no hardware; also mvx2u, mvx2u-gen2, mv6, mv6-
 cargo run -- --list             # list connected devices
 ```
 
-**Verification gate** — run before calling any change complete (`mise run check` runs the same):
+**Verification gate** — run before calling any change complete. CI runs the same script:
 
 ```
-cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --features probe,qa \
-  && cargo fmt --check && cargo test && cargo test --features qa --test e2e
+scripts/check.sh
 ```
 
-- `--features probe` is required; otherwise clippy skips `shurectl-probe`. `qa` builds the
-  `--qa` harness; it never ships (see **Testing**).
+- It runs clippy, `cargo build --all-targets`, `cargo fmt --check`, `cargo test` and the
+  end-to-end scenarios, and any warning fails it. Change the gate in the script, not in docs or CI.
+- `--features probe,qa` is required; otherwise clippy skips `shurectl-probe` and the `--qa`
+  harness. `qa` never ships (see **Testing**).
 - `cargo build --all-targets` catches dead imports in `#[cfg(test)]` code that clippy never
-  compiles. Read the `cargo test` output for warnings; don't just grep for `test result`.
+  compiles.
 - Clippy isn't run with `--all-targets` yet because of pre-existing
   `field_reassign_with_default` warnings in `app.rs` tests. Fold them into struct literals before tightening.
 - CI runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual). Check with
-  `npx jscpd -c .github/linters/.jscpd.json .` (or `mise run jscpd`). Fix duplication by
-  extending a shared helper; don't raise the threshold.
+  `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared helper;
+  don't raise the threshold.
 
 ## Architecture
 

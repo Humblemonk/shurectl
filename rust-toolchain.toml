@@ -1,0 +1,7 @@
+# The toolchain for development and CI; rustup reads it on every cargo call.
+# scripts/check.sh needs clippy and rustfmt. Cargo.toml's rust-version sets
+# the oldest Rust shurectl builds with.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

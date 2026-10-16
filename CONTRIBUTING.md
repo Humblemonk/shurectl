@@ -4,12 +4,9 @@
 
 ### Prerequisites
 
-- Rust (edition 2024)
+- Rust via [rustup](https://rustup.rs): `rust-toolchain.toml` selects stable with clippy and rustfmt
 - Linux: `libasound2-dev` and `libudev-dev`
 - A supported Shure device for hardware testing, or use `--demo` for UI-only work
-
-Optionally, [mise](https://mise.jdx.dev) installs the toolchain (Rust stable with clippy and
-rustfmt, plus Node and jscpd for the duplication check) from `mise.toml`: run `mise install`.
 
 ### Building
 
@@ -21,18 +18,17 @@ cargo build
 
 ### Quality Gate
 
-All of the following must pass clean before any commit:
+This must pass before any commit. CI runs the same script on Linux and macOS:
 
 ```bash
-cargo clippy --features probe,qa -- -D warnings && cargo build --all-targets --features probe,qa \
-  && cargo fmt --check && cargo test && cargo test --features qa --test e2e
+scripts/check.sh
 ```
 
-With mise, `mise run check` runs the same gate and `mise run jscpd` the duplication check.
-
-The `--features probe` flag is required: `shurectl-probe` is feature-gated and would
-otherwise be skipped by clippy entirely. The `qa` feature builds the headless `--qa`
-harness that `tests/e2e.rs` drives; it is for maintainers and CI and never ships.
+It runs clippy, the build, `cargo fmt --check`, the unit tests and the end-to-end
+scenarios, and fails on any warning. It builds with `--features probe,qa`:
+`shurectl-probe` is feature-gated and would otherwise be skipped by clippy entirely. The
+`qa` feature builds the headless `--qa` harness that `tests/e2e.rs` drives; it is for
+maintainers and CI and never ships.
 
 There are no warnings — only requirements.
 
