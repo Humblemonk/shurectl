@@ -1,4 +1,4 @@
-{"scenario": "gain-adjust", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"scenario": "gain-adjust", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
 {"key": "Down"}
 {"key": "Down"}
 {"expect": {"focus": "Gain", "state": {"gain_tenths": 240}}}

@@ -1,4 +1,4 @@
-{"scenario": "gain-limits-60db", "models": ["mvx2u", "mvx2u-gen2"]}
+{"scenario": "gain-limits-60db", "models": ["mvx2u", "mvx2u-gen2"], "modes": ["fake"]}
 {"key": "Down", "repeat": 2}
 {"expect": {"focus": "Gain"}}
 {"key": "Right", "repeat": 40}

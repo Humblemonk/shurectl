@@ -1,4 +1,4 @@
-{"scenario": "mv7-lock-eq-compressor", "models": ["mv7"]}
+{"scenario": "mv7-lock-eq-compressor", "models": ["mv7"], "modes": ["fake"]}
 {"click_on": "Config Lock:"}
 {"key": "Enter"}
 {"expect": {"text_sent": "lock on", "state": {"locked": true}}}

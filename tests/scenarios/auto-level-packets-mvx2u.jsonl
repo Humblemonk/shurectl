@@ -1,4 +1,4 @@
-{"scenario": "auto-level-packets-mvx2u", "models": ["mvx2u"]}
+{"scenario": "auto-level-packets-mvx2u", "models": ["mvx2u"], "modes": ["fake"]}
 {"key": "Enter"}
 {"expect": {"set": {"feature": "MODE", "value": "Auto"}}}
 {"key": "Tab"}

@@ -1,4 +1,4 @@
-{"scenario": "nav-tab-order-hides-reverb-and-led", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2"]}
+{"scenario": "nav-tab-order-hides-reverb-and-led", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2"], "modes": ["fake"]}
 {"expect": {"screen_contains": "Main  │  EQ  │  Dynamics  │  Presets  │  Info", "screen_not_contains": ["Reverb", "LED  │"]}}
 {"key": "Tab"}
 {"expect": {"tab": "Eq"}}

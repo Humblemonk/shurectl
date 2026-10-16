@@ -1,4 +1,4 @@
-{"scenario": "eq-band-step-gen2", "models": ["mvx2u-gen2"]}
+{"scenario": "eq-band-step-gen2", "models": ["mvx2u-gen2"], "modes": ["fake"]}
 {"click_on": "EQ"}
 {"expect": {"focus": "EqBandSelect"}}
 {"click": [80, 12]}

@@ -1549,7 +1549,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     let (short_raw, long_raw) = if app.demo_mode {
         (METER_SILENT, METER_SILENT)
     } else {
-        let now = std::time::Instant::now();
+        let now = app.meter_clock.unwrap_or_else(std::time::Instant::now);
         match app.peak_window.try_lock() {
             Ok(pw) => (
                 pw.short.max(now).unwrap_or(METER_SILENT),

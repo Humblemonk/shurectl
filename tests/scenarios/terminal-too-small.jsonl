@@ -6,7 +6,7 @@
 {"key": "Right"}
 {"click": [10, 3]}
 {"wheel": "up", "at": [10, 6]}
-{"expect": {"focus": "Mode", "no_packets": true, "state": {"mode": "Manual", "muted": false, "gain_tenths": 240}}}
+{"expect": {"focus": "Mode", "no_packets": true, "state": {"muted": false}}}
 {"resize": [80, 23]}
 {"expect": {"fits": false}}
 {"resize": [80, 24]}

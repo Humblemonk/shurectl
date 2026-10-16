@@ -1,4 +1,4 @@
-{"scenario": "auto-level-position-tone", "models": ["mvx2u", "mv7"]}
+{"scenario": "auto-level-position-tone", "models": ["mvx2u", "mv7"], "modes": ["fake"]}
 {"key": "Enter"}
 {"expect": {"status": "Mode → Auto Level", "state": {"mode": "Auto"}, "screen_contains": "Auto Level Controls"}}
 {"key": "Tab"}

@@ -54,7 +54,14 @@ const MAX_PACKETS_PER_REPLY: usize = 200;
 
 /// Expectation keys that read the fake's packet log. In demo mode there is no
 /// device, so they are skipped rather than failed.
-const PACKET_KEYS: [&str; 5] = ["set", "sets", "get", "packets_raw", "text_sent"];
+const PACKET_KEYS: [&str; 6] = [
+    "set",
+    "sets",
+    "get",
+    "packets_raw",
+    "text_sent",
+    "no_packets",
+];
 
 /// A directory under the system temp dir, removed on drop. The preset files of
 /// one session live here, never in the user's config directory.
@@ -113,22 +120,23 @@ pub struct Harness {
 
 impl Harness {
     /// A session on `model`, with a fake device or (`fake` false) in demo mode.
-    /// Both start from `FakeDevice::seed_state()`, so one scenario runs the
-    /// same way in both.
+    /// The fake device starts from `FakeDevice::seed_state()` (Manual, 24 dB),
+    /// read back as the real app reads a device. Demo mode starts from
+    /// `DeviceState::default()` (36 dB), as `shurectl --demo` does.
     pub fn new(model: DeviceModel, fake: bool) -> Result<Self> {
         let fake = fake.then(|| FakeDevice::new(model));
         let device = fake.as_ref().map(FakeDevice::open);
+        let now = Instant::now();
         let mut app = App {
             demo_mode: device.is_none(),
             device_model: model,
-            device_state: FakeDevice::seed_state(model),
+            meter_clock: Some(now),
             ..App::default()
         };
         load_initial_state(&mut app, device.as_ref());
         let preset_dir = TempDir::new()?;
         presets::set_dir_override(Some(preset_dir.0.clone()));
         app.presets = presets::load_all_presets();
-        let now = Instant::now();
         let mut harness = Self {
             model,
             reply_cursor: fake.as_ref().map_or(0, FakeDevice::log_len),
@@ -248,6 +256,7 @@ impl Harness {
             let frame = FRAME.min(total - elapsed);
             elapsed += frame;
             self.now += frame;
+            self.app.meter_clock = Some(self.now);
             step(
                 &mut self.app,
                 &mut self.device,
@@ -385,7 +394,7 @@ impl Harness {
                     .as_f64()
                     .ok_or_else(|| anyhow!("\"meter\" takes dBFS"))?;
                 if let Ok(mut window) = self.app.peak_window.lock() {
-                    window.push(Instant::now(), (dbfs * 10.0).round() as i32);
+                    window.push(self.now, (dbfs * 10.0).round() as i32);
                 }
                 self.draw()
             }
@@ -443,9 +452,7 @@ impl Harness {
                 std::fs::copy(&path, self.preset_dir.0.join(name))?;
             }
         }
-        for (index, slot) in self.app.presets.iter_mut().enumerate() {
-            *slot = presets::load_preset(index)?;
-        }
+        self.app.presets = presets::load_all_presets();
         self.draw()
     }
 
@@ -838,19 +845,34 @@ impl Harness {
             .hits
             .regions()
             .iter()
-            .filter_map(|&(area, target)| match target {
-                Target::Control(focus) => Some((area, focus)),
+            .filter_map(|&(_, target)| match target {
+                Target::Control(focus) => Some(focus),
                 Target::Tab(_) | Target::PresetAction(..) => None,
             })
             .collect();
-        for (area, focus) in controls {
+        for focus in controls {
             if self.app.focus == focus {
                 continue;
             }
+            // Each click moves focus and redraws, which can move the regions, so
+            // look the control up in the hit map of the frame on screen now.
+            let target = Target::Control(focus);
+            let Some(area) = self
+                .hits
+                .regions()
+                .iter()
+                .find_map(|&(area, found)| (found == target).then_some(area))
+            else {
+                failures.push(format!(
+                    "click_targets: {focus:?} has no region once focus moved to {:?}",
+                    self.app.focus
+                ));
+                continue;
+            };
             let Some((x, y)) = area
                 .positions()
                 .map(|p| (p.x, p.y))
-                .find(|&(x, y)| self.hits.target_at(x, y) == Some(Target::Control(focus)))
+                .find(|&(x, y)| self.hits.target_at(x, y) == Some(target))
             else {
                 failures.push(format!(
                     "click_targets: {focus:?}'s region is covered by others"

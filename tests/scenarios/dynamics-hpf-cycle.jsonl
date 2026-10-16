@@ -1,4 +1,4 @@
-{"scenario": "dynamics-hpf-cycle", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"scenario": "dynamics-hpf-cycle", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
 {"click_on": "Dynamics"}
 {"click_on": "High-Pass Filter"}
 {"expect": {"focus": "Hpf", "no_packets": true}}

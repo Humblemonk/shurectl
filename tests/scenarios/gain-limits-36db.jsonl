@@ -1,4 +1,4 @@
-{"scenario": "gain-limits-36db", "models": ["mv6", "mv6-gen2", "mv7", "mv7plus"]}
+{"scenario": "gain-limits-36db", "models": ["mv6", "mv6-gen2", "mv7", "mv7plus"], "modes": ["fake"]}
 {"key": "Down", "repeat": 2}
 {"expect": {"focus": "Gain"}}
 {"key": "Right", "repeat": 20}

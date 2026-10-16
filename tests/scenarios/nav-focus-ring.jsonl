@@ -1,4 +1,4 @@
-{"scenario": "nav-focus-ring", "models": "all"}
+{"scenario": "nav-focus-ring", "models": "all", "modes": ["fake"]}
 {"expect": {"tab": "Main", "focus": "Mode"}}
 {"key": "Down"}
 {"expect": {"focus": "Mute"}}

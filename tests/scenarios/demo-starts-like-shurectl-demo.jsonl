@@ -1,0 +1,9 @@
+{"scenario": "demo-starts-like-shurectl-demo", "models": "all", "modes": ["demo"]}
+{"expect": {"tab": "Main", "focus": "Mode", "status": "Demo mode (", "status_is_error": false, "state": {"mode": "Auto", "gain_tenths": 360, "muted": false}, "screen_contains": ["[DEMO — no device]", "S/N: Unknown"]}}
+{"key": "Enter"}
+{"expect": {"status": "Mode → Manual", "state": {"mode": "Manual"}}}
+{"key": "Tab"}
+{"key": "BackTab", "mods": "shift"}
+{"expect": {"tab": "Main", "focus": "Gain", "screen_contains": "36 dB /"}}
+{"key": "Left"}
+{"expect": {"status": "Gain → 3", "screen_not_contains": "36 dB /"}}

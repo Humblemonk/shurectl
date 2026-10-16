@@ -1,0 +1,5 @@
+{"scenario": "mouse-click-targets-dynamics", "models": "all", "modes": ["fake"]}
+{"click_on": "Dynamics"}
+{"expect": {"tab": "Dynamics", "click_targets": true}}
+{"resize": [80, 24]}
+{"expect": {"click_targets": true, "no_packets": true}}

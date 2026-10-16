@@ -1,4 +1,4 @@
-{"scenario": "eq-band-step-clamp", "models": ["mvx2u", "mv6-gen2"]}
+{"scenario": "eq-band-step-clamp", "models": ["mvx2u", "mv6-gen2"], "modes": ["fake"]}
 {"click_on": "EQ"}
 {"key": "Enter"}
 {"key": "Down"}

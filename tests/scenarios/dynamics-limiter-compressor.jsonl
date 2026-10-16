@@ -1,4 +1,4 @@
-{"scenario": "dynamics-limiter-compressor", "models": ["mvx2u", "mvx2u-gen2", "mv7plus"]}
+{"scenario": "dynamics-limiter-compressor", "models": ["mvx2u", "mvx2u-gen2", "mv7plus"], "modes": ["fake"]}
 {"click_on": "Dynamics"}
 {"expect": {"focus": "Limiter"}}
 {"key": "Enter"}

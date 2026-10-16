@@ -1,4 +1,4 @@
-{"scenario": "gain-lock-blocks-gain", "models": ["mv6", "mv6-gen2", "mvx2u-gen2"]}
+{"scenario": "gain-lock-blocks-gain", "models": ["mv6", "mv6-gen2", "mvx2u-gen2"], "modes": ["fake"]}
 {"key": "Down"}
 {"key": "Down"}
 {"expect": {"focus": "Gain"}}

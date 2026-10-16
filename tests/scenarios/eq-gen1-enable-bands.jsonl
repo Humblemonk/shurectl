@@ -1,4 +1,4 @@
-{"scenario": "eq-gen1-enable-bands", "models": ["mvx2u"]}
+{"scenario": "eq-gen1-enable-bands", "models": ["mvx2u"], "modes": ["fake"]}
 {"click_on": "EQ"}
 {"expect": {"focus": "EqEnable", "screen_contains": "EQ:  ○ OFF"}}
 {"key": "Enter"}

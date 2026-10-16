@@ -1,4 +1,4 @@
-{"scenario": "mv6-gen2-mic-preset", "models": ["mv6-gen2"]}
+{"scenario": "mv6-gen2-mic-preset", "models": ["mv6-gen2"], "modes": ["fake"]}
 {"click_on": "Preset:   "}
 {"expect": {"focus": "MicPreset", "no_packets": true}}
 {"key": "Enter"}

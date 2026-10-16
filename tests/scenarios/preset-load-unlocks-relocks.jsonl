@@ -1,4 +1,4 @@
-{"scenario": "preset-load-unlocks-relocks", "models": ["mv6", "mv6-gen2", "mvx2u-gen2"]}
+{"scenario": "preset-load-unlocks-relocks", "models": ["mv6", "mv6-gen2", "mvx2u-gen2"], "modes": ["fake"]}
 {"key": "Down"}
 {"key": "Down"}
 {"key": "Down"}

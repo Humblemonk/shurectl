@@ -1,4 +1,4 @@
-{"scenario": "mv7-auto-level-dsp-mode", "models": ["mv7"]}
+{"scenario": "mv7-auto-level-dsp-mode", "models": ["mv7"], "modes": ["fake"]}
 {"key": "Enter"}
 {"expect": {"text_sent": "dspMode 02", "state": {"mode": "Auto"}}}
 {"key": "Tab"}
