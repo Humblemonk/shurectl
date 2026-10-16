@@ -186,6 +186,13 @@ pub fn fits(area: Rect) -> bool {
     area.width >= MIN_SIZE.0 && area.height >= MIN_SIZE.1
 }
 
+/// The version on the Info tab. Tests pin it, so a release bump doesn't change
+/// the golden renders.
+#[cfg(not(test))]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(test)]
+const VERSION: &str = "0.0.0";
+
 /// Entry point called once per frame from main.
 pub fn draw(frame: &mut Frame, app: &App) -> HitMap {
     if fits(frame.area()) {
@@ -3221,11 +3228,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            concat!(
-                "  shurectl v",
-                env!("CARGO_PKG_VERSION"),
-                " — open-source Shure device configurator"
-            ),
+            format!("  shurectl v{VERSION} — open-source Shure device configurator"),
             Style::default().fg(C_DIM),
         )),
     ]);
