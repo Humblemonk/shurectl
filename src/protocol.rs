@@ -1621,10 +1621,19 @@ pub fn parse_response(buf: &[u8]) -> Option<Reply> {
 #[cfg(any(test, feature = "qa"))]
 pub mod fake_wire {
     use super::{
-        CMD_CONFIRM, CMD_GET_FEAT, CMD_GET_LOCK, CMD_SET_FEAT, CMD_SET_LOCK, DATA_START, HDR_END,
-        HEADER_MAGIC, PACKET_SIZE, PREFIX_OFFSET, REPORT_ID, RES_CONFIRM_ACK, RES_GET_FEAT,
-        RES_GET_LOCK, Reply, build_packet, crc16_ansi, encode_lp_string,
+        CMD_CONFIRM, CMD_GET_FEAT, CMD_GET_LOCK, CMD_SET_FEAT, CMD_SET_LOCK, DATA_START,
+        DeviceModel, HDR_CONSTANT, HDR_END, HEADER_MAGIC, PACKET_SIZE, PREFIX_OFFSET, REPORT_ID,
+        RES_CONFIRM_ACK, RES_GET_FEAT, RES_GET_LOCK, RES_SET_FEAT, RES_SET_LOCK, Reply,
+        build_packet, crc16_ansi, encode_lp_string,
     };
+
+    /// The MVX2U Gen 2's ack to a SET, sent before the CONFIRM ack (checked on
+    /// hardware). `parse_response()` doesn't decode it. What follows the command
+    /// bytes is not captured; the fake sends the SET's prefix and address.
+    const RES_SET_ACK: [u8; 3] = [0x0a, 0x02, 0x02];
+
+    /// The header byte `build_packet_hdr0()` writes in place of `HDR_CONSTANT`.
+    const HDR_ZERO: u8 = 0x00;
 
     /// The two command classes. A GET and a SET of one setting share a class.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1648,12 +1657,64 @@ pub mod fake_wire {
         Confirm,
     }
 
+    /// The header byte a packet was built with: `build_packet()` or
+    /// `build_packet_hdr0()`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Framing {
+        Standard,
+        Hdr0,
+    }
+
+    /// One parsed host packet, with the framing and sequence byte it carried.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Parsed {
+        pub request: Request,
+        pub framing: Framing,
+        pub seq: u8,
+    }
+
+    /// The framing a SET must use on `model`, given the framing of the
+    /// constructor that builds it for the other binary models. Every MV7+ SET
+    /// uses `build_packet_hdr0()` (MOTIV capture, firmware 1.6); elsewhere the
+    /// constructor decides (Mic and Playback Level, the mute button and factory
+    /// reset use it too).
+    pub fn set_framing(model: DeviceModel, constructor: Framing) -> Framing {
+        match model {
+            DeviceModel::Mv7Plus => Framing::Hdr0,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => constructor,
+        }
+    }
+
+    /// The framing every GET and CONFIRM uses.
+    pub const QUERY_FRAMING: Framing = Framing::Standard;
+
     /// Parse one host packet. `None` unless it is a well-formed 64-byte packet
-    /// with a valid CRC and a known command.
-    pub fn parse_request(buf: &[u8]) -> Option<Request> {
+    /// with a valid CRC, one of the two header bytes and a known command.
+    /// Whether that header byte is the right one for the command, and the
+    /// sequence byte the next one, is for the caller to check.
+    pub fn parse_request(buf: &[u8]) -> Option<Parsed> {
         if buf.len() != PACKET_SIZE || buf[0] != REPORT_ID || buf[2..4] != HEADER_MAGIC {
             return None;
         }
+        let framing = match buf[5] {
+            HDR_CONSTANT => Framing::Standard,
+            HDR_ZERO => Framing::Hdr0,
+            _ => return None,
+        };
+        let seq = buf[4];
+        let request = parse_command(buf)?;
+        Some(Parsed {
+            request,
+            framing,
+            seq,
+        })
+    }
+
+    fn parse_command(buf: &[u8]) -> Option<Request> {
         let contents_end = usize::from(buf[1]);
         if contents_end < PREFIX_OFFSET || contents_end + 2 > buf.len() {
             return None;
@@ -1687,7 +1748,8 @@ pub mod fake_wire {
         }
     }
 
-    /// A GET reply carrying `value`, echoing the request's prefix and address.
+    /// A GET reply carrying `value`, echoing the request's sequence byte,
+    /// prefix and address.
     pub fn reply(seq: u8, key: Key, value: &[u8]) -> Vec<u8> {
         let cmd = match key.class {
             Class::Feature => RES_GET_FEAT,
@@ -1698,9 +1760,39 @@ pub mod fake_wire {
         build_packet(seq, &cmd, &payload)
     }
 
-    /// One unsolicited ack after a CONFIRM.
-    pub fn confirm_ack(seq: u8) -> Vec<u8> {
-        build_packet(seq, &RES_CONFIRM_ACK, &[])
+    /// The unsolicited reports a binary model sends after a CONFIRM, in order,
+    /// for the SET it confirmed (`None` for a CONFIRM with no SET before it).
+    /// `DeviceModel::reports_after_confirm()` says how many `send_set()` reads.
+    ///
+    /// - MV7+ (checked on hardware): the CONFIRM ack (`09 00 00`), then an echo
+    ///   of the SET (`04 02 02` and its address; `04 02 01` for the lock class).
+    ///   The fake assumes the echo carries the SET's value too. It parses as a
+    ///   reply, so an echo left unread is decoded by a later GET.
+    /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`), then the
+    ///   CONFIRM ack.
+    /// - MVX2U Gen 1, MV6 and MV6 Gen 2: unchecked; the fake assumes the MV7+
+    ///   order, the one a readback can misread.
+    /// - MV7: no binary acks.
+    pub fn acks_after_confirm(model: DeviceModel, set: Option<(Key, &[u8])>) -> Vec<Vec<u8>> {
+        let confirm = build_packet(0, &RES_CONFIRM_ACK, &[]);
+        let Some((key, value)) = set else {
+            return vec![confirm];
+        };
+        let mut payload = key.addr.to_vec();
+        match model {
+            DeviceModel::Mvx2uGen2 => {
+                vec![build_packet(0, &RES_SET_ACK, &payload), confirm]
+            }
+            DeviceModel::Mvx2u | DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => {
+                let echo = match key.class {
+                    Class::Feature => RES_SET_FEAT,
+                    Class::Lock => RES_SET_LOCK,
+                };
+                payload.extend_from_slice(value);
+                vec![confirm, build_packet(0, &echo, &payload)]
+            }
+            DeviceModel::Mv7 => Vec::new(),
+        }
     }
 
     /// `value` as the device would hold it, decoded as if it were a GET reply.

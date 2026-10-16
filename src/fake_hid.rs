@@ -9,12 +9,15 @@
 //! `protocol.rs`.
 //!
 //! Binary models: a SET is stored when its CONFIRM arrives, a GET is answered from
-//! the store, and each CONFIRM queues `reports_after_confirm()` acks. The MV7 runs
+//! the store, and each CONFIRM queues the acks `fake_wire::acks_after_confirm()`
+//! lists for the model, one of which parses as a reply on the MV7+. A packet with
+//! the wrong header byte for its command, or a sequence byte that doesn't follow
+//! the previous one on its handle, is refused. The MV7 runs
 //! `mv7_text::shell` instead. Faults (dropped or extra acks, failed I/O, refused
 //! commands, unplugging) give disconnect and readback-order tests something to
 //! bite on. Every packet received is logged, decoded by name.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -22,7 +25,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use crate::device::{Disconnected, HidTransport, ShureDevice};
-use crate::protocol::fake_wire::{self, Key, Request};
+use crate::protocol::fake_wire::{self, Framing, Key, Parsed, Request};
 use crate::protocol::{
     self, CompressorPreset, DeviceModel, DeviceState, HpfFrequency, InputMode, PACKET_SIZE,
     apply_reply, mv7_text,
@@ -108,6 +111,8 @@ type ReadOf = Box<dyn Fn(&DeviceState) -> Value>;
 struct Feature {
     name: String,
     key: Key,
+    /// The framing of the constructor the key came from; see `fake_wire::set_framing()`.
+    framing: Framing,
     /// The value bytes for a state, as a SET carries them and a GET reply returns them.
     value: ValueOf,
     /// The decoded value for the packet log. `None` where a reply can't be decoded
@@ -122,16 +127,25 @@ fn set_feature(
     set: impl Fn(&DeviceState) -> Vec<u8> + 'static,
     read: Option<fn(&DeviceState) -> Value>,
 ) -> Option<Feature> {
-    let Some(Request::Set(key, _)) = fake_wire::parse_request(&set(&DeviceState::default())) else {
+    let Some(Parsed {
+        request: Request::Set(key, _),
+        framing,
+        ..
+    }) = fake_wire::parse_request(&set(&DeviceState::default()))
+    else {
         return None;
     };
     let value = move |state: &DeviceState| match fake_wire::parse_request(&set(state)) {
-        Some(Request::Set(_, value)) => value,
-        Some(Request::Get(_) | Request::Confirm) | None => Vec::new(),
+        Some(Parsed {
+            request: Request::Set(_, value),
+            ..
+        }) => value,
+        Some(_) | None => Vec::new(),
     };
     Some(Feature {
         name: name.into(),
         key,
+        framing,
         value: Box::new(value),
         read: read.map(|read| Box::new(read) as ReadOf),
     })
@@ -155,7 +169,12 @@ fn string_feature(
     get: fn(u8) -> Vec<u8>,
     read: fn(&DeviceState) -> Value,
 ) -> Option<Feature> {
-    let Some(Request::Get(key)) = fake_wire::parse_request(&get(0)) else {
+    let Some(Parsed {
+        request: Request::Get(key),
+        framing,
+        ..
+    }) = fake_wire::parse_request(&get(0))
+    else {
         return None;
     };
     let value = move |state: &DeviceState| match read(state) {
@@ -165,6 +184,7 @@ fn string_feature(
     Some(Feature {
         name: name.into(),
         key,
+        framing,
         value: Box::new(value),
         read: Some(Box::new(read)),
     })
@@ -553,11 +573,43 @@ impl FakeState {
         });
     }
 
+    /// The framing `request` must arrive with, or `None` where the fake can't
+    /// tell (a SET to an address it doesn't know).
+    fn expected_framing(&self, request: &Request) -> Option<Framing> {
+        match request {
+            Request::Get(_) | Request::Confirm => Some(fake_wire::QUERY_FRAMING),
+            Request::Set(key, _) => self
+                .feature(*key)
+                .map(|feature| fake_wire::set_framing(self.model, feature.framing)),
+        }
+    }
+
     fn receive_binary(&mut self, packet: &[u8]) {
-        let Some(request) = fake_wire::parse_request(packet) else {
+        let Some(Parsed {
+            request,
+            framing,
+            seq,
+        }) = fake_wire::parse_request(packet)
+        else {
             self.refuse(packet, "not a well-formed packet");
             return;
         };
+        let factory_reset = fake_wire::parse_request(&protocol::cmd_factory_reset(0));
+        let is_factory_reset = factory_reset
+            .as_ref()
+            .is_some_and(|reset| reset.request == request);
+        let expected = if is_factory_reset {
+            factory_reset.map(|reset| reset.framing)
+        } else {
+            self.expected_framing(&request)
+        };
+        if let Some(expected) = expected.filter(|&expected| expected != framing) {
+            self.refuse(
+                packet,
+                &format!("framed {framing:?}, but {request:?} uses {expected:?} on this model"),
+            );
+            return;
+        }
         // Up to and including the CRC; the rest is zero padding.
         let raw = packet[..(usize::from(packet[1]) + 2).min(packet.len())].to_vec();
         match request {
@@ -573,15 +625,14 @@ impl FakeState {
                         addr: UNKNOWN_ADDR,
                         ..key
                     };
-                    self.input.push_back(fake_wire::reply(0, unknown, &[0x00]));
+                    self.input
+                        .push_back(fake_wire::reply(seq, unknown, &[0x00]));
                 } else if let Some(value) = self.store.get(&key) {
-                    self.input.push_back(fake_wire::reply(0, key, value));
+                    self.input.push_back(fake_wire::reply(seq, key, value));
                 }
             }
             Request::Set(key, value) => {
-                if Some(&Request::Set(key, value.clone()))
-                    == fake_wire::parse_request(&protocol::cmd_factory_reset(0)).as_ref()
-                {
+                if is_factory_reset {
                     self.log.push(Packet {
                         raw,
                         kind: PacketKind::Set {
@@ -612,20 +663,25 @@ impl FakeState {
                     raw,
                     kind: PacketKind::Confirm,
                 });
-                if let Some((key, value, index)) = self.pending_set.take() {
-                    let applied = !self.gain_locked_write(key);
+                let confirmed = self.pending_set.take();
+                if let Some((key, value, index)) = &confirmed {
+                    let applied = !self.gain_locked_write(*key);
                     if applied {
-                        self.store.insert(key, value);
+                        self.store.insert(*key, value.clone());
                     }
                     if let Some(Packet {
                         kind: PacketKind::Set { applied: flag, .. },
                         ..
-                    }) = self.log.get_mut(index)
+                    }) = self.log.get_mut(*index)
                     {
                         *flag = applied;
                     }
                 }
-                self.queue_acks();
+                self.queue_acks(
+                    confirmed
+                        .as_ref()
+                        .map(|(key, value, _)| (*key, value.as_slice())),
+                );
             }
         }
     }
@@ -643,15 +699,18 @@ impl FakeState {
             })
     }
 
-    fn queue_acks(&mut self) {
-        let mut acks = self.model.reports_after_confirm() + self.faults.extra_acks;
-        self.faults.extra_acks = 0;
-        let dropped = self.faults.drop_acks.min(acks);
-        self.faults.drop_acks -= dropped;
-        acks -= dropped;
-        for _ in 0..acks {
-            self.input.push_back(fake_wire::confirm_ack(0));
+    /// Queue the model's acks for a CONFIRM of `set`. A dropped ack leaves out
+    /// the last ones; an extra ack repeats the last.
+    fn queue_acks(&mut self, set: Option<(Key, &[u8])>) {
+        let mut acks = fake_wire::acks_after_confirm(self.model, set);
+        if let Some(last) = acks.last().cloned() {
+            acks.extend(std::iter::repeat_n(last, self.faults.extra_acks));
         }
+        self.faults.extra_acks = 0;
+        let dropped = self.faults.drop_acks.min(acks.len());
+        self.faults.drop_acks -= dropped;
+        acks.truncate(acks.len() - dropped);
+        self.input.extend(acks);
     }
 
     /// The device erases its settings and reboots: handles go stale and the
@@ -711,13 +770,7 @@ impl FakeDevice {
     /// A new `ShureDevice` handle on this fake, as `open()` would return.
     pub fn open(&self) -> ShureDevice {
         let generation = self.0.borrow().generation;
-        ShureDevice::with_transport(
-            self.model(),
-            Box::new(FakeHid {
-                state: Rc::clone(&self.0),
-                generation,
-            }),
-        )
+        ShureDevice::with_transport(self.model(), Box::new(FakeHid::new(&self.0, generation)))
     }
 
     pub fn unplug(&self) {
@@ -765,13 +818,41 @@ impl FakeDevice {
 pub struct FakeHid {
     state: Rc<RefCell<FakeState>>,
     generation: u32,
+    /// The sequence byte of the last binary packet written on this handle. The
+    /// next one must follow it (wrapping); the first may be anything.
+    last_seq: Cell<Option<u8>>,
+}
+
+impl FakeHid {
+    fn new(state: &Rc<RefCell<FakeState>>, generation: u32) -> Self {
+        Self {
+            state: Rc::clone(state),
+            generation,
+            last_seq: Cell::new(None),
+        }
+    }
 }
 
 impl HidTransport for FakeHid {
     fn write(&self, packet: &[u8]) -> Result<usize> {
         let mut state = self.state.borrow_mut();
         state.handle_ok(self.generation)?;
-        state.receive(packet);
+        let seq = (state.model != DeviceModel::Mv7)
+            .then(|| fake_wire::parse_request(packet))
+            .flatten()
+            .map(|parsed| parsed.seq);
+        let expected = self.last_seq.get().map(|last| last.wrapping_add(1));
+        match (seq, expected) {
+            (Some(seq), Some(expected)) if seq != expected => {
+                self.last_seq.set(Some(seq));
+                state.refuse(packet, &format!("sequence byte {seq}, expected {expected}"));
+            }
+            (Some(seq), _) => {
+                self.last_seq.set(Some(seq));
+                state.receive(packet);
+            }
+            (None, _) => state.receive(packet),
+        }
         Ok(packet.len())
     }
 
@@ -804,10 +885,7 @@ impl HidTransport for FakeHid {
         if !state.plugged || state.rebooting_polls > 0 {
             return Err(Disconnected(format!("{} not found", model.display_name())).into());
         }
-        Ok(Box::new(FakeHid {
-            state: Rc::clone(&self.state),
-            generation: state.generation,
-        }))
+        Ok(Box::new(FakeHid::new(&self.state, state.generation)))
     }
 }
 
@@ -939,17 +1017,117 @@ mod tests {
         }
     }
 
-    /// An extra ack is the 481dc76 bug: every later GET reads the reply before
-    /// its own. Replies route by address, so values still land, but the last
-    /// reply is left queued. The fake must be able to produce it.
+    /// Documents a known bug (481dc76's class), not intended behaviour: after
+    /// one ack too many, every later GET reads the reply before its own.
+    /// Replies route by address, so most values still land, but the last GET's
+    /// reply is never read and its field keeps `DeviceState::default()`. A fix
+    /// must flip these asserts, as it must the `readback-extra-ack-*` scenarios.
     #[test]
-    fn extra_ack_shifts_readback_by_one_reply() {
-        let fake = FakeDevice::new(DeviceModel::Mvx2uGen2);
+    fn extra_ack_loses_the_last_readback_field_known_bug() {
+        type Field = fn(&DeviceState) -> Value;
+        let cases: [(DeviceModel, &str, Field); 2] = [
+            (DeviceModel::Mvx2uGen2, "EQ band 5 gain", |s| {
+                json!(s.eq_bands[4].gain_db)
+            }),
+            (DeviceModel::Mv7Plus, "serial", |s| json!(s.factory_serial)),
+        ];
+        for (model, name, field) in cases {
+            let seeded = distinct_state(model);
+            let fake = FakeDevice::with_state(model, seeded.clone());
+            let device = fake.open();
+            fake.faults_mut(|f| f.extra_acks = 1);
+            device.set_mute(seeded.muted).expect("set mute");
+            let state = device.get_state().expect("readback").state;
+            assert_ne!(field(&seeded), field(&DeviceState::default()), "{model:?}");
+            assert_eq!(
+                field(&state),
+                field(&DeviceState::default()),
+                "{model:?}: the {name} reply was read after all"
+            );
+            assert_eq!(state.gain_tenths, seeded.gain_tenths, "{model:?}");
+            assert_eq!(fake.0.borrow().input.len(), 1, "{model:?}");
+        }
+    }
+
+    /// The acks each model sends after a CONFIRM (`fake_wire::acks_after_confirm`).
+    /// The MV7+ SET echo parses as a reply, so leaving it unread misplaces a
+    /// later GET's value rather than just delaying it; the Gen 2's don't parse.
+    #[test]
+    fn acks_after_confirm_match_the_hardware_order() {
+        let mute = |model| {
+            let fake = FakeDevice::new(model);
+            let key = fake.0.borrow().key_of("MUTE").expect("MUTE");
+            fake_wire::acks_after_confirm(model, Some((key, &[0x01])))
+        };
+        let parsed = |acks: &[Vec<u8>]| -> Vec<Option<protocol::Reply>> {
+            acks.iter()
+                .map(|ack| protocol::parse_response(ack))
+                .collect()
+        };
+        for model in [DeviceModel::Mv7Plus, DeviceModel::Mvx2uGen2] {
+            assert_eq!(
+                mute(model).len(),
+                model.reports_after_confirm(),
+                "{model:?}"
+            );
+        }
+        let echo = parsed(&mute(DeviceModel::Mv7Plus));
+        assert_eq!(echo[0], None, "the CONFIRM ack comes first");
+        let mut state = DeviceState::default();
+        let reply = echo[1].as_ref().expect("the SET echo parses as a reply");
+        assert!(apply_reply(reply, &mut state) && state.muted);
+        assert_eq!(parsed(&mute(DeviceModel::Mvx2uGen2)), vec![None, None]);
+    }
+
+    /// Every MV7+ SET uses the 0x00 header; the same SET with the standard one
+    /// matches the right address, so only the framing check catches it.
+    #[test]
+    fn a_set_with_the_wrong_framing_is_refused() {
+        let fake = FakeDevice::new(DeviceModel::Mv7Plus);
+        let transport = FakeHid::new(&fake.0, 0);
+        transport
+            .write(&protocol::cmd_set_mute(0, true))
+            .expect("write");
+        transport
+            .write(&protocol::cmd_set_mv7_mute(1, true))
+            .expect("write");
+        let log = fake.log_since(0);
+        assert!(matches!(log[0].kind, PacketKind::Refused { .. }));
+        assert!(matches!(&log[1].kind, PacketKind::Set { feature, .. } if feature == "MUTE"));
+
+        // The Mic Level SET takes the 0x00 header on every model that has it.
+        let fake = FakeDevice::new(DeviceModel::Mv6);
         let device = fake.open();
-        fake.faults_mut(|f| f.extra_acks = 1);
-        device.set_mute(true).expect("set mute");
-        device.get_state().expect("readback");
-        assert_eq!(fake.0.borrow().input.len(), 1);
+        device.set_monitor_mix(30).expect("mic level");
+        assert!(
+            fake.log_since(0)
+                .iter()
+                .all(|p| !matches!(p.kind, PacketKind::Refused { .. }))
+        );
+    }
+
+    #[test]
+    fn a_sequence_byte_out_of_order_is_refused() {
+        let fake = FakeDevice::new(DeviceModel::Mv6);
+        let transport = FakeHid::new(&fake.0, 0);
+        transport.write(&protocol::cmd_get_gain(7)).expect("write");
+        transport.write(&protocol::cmd_get_mute(8)).expect("write");
+        transport.write(&protocol::cmd_get_hpf(8)).expect("write");
+        transport.write(&protocol::cmd_get_mode(9)).expect("write");
+        let refused: Vec<bool> = fake
+            .log_since(0)
+            .iter()
+            .map(|p| matches!(p.kind, PacketKind::Refused { .. }))
+            .collect();
+        assert_eq!(refused, vec![false, false, true, false]);
+        // A new handle (a reopen) starts its own count.
+        FakeHid::new(&fake.0, 0)
+            .write(&protocol::cmd_get_gain(0))
+            .expect("write");
+        assert!(!matches!(
+            fake.log_since(4)[0].kind,
+            PacketKind::Refused { .. }
+        ));
     }
 
     #[test]
@@ -1010,10 +1188,7 @@ mod tests {
         let mut packet = protocol::cmd_get_gain(0);
         packet[14] ^= 0xFF;
         device.set_mute(true).expect("a good packet first");
-        let transport = FakeHid {
-            state: Rc::clone(&fake.0),
-            generation: 0,
-        };
+        let transport = FakeHid::new(&fake.0, 0);
         transport.write(&packet).expect("write");
         let log = fake.log_since(0);
         assert!(matches!(
