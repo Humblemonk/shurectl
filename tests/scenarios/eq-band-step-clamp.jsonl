@@ -1,0 +1,19 @@
+{"scenario": "eq-band-step-clamp", "models": ["mvx2u", "mv6-gen2"]}
+{"click_on": "EQ"}
+{"key": "Enter"}
+{"key": "Down"}
+{"expect": {"focus": "EqBandSelect"}}
+{"key": "Right", "repeat": 3}
+{"key": "Left"}
+{"key": "Right"}
+{"expect": {"no_packets": true, "screen_contains": "Band 4"}}
+{"click": [80, 12]}
+{"expect": {"focus": "EqGain(3)", "no_packets": true}}
+{"key": "Right"}
+{"expect": {"status": "EQ Band 4 → +2.0 dB", "set": "EQ_BAND_4_GAIN", "state": {"eq_band_gains": [0, 0, 0, 20, 0]}}}
+{"key": "Right", "repeat": 5}
+{"expect": {"status": "EQ Band 4 → +6.0 dB", "state": {"eq_band_gains": [0, 0, 0, 60, 0]}}}
+{"key": "Left", "repeat": 20}
+{"expect": {"status": "EQ Band 4 → -8.0 dB", "state": {"eq_band_gains": [0, 0, 0, -80, 0]}}}
+{"key": "f"}
+{"expect": {"status": "EQ flattened.", "sets": ["EQ_BAND_1_GAIN", "EQ_BAND_2_GAIN", "EQ_BAND_3_GAIN", "EQ_BAND_4_GAIN", "EQ_BAND_5_GAIN"], "state": {"eq_band_gains": [0, 0, 0, 0, 0]}}}

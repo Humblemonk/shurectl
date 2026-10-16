@@ -1,0 +1,8 @@
+{"scenario": "mv7-monitor-mix-block", "models": ["mv7"]}
+{"click_on": "Monitor Mix"}
+{"key": "Right", "repeat": 10}
+{"expect": {"status": "Monitor Mix → 10%", "text_sent": "setBlock 22 0000B845004026E7", "state": {"monitor_mix": 10}}}
+{"key": "Right", "repeat": 40}
+{"expect": {"status": "Monitor Mix → 50%", "text_sent": "setBlock 22 002026F3004026E7"}}
+{"key": "Right", "repeat": 50}
+{"expect": {"status": "Monitor Mix → 100%", "text_sent": "setBlock 22 002026F3000020C5"}}

@@ -1,0 +1,5 @@
+{"scenario": "info-tab-readback", "models": "all"}
+{"click_on": "Info"}
+{"expect": {"tab": "Info", "no_packets": true, "screen_contains": ["Device Information", "Manufacturer : Shure Inc.", "Serial No.   : FAKE0001", "Firmware     : 0.0.0-fake", "Capabilities"]}}
+{"key": "Tab"}
+{"expect": {"tab": "Main"}}

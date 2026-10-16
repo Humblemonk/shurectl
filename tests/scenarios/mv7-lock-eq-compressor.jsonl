@@ -1,0 +1,26 @@
+{"scenario": "mv7-lock-eq-compressor", "models": ["mv7"]}
+{"click_on": "Config Lock:"}
+{"key": "Enter"}
+{"expect": {"text_sent": "lock on", "state": {"locked": true}}}
+{"key": "Enter"}
+{"expect": {"text_sent": "lock off", "state": {"locked": false}}}
+{"click_on": "EQ"}
+{"expect": {"tab": "Eq", "focus": "EqPreset", "screen_contains": "▶ Flat"}}
+{"key": "Enter"}
+{"expect": {"status": "EQ → High Pass", "text_sent": "setBlock 31 00000001", "screen_contains": "▶ High Pass"}}
+{"key": "Enter"}
+{"expect": {"status": "EQ → Presence Boost", "text_sent": "setBlock 31 00000002"}}
+{"key": "Enter"}
+{"expect": {"status": "EQ → High Pass + Presence Boost", "text_sent": "setBlock 31 00000003"}}
+{"key": "Enter"}
+{"expect": {"status": "EQ → Flat", "text_sent": "setBlock 31 00000000"}}
+{"click_on": "Dynamics"}
+{"expect": {"tab": "Dynamics", "focus": "Compressor"}}
+{"key": "Enter"}
+{"expect": {"status": "Compressor → Light", "text_sent": "setBlock 19 00000001"}}
+{"key": "Enter"}
+{"expect": {"status": "Compressor → Medium", "text_sent": "setBlock 19 00000002"}}
+{"key": "Enter"}
+{"expect": {"status": "Compressor → Heavy", "text_sent": "setBlock 19 00000003"}}
+{"key": "Enter"}
+{"expect": {"status": "Compressor → Off", "text_sent": "setBlock 19 00000000", "state": {"compressor": "Off"}}}

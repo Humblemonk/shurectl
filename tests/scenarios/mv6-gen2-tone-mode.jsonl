@@ -1,0 +1,13 @@
+{"scenario": "mv6-gen2-tone-mode", "models": ["mv6-gen2"]}
+{"click_on": "EQ"}
+{"expect": {"focus": "ToneMode", "screen_contains": "Dark ◄", "screen_not_contains": "Band 5"}}
+{"key": "Enter"}
+{"expect": {"status": "Tone → Advanced (5-band EQ)", "set": {"feature": "TONE_MODE", "value": true}, "state": {"tone_advanced": true}, "screen_contains": ["Band 1", "Band 5", "Freq: 10k Hz"]}}
+{"key": "Down"}
+{"expect": {"focus": "EqBandSelect"}}
+{"key": "Up"}
+{"key": "Enter"}
+{"expect": {"focus": "ToneMode", "status": "Tone → Simple", "set": {"feature": "TONE_MODE", "value": false}, "state": {"tone_advanced": false}, "screen_not_contains": "Band 5"}}
+{"key": "Down"}
+{"key": "Right"}
+{"expect": {"focus": "Tone", "status": "Tone → 10% Bright", "set": {"feature": "TONE", "value": 1}}}

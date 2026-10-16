@@ -1,0 +1,11 @@
+{"scenario": "mv7-auto-level-dsp-mode", "models": ["mv7"]}
+{"key": "Enter"}
+{"expect": {"text_sent": "dspMode 02", "state": {"mode": "Auto"}}}
+{"key": "Tab"}
+{"key": "BackTab", "mods": "shift"}
+{"click_on": "Mic Position:"}
+{"key": "Enter"}
+{"expect": {"text_sent": "dspMode 05", "state": {"auto_position": "Far"}}}
+{"click_on": "Tone:  "}
+{"key": "Enter"}
+{"expect": {"text_sent": "dspMode 07", "state": {"auto_tone": "Bright"}}}

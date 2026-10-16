@@ -1,0 +1,17 @@
+{"scenario": "auto-level-packets-mvx2u", "models": ["mvx2u"]}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "MODE", "value": "Auto"}}}
+{"key": "Tab"}
+{"key": "BackTab", "mods": "shift"}
+{"click_on": "Mic Position:"}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "AUTO_POSITION", "value": "Far"}}}
+{"click_on": "Tone:  "}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "AUTO_TONE", "value": "Bright"}}}
+{"click_on": "Gain:  "}
+{"expect": {"focus": "AutoGain", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Auto Gain → Loud", "set": {"feature": "AUTO_GAIN", "value": "Loud"}, "state": {"auto_gain": "Loud"}}}
+{"key": "Enter"}
+{"expect": {"status": "Auto Gain → Quiet", "state": {"auto_gain": "Quiet"}}}

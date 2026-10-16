@@ -1,0 +1,10 @@
+{"scenario": "dynamics-hpf-cycle", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"]}
+{"click_on": "Dynamics"}
+{"click_on": "High-Pass Filter"}
+{"expect": {"focus": "Hpf", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "HPF → 75 Hz", "set": "HPF"}}
+{"key": "Enter"}
+{"expect": {"status": "HPF → 150 Hz", "set": "HPF"}}
+{"key": "Enter"}
+{"expect": {"status": "HPF → Off", "set": "HPF", "screen_contains": "▶ Off"}}

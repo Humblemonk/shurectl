@@ -1,0 +1,6 @@
+{"scenario": "config-lock-packets", "models": ["mvx2u"]}
+{"click_on": "Config Lock:"}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "LOCK", "value": true}}}
+{"key": "Space"}
+{"expect": {"set": {"feature": "LOCK", "value": false}}}

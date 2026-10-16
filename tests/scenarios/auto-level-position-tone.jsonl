@@ -1,0 +1,20 @@
+{"scenario": "auto-level-position-tone", "models": ["mvx2u", "mv7"]}
+{"key": "Enter"}
+{"expect": {"status": "Mode → Auto Level", "state": {"mode": "Auto"}, "screen_contains": "Auto Level Controls"}}
+{"key": "Tab"}
+{"key": "BackTab", "mods": "shift"}
+{"expect": {"tab": "Main", "focus": "Mode"}}
+{"click_on": "Mic Position:"}
+{"expect": {"focus": "AutoPosition", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Mic Position → Far", "state": {"auto_position": "Far", "mode": "Auto"}}}
+{"key": "Enter"}
+{"expect": {"status": "Mic Position → Near", "state": {"auto_position": "Near"}}}
+{"click_on": "Tone:  "}
+{"expect": {"focus": "AutoTone", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Tone → Bright", "state": {"auto_tone": "Bright"}}}
+{"key": "Enter"}
+{"expect": {"status": "Tone → Dark", "state": {"auto_tone": "Dark"}}}
+{"key": "Enter"}
+{"expect": {"status": "Tone → Natural", "state": {"auto_tone": "Natural"}}}

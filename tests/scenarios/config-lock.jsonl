@@ -1,0 +1,7 @@
+{"scenario": "config-lock", "models": ["mvx2u", "mv7"]}
+{"click_on": "Config Lock:"}
+{"expect": {"focus": "Lock", "no_packets": true, "screen_contains": "Config Lock:  Unlocked"}}
+{"key": "Enter"}
+{"expect": {"status": "Device locked.", "status_is_error": false, "state": {"locked": true}, "screen_contains": ["Config Lock:  LOCKED", "🔒"]}}
+{"key": "Enter"}
+{"expect": {"status": "Device unlocked.", "state": {"locked": false}, "screen_contains": "Config Lock:  Unlocked"}}

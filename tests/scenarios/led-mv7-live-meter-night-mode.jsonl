@@ -1,0 +1,10 @@
+{"scenario": "led-mv7-live-meter-night-mode", "models": ["mv7"]}
+{"click_on": "LED"}
+{"expect": {"tab": "Led", "focus": "LedLiveMeter"}}
+{"key": "Enter"}
+{"expect": {"status": "Live Meter → OFF", "text_sent": "meterMode off", "state": {"led_live_meter": false}}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"focus": "LedNightMode", "status": "Night Mode → ON", "text_sent": "dimMode on", "state": {"led_night_mode": true}}}
+{"key": "Down"}
+{"expect": {"focus": "LedLiveMeter", "no_packets": true}}
