@@ -17,9 +17,11 @@ cargo build --features qa
 printf '{"key":"Tab"}\n{"query":"screen"}\n' | ./target/debug/shurectl --qa --demo mv6
 ```
 
-Models: `mvx2u`, `mvx2u-gen2`, `mv6`, `mv6-gen2`, `mv7`, `mv7plus`. Both modes start
-from the same state: Manual mode, 24 dB, defaults elsewhere. Run a pass once per
-model; a bug on one model is usually a divergence from the others.
+Models: `mvx2u`, `mvx2u-gen2`, `mv6`, `mv6-gen2`, `mv7`, `mv7plus`. The fake device
+holds Manual mode at 24 dB, read back at startup as from a real device. Demo mode
+starts where `shurectl --demo` does: `DeviceState::default()`, which is Auto Level at
+36 dB. Run a pass once per model; a bug on one model is usually a divergence from the
+others.
 
 ## Lines you send
 
@@ -35,7 +37,7 @@ Inputs:
 | `{"tick": 2100}` | Advance the fake clock (ms, max 60000); runs the presence poll |
 | `{"device": "unplug"}`, `{"device": "replug"}` | Fake device only |
 | `{"device": {"drop_acks": 1, "extra_acks": 1, "refuse": 1, "fail_io": true}}` | Inject faults: fewer or more acks after the next CONFIRM, answer the next command with an unknown address (`[Failed]` on the MV7), fail all I/O |
-| `{"meter": -12.5}` | Push a peak (dBFS) into the meter |
+| `{"meter": -12.5}` | Push a peak (dBFS) into the meter at the fake clock's time; `tick` ages it (bar 0.3 s, peak hold 3 s). Demo mode has no meter |
 | `{"preset_dir": "fixtures/presets-v2.9"}` | Copy preset files into this session's temp preset dir |
 | `{"reset": true}` | Start over on the same model |
 
@@ -102,8 +104,13 @@ height, a key only one model answers, a packet sent in demo mode.
 Paths are relative to where `--qa` runs (`tests/` under the e2e runner). Trim the
 file to the lines that matter. `cargo test --features qa --test e2e` runs every file
 in `tests/scenarios/` per model in its header and in both fake and demo mode (add
-`"modes": ["fake"]` when it needs the device). The runner refuses a file with no
-`expect` line.
+`"modes": ["fake"]` when it needs the device or the fake's Manual, 24 dB start). The
+runner refuses a file with no `expect` line.
+
+A bug you can't fix in the same change can still go in as a regression test: write
+the `expect` lines for the intended behaviour and add `"known_bug": "what is wrong"`
+to the header. The runner then requires an expectation to fail, and fails once the
+scenario passes, so the fix removes the marker.
 
 A recording asserts what the app did, which may be the bug. In the PR body, say for
 each `expect` line whether it states intended behaviour or only observed behaviour.
