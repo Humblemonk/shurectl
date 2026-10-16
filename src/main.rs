@@ -47,8 +47,8 @@ use clap::Parser;
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent,
-        MouseEventKind,
+        self, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -543,15 +543,27 @@ fn step(
         };
         // Write a pending wheel adjustment before this event can change the
         // screen, unless it is another tick on the same control: writes stay in
-        // input order, and each one's `before` holds only its own change.
+        // input order, and each one's `before` holds only its own change. A
+        // button release, resize or focus change can't act, so the burst goes on.
+        let can_act = scroll_target.is_some()
+            || matches!(
+                event,
+                Event::Key(KeyEvent {
+                    kind: KeyEventKind::Press,
+                    ..
+                }) | Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(_),
+                    ..
+                })
+            );
         let same_control = matches!(
             (&loop_state.pending_scroll, scroll_target),
             (Some(pending), Some(Some(mouse::Target::Control(focus)))) if pending.focus == focus
         );
-        if !same_control {
+        if can_act && !same_control {
             flush_scroll(app, device, loop_state);
         }
-        let before = app.device_state.clone();
+        let before = can_act.then(|| app.device_state.clone());
         let action = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
                 handle_key_too_small(app, key.code, key.modifiers);
@@ -575,9 +587,9 @@ fn step(
         match action {
             Some(action) if scroll_target.is_some() => {
                 // Only a burst on this control can still be pending.
-                let (started, before) = match loop_state.pending_scroll.take() {
-                    Some(pending) => (pending.started, pending.before),
-                    None => (now, before),
+                let (started, before) = match (loop_state.pending_scroll.take(), before) {
+                    (Some(pending), _) => (pending.started, pending.before),
+                    (None, before) => (now, before.unwrap_or_else(|| app.device_state.clone())),
                 };
                 loop_state.pending_scroll = Some(PendingScroll {
                     focus: app.focus,
@@ -586,7 +598,7 @@ fn step(
                     before,
                 });
             }
-            Some(action) => apply_action(app, device, action, Some(before)),
+            Some(action) => apply_action(app, device, action, before),
             None => {}
         }
     }
@@ -1250,9 +1262,10 @@ fn reads_no_state(action: &DeviceAction) -> bool {
 
 /// After `action` failed, make the screen show what the device has. A single
 /// write the device clearly didn't take (it is gone, or the MV7 rejected it) is
-/// undone. Anything else (a timeout, a re-read that failed after the write
-/// landed, several writes that stopped partway) leaves the device's settings
-/// unknown: they are read again, or marked unread until `r` if that fails.
+/// undone; the device being gone also covers a re-read after the write, which a
+/// reconnect repeats anyway. Anything else (a timeout, a re-read that failed
+/// after the write landed, several writes that stopped partway) leaves the
+/// device's settings unknown: they are read again, or marked unread until `r`.
 fn recover_from_failure(
     app: &mut App,
     device: &Option<ShureDevice>,
@@ -1260,10 +1273,7 @@ fn recover_from_failure(
     before: Option<protocol::DeviceState>,
     e: &anyhow::Error,
 ) {
-    let gone = is_disconnect(e);
-    if gone {
-        app.device_connected = false;
-    }
+    let mut gone = is_disconnect(e);
     let read_back = match action_kind(action) {
         ActionKind::Connection | ActionKind::PresetFile | ActionKind::SavePreset => None,
         ActionKind::FixedWrite | ActionKind::Write if gone || is_rejected(e) => {
@@ -1274,13 +1284,22 @@ fn recover_from_failure(
         }
         ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes => {
             let read = match device {
-                Some(dev) if !gone => reload_state(app, dev).is_ok(),
+                Some(dev) if !gone => match reload_state(app, dev) {
+                    Ok(_) => true,
+                    Err(read_err) => {
+                        gone = is_disconnect(&read_err);
+                        false
+                    }
+                },
                 Some(_) | None => false,
             };
             app.state_unread |= !read;
             Some(read)
         }
     };
+    if gone {
+        app.device_connected = false;
+    }
     app.set_err(if gone {
         format!("Device error: {e} — {RECONNECT_HINT}")
     } else {
@@ -1514,13 +1533,16 @@ fn apply_preset_to_state(
     monitor_mix_applies
 }
 
-/// Writes a preset's Playback Level, except 0. A preset's 0 means "not saved" (so
-/// the state still holds the device's level), and a 0 in the state can be a
-/// level that was never read (an unanswered GET, demo mode, a failed readback),
-/// which written would silence playback.
-fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
-    if level > 0 {
-        d.set_mv7_playback_mix(level)?;
+/// Writes a preset's Playback Level when it saved one. A preset's 0 means "not
+/// saved", so the shown level (possibly stale, or 0 if it was never read and
+/// would silence playback) is never written in its place.
+fn write_playback_level(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+) -> Result<()> {
+    if slot.playback_mix > 0 {
+        d.set_mv7_playback_mix(state.playback_mix)?;
     }
     Ok(())
 }
@@ -1605,23 +1627,23 @@ fn apply_binary_preset(
             if slot.eq_enabled.is_some() {
                 d.set_eq_enable(state.eq_enabled)?;
             }
-            write_eq_bands(d, slot, state)?;
+            write_eq_bands(d, slot, state, true)?;
         }
         DeviceModel::Mvx2uGen2 => {
             if slot.phantom_power.is_some() {
                 d.set_phantom(state.phantom_power)?;
             }
-            set_playback_level(d, state.playback_mix)?;
+            write_playback_level(d, slot, state)?;
             write_limiter_and_compressor(d, slot, state)?;
             write_voice_settings(d, slot, state)?;
-            write_eq_bands(d, slot, state)?;
+            write_eq_bands(d, slot, state, false)?;
         }
         DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => {
             write_voice_settings(d, slot, state)?;
             if slot.mute_btn_disabled.is_some() {
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
             }
-            set_playback_level(d, state.playback_mix)?;
+            write_playback_level(d, slot, state)?;
             if model == DeviceModel::Mv6Gen2 {
                 if slot.auto_gain.is_some() {
                     d.set_auto_gain(&state.auto_gain)?;
@@ -1632,7 +1654,7 @@ fn apply_binary_preset(
                 if slot.denoiser_level.is_some() {
                     d.set_denoiser_level(state.denoiser_level)?;
                 }
-                write_eq_bands(d, slot, state)?;
+                write_eq_bands(d, slot, state, false)?;
                 if slot.tone_advanced.is_some() {
                     d.set_tone_mode(state.tone_advanced)?;
                 }
@@ -1647,7 +1669,7 @@ fn apply_binary_preset(
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
             }
             write_limiter_and_compressor(d, slot, state)?;
-            set_playback_level(d, state.playback_mix)?;
+            write_playback_level(d, slot, state)?;
             // The MV7+ saves its reverb and LED settings together.
             if slot.reverb_on_output.is_some() {
                 d.set_mv7_reverb_output(state.reverb_on_output)?;
@@ -1708,14 +1730,21 @@ fn write_voice_settings(
     Ok(())
 }
 
-/// The five EQ bands' gains, and each band's on/off switch where the preset
-/// saved it (only a Gen 1 preset does).
-fn write_eq_bands(d: &ShureDevice, slot: &PresetSlot, state: &protocol::DeviceState) -> Result<()> {
+/// The five EQ bands' gains, and on a model with per-band switches (the MVX2U
+/// Gen 1, `band_switches`) each band's switch where the preset saved one. Other
+/// models have no switch address, so it is never sent to them, even from a Gen 1
+/// preset or an older file that holds switches.
+fn write_eq_bands(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+    band_switches: bool,
+) -> Result<()> {
     let Some(saved) = &slot.eq_bands else {
         return Ok(());
     };
     for (band, (eq, saved)) in state.eq_bands.iter().zip(saved).enumerate() {
-        if saved.enabled.is_some() {
+        if band_switches && saved.enabled.is_some() {
             d.set_eq_band_enable(band, eq.enabled)?;
         }
         d.set_eq_band_gain(band, eq.gain_db)?;
@@ -1803,6 +1832,75 @@ mod tests {
         let disk = anyhow::anyhow!("disk full");
         recover_from_failure(&mut app, &None, &DeviceAction::SavePreset(0), None, &disk);
         assert!(!app.state_unread);
+    }
+
+    /// Findings of the f3281ae review: Gen 1 band switches went to models
+    /// without them, and a preset without a Playback Level wrote the shown one.
+    #[test]
+    fn a_preset_load_writes_nothing_the_model_lacks_or_the_preset_left_out() {
+        // A Gen 1 preset holds band switches; the MV6 Gen 2 has no address for them.
+        let gen1 =
+            PresetSlot::from_device_state("Gen 1", &DeviceState::default(), DeviceModel::Mvx2u);
+        assert!(
+            gen1.eq_bands
+                .is_some_and(|bands| bands[0].enabled.is_some())
+        );
+        let mv6_gen2 = FakeDevice::with_state(
+            DeviceModel::Mv6Gen2,
+            DeviceState {
+                playback_mix: 70,
+                ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
+            },
+        );
+        // The shown Playback Level is stale; the preset (from a Gen 1) has none.
+        let shown = DeviceState {
+            playback_mix: 20,
+            ..DeviceState::default()
+        };
+        let after = load_on_fake(&mv6_gen2, &gen1, shown);
+        assert_eq!(after.playback_mix, 70);
+        let unknown: Vec<String> = mv6_gen2
+            .log_since(0)
+            .into_iter()
+            .filter_map(|packet| match packet.kind {
+                fake_hid::PacketKind::Set { feature, .. }
+                    if feature.starts_with("unrecognised") =>
+                {
+                    Some(feature)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "SETs to addresses the MV6 Gen 2 lacks: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn a_re_read_that_finds_the_device_gone_says_so() {
+        let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
+        let device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            ..App::default()
+        };
+        fake.faults_mut(|faults| faults.fail_io = true);
+        let timeout = anyhow::anyhow!("No reply");
+        recover_from_failure(
+            &mut app,
+            &device,
+            &DeviceAction::SetMute(true),
+            None,
+            &timeout,
+        );
+        assert!(!app.device_connected);
+        assert!(app.state_unread);
+        assert!(
+            app.status_message.contains(RECONNECT_HINT),
+            "{}",
+            app.status_message
+        );
     }
 
     /// Finding of the 09e9569 review: a wheel adjustment still pending when the

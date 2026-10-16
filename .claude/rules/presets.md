@@ -16,11 +16,14 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   MV7's `setting_changes()`). `None` keeps the device's value on load, so a preset from
   another model can't reset what that model lacks (Gain Lock, Mute Button, Limiter;
   checked on hardware between the MVX2U Gen 2 and MV6 Gen 2). Loading writes only what the
-  preset saved (`apply_binary_preset()`), never the shown state's copy, which may be stale;
-  the MV7 applies the preset onto its own fresh readback (`load_mv7_preset()`). The summary
+  preset saved (`apply_binary_preset()`), never the shown state's copy, which may be stale.
+  One exception: writing the gain needs Gain Lock off, so a preset without it re-locks to
+  the shown setting. The MV7 applies the preset onto its own fresh readback
+  (`load_mv7_preset()`). The summary
   leaves `None` parts out. A new per-model field goes in that `match` and that load too
 - **EQ band switches** (`SerEqBand::enabled`) exist only on the MVX2U Gen 1, so only it
-  saves them; the Gen 2 and MV6 Gen 2 save band gains alone
+  saves them and only it is sent them (`write_eq_bands()`); the Gen 2 and MV6 Gen 2 save
+  and get band gains alone
 - **New fields** need `#[serde(default)]`, and `apply_to_device_state()` must keep the
   current value when the field is missing. Older files otherwise zero it on load (Playback
   Mix 0 = not saved, 73476a4)
