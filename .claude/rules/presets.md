@@ -9,18 +9,22 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
 
 - **Mirror types:** `presets.rs` defines `Ser*` enums with serde derives, so `protocol.rs`
   types stay serde-free and the on-disk format is decoupled from internal enum changes
-- `PresetSlot` captures all DSP settings from `DeviceState`. Identity fields
-  (`serial_number`, `firmware_version`) are excluded and preserved on apply
+- `PresetSlot` captures all DSP settings from `DeviceState`. Identity (serial number,
+  firmware version, device name) isn't saved, so a load keeps the device's own
 - **Per-model settings** are `Option`s, saved only by a model that has the setting (the
   `match` in `from_device_state()`, which mirrors `main.rs::apply_binary_preset()` and the
   MV7's `setting_changes()`). `None` keeps the device's value on load, so a preset from
   another model can't reset what that model lacks (Gain Lock, Mute Button, Limiter;
-  checked on hardware between the MVX2U Gen 2 and MV6 Gen 2). Loading writes only what the
-  preset saved (`apply_binary_preset()`), never the shown state's copy, which may be stale.
-  One exception: writing the gain needs Gain Lock off, so a preset without it re-locks to
-  the shown setting. The MV7 applies the preset onto its own fresh readback
-  (`load_mv7_preset()`). The summary
-  leaves `None` parts out. A new per-model field goes in that `match` and that load too
+  checked on hardware between the MVX2U Gen 2 and MV6 Gen 2). The summary leaves `None`
+  parts out. A new per-model field goes in that `match` and that load too
+- **Phantom power** is per-model, saved only on models with `has_phantom_power()`, so a
+  mic's preset can't cut power to a condenser mic
+- **Loading** writes only what the preset saved (`apply_binary_preset()`), never the shown
+  state's copy, which may be stale. The MV7 applies the preset onto its own fresh readback
+  (`load_mv7_preset()`)
+- **Gain Lock**: a locked device ignores gain writes, so `apply_binary_preset()` unlocks,
+  writes the gain, and re-locks straight away. A preset without Gain Lock re-locks to the
+  shown setting
 - **EQ band switches** (`SerEqBand::enabled`) exist only on the MVX2U Gen 1, so only it
   saves them and only it is sent them (`write_eq_bands()`); the Gen 2 and MV6 Gen 2 save
   and get band gains alone
@@ -31,13 +35,9 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   `monitor_mix_is_mic_level` records which (`from_device_state()` takes the model), and
   `apply_preset_to_state()` skips a Monitor Mix of the other kind, without writing it.
   `None` (older files) loads as before
-- **Phantom power** is one of those, saved only on models with `has_phantom_power()`, so a
-  mic's preset can't cut power to a condenser mic
 - **Older files** hold every field from every model and still apply them all: before
   2.12.0 that includes `phantom_power = false`, before 2.13.1 every other per-model setting.
   Nothing in them records which model saved them
-- **Gain Lock** in `main.rs::apply_binary_preset()`: unlock, write the gain, re-lock
-  straight away. A locked device ignores gain writes
 - `load_all_presets()` runs at startup; missing files → `None`
 - `DeviceAction` variants: `SavePreset`, `LoadPreset` (applies, then sends all SETs; the
   MV7 only the changed ones), `DeletePreset`, `PersistPresetName`

@@ -13,7 +13,7 @@ macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app
 - Reverb and LED settings on the models that support them
 - Real-time level meter with peak hold
 - 4 preset slots, saved as editable TOML files
-- Mute from the command line without opening the TUI
+- Mute or load a preset from the command line without opening the TUI
 
 Which controls each model has is listed under [Device support](#device-support).
 

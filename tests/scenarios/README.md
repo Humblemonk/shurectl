@@ -40,7 +40,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `nav-tab-ring` | all | fake | Tab and Shift-Tab cycle the tabs and wrap at both ends without sending anything |
 | `nav-tab-order-mv7plus` | MV7+ | fake, demo | The MV7+ shows all seven tabs in `Tab::ALL` order, Reverb and LED included |
 | `nav-tab-order-hides-reverb-and-led` | MVX2U, MVX2U Gen 2, MV6, MV6 Gen 2 | fake | Models without the hardware hide Reverb and LED rather than reordering tabs |
-| `nav-focus-ring` | all | fake | Main starts on Mode; ↑/↓ walk Mode → Mute → Gain; `j`/`k` don't move focus |
+| `nav-focus-ring` | all | fake | Main starts on Mode; ↑/↓ walk Mode → Mute → Gain; `j`/`k` move like ↓/↑ |
 | `help-overlay` | all | fake, demo | `?` opens and closes help, Esc closes it, and keys and clicks behind it do nothing |
 | `mouse-click-targets` | all | fake, demo | Every control's click region focuses that control and sends nothing, at sizes from 80x24 (the minimum) to 120x50 |
 | `terminal-too-small` | all | fake, demo | Below 80x24 only the size notice draws: keys, clicks and the wheel change nothing, `q` is typed into a name being edited rather than quitting, and `q` quits otherwise |
