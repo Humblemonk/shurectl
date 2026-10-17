@@ -25,7 +25,7 @@ Run `scripts/check.sh` before calling any change complete. It runs clippy and
 Change the gate in the script, not in docs or CI.
 
 - Without `--features probe,qa`, clippy skips `shurectl-probe` and the `--qa` harness.
-- CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual):
+- CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2% actual):
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared
   helper; don't raise the threshold.
 
