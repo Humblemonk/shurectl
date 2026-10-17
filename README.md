@@ -109,9 +109,10 @@ device but cannot open it. Check the status bar for the reason, then follow "Can
 device" above. With two identical devices that report no USB serial number, restart
 shurectl with `--device`.
 
-**"Ignored an unrecognised reply" in the status bar** — the device answered with a setting
-shurectl doesn't know, often after a firmware update. Everything else loaded normally.
-Please open an issue with the message and the firmware version from the Info tab.
+**"Couldn't read a setting" in the status bar** — the device didn't answer a query, or
+answered with a setting shurectl doesn't know, often after a firmware update. shurectl
+sends no changes until a full read succeeds; press `r` to retry. If it keeps happening,
+please open an issue with the message and your firmware version.
 
 **No gain slider in Auto Level mode** — This is correct hardware behaviour; the device
 sets its own gain in Auto Level mode, so the slider is hidden. Switch to Manual mode first.

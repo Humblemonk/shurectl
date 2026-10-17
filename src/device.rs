@@ -428,84 +428,42 @@ impl ShureDevice {
         Ok(Refused::from_reply(&reply).map(|how| Refusal { label, how }))
     }
 
-    /// The MV7's state for comparing a preset against, or `None` if a reply
-    /// didn't parse: a field left at its default could hide a needed write.
-    fn known_mv7_state(&self) -> Result<Option<DeviceState>> {
-        let readback = self.get_state()?;
-        Ok(readback.unrecognised.is_empty().then_some(readback.state))
-    }
-
     /// Load a preset onto the MV7: `apply_preset` puts its settings onto the
-    /// mic's own readback (or `shown`, the shown state, if that didn't read), and
-    /// only the settings that then differ from what the mic has are written: it
-    /// answers `[Failed]` to a SET that changes nothing. A refused setting is
-    /// skipped and the rest still load. Returns the refused settings, for the
-    /// status message.
+    /// mic's own readback, and only the settings that then differ from what the
+    /// mic has are written: it answers `[Failed]` to a SET that changes nothing.
+    /// A refused setting is skipped and the rest still load. Returns the
+    /// refused settings, for the status message.
     pub fn load_mv7_preset(
         &self,
-        shown: &DeviceState,
         apply_preset: impl Fn(&mut DeviceState),
         write_monitor_mix: bool,
     ) -> Result<Vec<String>> {
         self.ensure_text_protocol()?;
         let mut refused = Vec::new();
-        let mut current = self.known_mv7_state()?;
-        let mut sent_blind = current.is_none();
-        // The preset applied to what the mic has (or, if that didn't read, to the
-        // shown state), so a setting the preset didn't save keeps the mic's value.
-        let target_on = |base: Option<&DeviceState>| {
-            let mut target = base.unwrap_or(shown).clone();
+        let mut current = self.get_state()?.state;
+        // The preset applied to what the mic has, so a setting the preset
+        // didn't save keeps the mic's value.
+        let target_on = |base: &DeviceState| {
+            let mut target = base.clone();
             apply_preset(&mut target);
             target
         };
-        let mut target = target_on(current.as_ref());
-        // The mic's mode after the mode step; Manual-only settings need Manual.
-        let mut mic_mode = target.mode;
-        if let Some(command) = mv7_text::mode_change(current.as_ref(), &target) {
+        let mut target = target_on(&current);
+        if let Some(command) = mv7_text::mode_change(&current, &target) {
             let refusal = self.try_text_set(MV7_MODE_LABEL, &command)?;
             // Read the mic again either way: a mode change resets EQ and
-            // compressor or reports a new gain, and a [Failed] to a mode sent
-            // blind may only mean the mic already had it.
-            let readback = self.get_state()?;
-            if mv7_text::mode_change(Some(&readback.state), &target).is_some() {
+            // compressor or reports a new gain.
+            current = self.get_state()?.state;
+            if mv7_text::mode_change(&current, &target).is_some() {
                 refused.push(refusal.unwrap_or(Refusal {
                     label: MV7_MODE_LABEL,
                     how: Refused::Failed,
                 }));
             }
-            // An unparsed dspMode reply reads as Auto, which skips the Manual
-            // settings rather than send them to a mic in Auto.
-            mic_mode = readback.state.mode;
-            current = readback.unrecognised.is_empty().then_some(readback.state);
-            sent_blind |= current.is_none();
-            target = target_on(current.as_ref());
+            target = target_on(&current);
         }
-        for (label, command) in
-            mv7_text::setting_changes(current.as_ref(), mic_mode, &target, write_monitor_mix)
-        {
+        for (label, command) in mv7_text::setting_changes(&current, &target, write_monitor_mix) {
             refused.extend(self.try_text_set(label, &command)?);
-        }
-        if sent_blind
-            && refused
-                .iter()
-                .any(|refusal| refusal.label != MV7_MODE_LABEL)
-        {
-            // Sent without knowing the mic's state, a setting it already had is
-            // answered [Failed] too, so keep only refusals for settings that
-            // still differ. A field that didn't parse reads as its default, so
-            // its refusal may be wrong either way. This read only tidies the
-            // message: if it fails, the settings still loaded, so report them all.
-            if let Ok(readback) = self.get_state() {
-                let state = readback.state;
-                let still_differs: Vec<&str> =
-                    mv7_text::setting_changes(Some(&state), state.mode, &target, write_monitor_mix)
-                        .into_iter()
-                        .map(|(label, _)| label)
-                        .collect();
-                refused.retain(|refusal| {
-                    refusal.label == MV7_MODE_LABEL || still_differs.contains(&refusal.label)
-                });
-            }
         }
         Ok(refused.iter().map(Refusal::describe).collect())
     }
@@ -549,11 +507,19 @@ impl ShureDevice {
     }
 
     /// Send one GET and apply its reply to `readback`. A failed write or read is
-    /// an error (the device is gone); a timeout or an unrecognised reply is not.
+    /// an error (the device is gone). A timeout or an unrecognised reply is
+    /// recorded in `readback`, and fails it when the readback finishes.
     fn query(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
-        if let Some(reply) = self.send_get(pkt)? {
-            readback.apply(&reply);
-        }
+        let reply = self.send_get(pkt)?;
+        readback.apply(pkt, reply.as_ref(), Need::Required);
+        Ok(())
+    }
+
+    /// [`Self::query`] for a GET not checked on this model's hardware: without
+    /// a usable reply, its setting is only noted in [`Readback::skipped`].
+    fn query_optional(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
+        let reply = self.send_get(pkt)?;
+        readback.apply(pkt, reply.as_ref(), Need::Optional);
         Ok(())
     }
 
@@ -591,7 +557,9 @@ impl ShureDevice {
         for command in mv7_text::state_queries() {
             let reply = self.send_text(&command)?;
             let applied = mv7_text::apply_reply(&reply, &mut readback.state);
-            readback.record(applied, || format!("{reply:?} to {:?}", command.line));
+            readback.record(applied, Need::Required, || {
+                format!("{reply:?} in reply to {:?}", command.line)
+            });
         }
         Ok(())
     }
@@ -664,14 +632,28 @@ impl ShureDevice {
             cmd_get_mv6_tone,
             cmd_get_mv6_gain_lock,
             cmd_get_mv6_mix,
-            // Unconfirmed on the MV6; see DeviceModel::has_playback_mix().
-            cmd_get_mv7_playback_mix,
+        ];
+        self.run_getters(getters, readback)?;
+
+        // Captured on the MV6 Gen 2, unconfirmed on the MV6 (see
+        // DeviceModel::has_playback_mix()), where an unanswered GET must not
+        // stop every write.
+        let playback_mix = cmd_get_mv7_playback_mix(self.next_seq());
+        match self.model {
+            DeviceModel::Mv6 => self.query_optional(&playback_mix, readback)?,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7
+            | DeviceModel::Mv7Plus => self.query(&playback_mix, readback)?,
+        }
+
+        let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_mv6_mute_btn_disable,
             cmd_get_device_name,
             cmd_get_firmware_version,
             cmd_get_serial,
         ];
-
         self.run_getters(getters, readback)
     }
 
@@ -1208,46 +1190,72 @@ impl Refusal {
     }
 }
 
-/// A full state readback from [`ShureDevice::get_state`]. `unrecognised`
-/// describes replies that arrived but matched no known setting. The caller
-/// reports them: in the TUI that is the status bar, since writing to stderr
-/// would garble the screen.
+/// A full state readback from [`ShureDevice::get_state`]. A query without a
+/// usable reply (a timeout, or a reply that matched no known setting) leaves
+/// its setting at `DeviceState::default()`, and a write based on that, such as
+/// one gain step up from the default 36 dB, could jump the level. So
+/// [`Readback::finish`] fails the whole readback unless every required query
+/// was answered.
 #[derive(Default)]
 pub struct Readback {
     pub state: DeviceState,
-    pub unrecognised: Vec<String>,
+    /// Optional queries that got no usable reply. The caller reports them: in
+    /// the TUI that is the status bar, since writing to stderr would garble
+    /// the screen.
+    pub skipped: Vec<String>,
+    /// Required queries that got no usable reply.
+    missing: Vec<String>,
     /// Replies applied to `state`. Zero means the device answered nothing.
     applied: usize,
 }
 
+/// Whether a readback fails without a usable reply to a query.
+#[derive(Clone, Copy)]
+enum Need {
+    Required,
+    /// Unconfirmed on the model's hardware, so it may never be answered.
+    Optional,
+}
+
 impl Readback {
-    /// Apply one binary GET reply, noting it if no setting matches.
-    fn apply(&mut self, reply: &Reply) {
-        let applied = apply_reply(reply, &mut self.state);
-        self.record(applied, || {
-            format!(
-                "feature {:#04x} {:#04x} (prefix {:#04x})",
-                reply.feat[0], reply.feat[1], reply.prefix
-            )
+    /// Apply the reply, if any, to the binary GET `request`.
+    fn apply(&mut self, request: &[u8], reply: Option<&Reply>, need: Need) {
+        let applied = reply.is_some_and(|reply| apply_reply(reply, &mut self.state));
+        self.record(applied, need, || match reply {
+            Some(reply) => format!(
+                "{} in reply to {}",
+                reply.describe(),
+                protocol::describe_get(request)
+            ),
+            None => format!("no usable reply to {}", protocol::describe_get(request)),
         });
     }
 
-    /// Count an applied reply, or note an unrecognised one as `describe()`.
-    fn record(&mut self, applied: bool, describe: impl FnOnce() -> String) {
+    /// Count an applied reply, or note a query without one as `describe()`.
+    fn record(&mut self, applied: bool, need: Need, describe: impl FnOnce() -> String) {
         if applied {
             self.applied += 1;
-        } else {
-            self.unrecognised.push(describe());
+            return;
+        }
+        match need {
+            Need::Required => self.missing.push(describe()),
+            Need::Optional => self.skipped.push(describe()),
         }
     }
 
-    /// A readback that got no usable reply at all would hand back
-    /// `DeviceState::default()` as if it were the device's settings.
+    /// The readback, unless a required query went unanswered.
     fn finish(self) -> Result<Self> {
         if self.applied == 0 {
             return Err(anyhow!("No response from the device to any state query"));
         }
-        Ok(self)
+        match self.missing.as_slice() {
+            [] => Ok(self),
+            [only] => Err(anyhow!("Couldn't read a setting: {only}")),
+            [first, ..] => Err(anyhow!(
+                "Couldn't read {} settings, first: {first}",
+                self.missing.len()
+            )),
+        }
     }
 }
 
@@ -1324,13 +1332,29 @@ mod tests {
         }
     }
 
+    /// The reply to `cmd_get_gain()` for 24 dB.
+    fn gain_reply() -> Reply {
+        use protocol::fake_wire::{Parsed, Request, as_reply, parse_request};
+        let Some(Parsed {
+            request: Request::Get(key),
+            ..
+        }) = parse_request(&cmd_get_gain(0))
+        else {
+            panic!("cmd_get_gain() is a GET");
+        };
+        as_reply(key, &2400u16.to_be_bytes())
+    }
+
     #[test]
-    fn readback_notes_unrecognised_replies_instead_of_printing_them() {
+    fn readback_names_the_query_an_unrecognised_reply_answered() {
         let mut readback = Readback::default();
-        readback.apply(&unknown_reply());
+        readback.apply(&cmd_get_gain(0), Some(&unknown_reply()), Need::Optional);
+        let gain = protocol::describe_get(&cmd_get_gain(0));
         assert_eq!(
-            readback.unrecognised,
-            vec!["feature 0x7f 0x7f (prefix 0x00)"]
+            readback.skipped,
+            vec![format!(
+                "feature 0x7f 0x7f (prefix 0x00) in reply to {gain}"
+            )]
         );
     }
 
@@ -1354,13 +1378,46 @@ mod tests {
     #[test]
     fn readback_with_no_applied_reply_is_an_error() {
         let mut readback = Readback::default();
-        readback.apply(&unknown_reply());
-        assert!(readback.finish().is_err());
+        readback.apply(&cmd_get_gain(0), Some(&unknown_reply()), Need::Optional);
+        let err = readback.finish().err().expect("nothing applied");
+        assert!(err.to_string().contains("No response"), "{err}");
+    }
+
+    /// A setting left at its default (36 dB gain) must not pass as read.
+    #[test]
+    fn readback_fails_unless_every_required_query_is_answered() {
+        let mut readback = Readback::default();
+        readback.apply(&cmd_get_gain(0), Some(&gain_reply()), Need::Required);
+        readback.apply(&cmd_get_mute(1), None, Need::Required);
+        let err = readback.finish().err().expect("mute unanswered");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Couldn't read a setting: no usable reply to {}",
+                protocol::describe_get(&cmd_get_mute(1))
+            )
+        );
 
         let mut readback = Readback::default();
-        readback.record(true, String::new);
-        readback.apply(&unknown_reply());
-        let readback = readback.finish().expect("one reply applied");
-        assert_eq!(readback.unrecognised.len(), 1);
+        readback.apply(&cmd_get_gain(0), Some(&gain_reply()), Need::Required);
+        readback.apply(&cmd_get_mute(1), Some(&unknown_reply()), Need::Required);
+        readback.apply(&cmd_get_hpf(2), None, Need::Required);
+        let err = readback.finish().err().expect("two unanswered");
+        assert!(
+            err.to_string()
+                .starts_with("Couldn't read 2 settings, first: feature 0x7f")
+        );
+    }
+
+    #[test]
+    fn readback_only_notes_an_unanswered_optional_query() {
+        let mut readback = Readback::default();
+        readback.apply(&cmd_get_gain(0), Some(&gain_reply()), Need::Required);
+        readback.apply(&cmd_get_mv7_playback_mix(1), None, Need::Optional);
+        let readback = readback
+            .finish()
+            .expect("only an optional query unanswered");
+        assert_eq!(readback.state.gain_tenths, 240);
+        assert_eq!(readback.skipped.len(), 1);
     }
 }

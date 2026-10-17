@@ -266,11 +266,11 @@ fn main() -> Result<()> {
 fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
     if let Some(dev) = device {
         match reload_state(app, dev) {
-            Ok(unrecognised) => {
+            Ok(skipped) => {
                 app.set_ok(format!(
                     "Connected to {} — state loaded.{}",
                     dev.model.display_name(),
-                    unrecognised_note(&unrecognised)
+                    skipped_note(&skipped)
                 ));
             }
             Err(e) => {
@@ -1334,11 +1334,11 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         return Ok(());
     };
     let read_err = match reload_state(app, dev) {
-        Ok(unrecognised) => {
+        Ok(skipped) => {
             app.device_connected = true;
             app.set_ok(format!(
                 "State refreshed from device.{}",
-                unrecognised_note(&unrecognised)
+                skipped_note(&skipped)
             ));
             return Ok(());
         }
@@ -1368,11 +1368,11 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
     // Keep the new handle even if its readback failed: the old one may be dead.
     *device = Some(reopened);
     match loaded {
-        Ok(unrecognised) => {
+        Ok(skipped) => {
             app.device_connected = true;
             app.set_ok(format!(
                 "Reconnected to {name} — state loaded.{}",
-                unrecognised_note(&unrecognised)
+                skipped_note(&skipped)
             ));
             Ok(())
         }
@@ -1441,27 +1441,28 @@ fn poll_presence(app: &mut App, device: &mut Option<ShureDevice>, seen_back: &mu
     *seen_back = present && !app.device_connected;
 }
 
-/// Status-bar suffix for replies a readback could not match to any setting,
-/// so they can be seen and reported without writing to the terminal.
-fn unrecognised_note(unrecognised: &[String]) -> String {
-    match unrecognised {
+/// Status-bar suffix for optional settings a readback couldn't read, so they
+/// can be seen and reported without writing to the terminal.
+fn skipped_note(skipped: &[String]) -> String {
+    match skipped {
         [] => String::new(),
-        [only] => format!(" Ignored an unrecognised reply: {only}."),
+        [only] => format!(" Couldn't read an optional setting: {only}."),
         [first, ..] => format!(
-            " Ignored {} unrecognised replies, first: {first}.",
-            unrecognised.len()
+            " Couldn't read {} optional settings, first: {first}.",
+            skipped.len()
         ),
     }
 }
 
 /// Replace the app's state with a full readback from the device. Returns the
-/// replies it could not match, for the caller's status message.
+/// optional settings it couldn't read, for the caller's status message. If
+/// the readback fails, the app's state is left as it was.
 fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     let readback = dev.get_state()?;
     app.device_state = readback.state;
     app.state_unread = false;
     app.device_state.serial_number = dev.serial_number.clone();
-    Ok(readback.unrecognised)
+    Ok(readback.skipped)
 }
 
 /// The MV7 stores mode, mic position and tone as one setting, and changing it
@@ -1471,10 +1472,9 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
         Some(dev) if dev.model == DeviceModel::Mv7 => {
-            let unrecognised = reload_state(app, dev)?;
+            let skipped = reload_state(app, dev)?;
             // Keep the caller's message ("Mode → …") and add the note to it.
-            app.status_message
-                .push_str(&unrecognised_note(&unrecognised));
+            app.status_message.push_str(&skipped_note(&skipped));
             Ok(())
         }
         Some(_) | None => Ok(()),
@@ -1564,7 +1564,6 @@ fn apply_preset_to_device(
     send_if_connected(device, |d| match model {
         // Built on the mic's own fresh readback, so an unsaved setting keeps its value.
         DeviceModel::Mv7 => d.load_mv7_preset(
-            state,
             |target| {
                 apply_preset_to_state(slot, target, model);
             },
@@ -2412,15 +2411,15 @@ mod tests {
     }
 
     #[test]
-    fn unrecognised_note_is_empty_or_names_the_first_reply() {
-        assert_eq!(unrecognised_note(&[]), "");
+    fn skipped_note_is_empty_or_names_the_first_query() {
+        assert_eq!(skipped_note(&[]), "");
         assert_eq!(
-            unrecognised_note(&["feature 0x01 0x99".into()]),
-            " Ignored an unrecognised reply: feature 0x01 0x99."
+            skipped_note(&["feature 0x01 0x99".into()]),
+            " Couldn't read an optional setting: feature 0x01 0x99."
         );
         assert_eq!(
-            unrecognised_note(&["feature 0x01 0x99".into(), "feature 0x02 0x77".into()]),
-            " Ignored 2 unrecognised replies, first: feature 0x01 0x99."
+            skipped_note(&["feature 0x01 0x99".into(), "feature 0x02 0x77".into()]),
+            " Couldn't read 2 optional settings, first: feature 0x01 0x99."
         );
     }
 

@@ -189,7 +189,7 @@ Shared across all models unless the hardware makes it impossible:
 - No `println!()` once the TUI runs: use `eprintln!()` only at startup, and the TUI status
   bar after that. The one-shot commands (`--list`, `--mute`, `--preset`) and
   `shurectl-probe` print their results to stdout, so scripts can read them.
-  State readback collects unrecognised replies in `Readback::unrecognised` for this
+  State readback collects optional settings it couldn't read in `Readback::skipped` for this
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
 - Exhaustive match arms; no wildcard `_` that silently swallows variants
@@ -241,6 +241,8 @@ rather than promoting a lower one.
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
   byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
+  `get_state()` fails unless every GET got a usable reply, so no field is left at its default
+  (36 dB gain). `query_optional()` is only for a GET unchecked on that model's hardware.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must

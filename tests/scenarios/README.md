@@ -127,10 +127,10 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `factory-reset-reconnects` | MV7+, MV6 Gen 2, MVX2U Gen 2 | fake | After a reset the device drops off, reconnects, and reads back factory state |
 | `unplug-replug` | all | fake | An unplug shows DISCONNECTED; replugging reconnects on the second poll or straight away on `r` |
 | `readback-order` | MVX2U Gen 2, MV7+ | fake | A dropped ack doesn't shift the replies of a later `r` |
-| `refused-command-stays-connected` | all | fake | An unrecognised reply is reported but doesn't mark the device disconnected |
+| `refused-command-stays-connected` | all | fake | A refused GET fails `r`'s readback without marking the device disconnected; the reconnect reads it again |
 | `write-failed-keeps-screen` | all | fake | When a write fails (I/O error), Mute and Gain keep showing what the device has |
 | `mv7-rejected-write-keeps-screen` | MV7 | fake | A Mode, Mute or Gain change the MV7 rejects is undone on screen, and the mic stays connected |
 | `readback-failed-reconnect-refuses-writes` | all | fake | If a reconnect can't read the device, writes are refused and the screen kept until `r` succeeds |
-| `readback-unanswered-get-keeps-state` | all | fake | **Known bug.** A GET left without a usable reply during `r` should keep that setting, not reset gain to 36 dB |
-| `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | **Known bug.** After one ack too many, `r` should still read EQ band 5's gain |
+| `readback-unanswered-get-keeps-state` | all | fake | A GET left without a usable reply during `r` keeps that setting, not resetting gain to 36 dB |
+| `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
 | `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |
