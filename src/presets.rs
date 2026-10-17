@@ -1190,8 +1190,10 @@ mod tests {
         let original = example_state();
         let slot = PresetSlot::from_device_state("Test", &original, DeviceModel::Mvx2u);
 
-        let mut target = DeviceState::default();
-        target.serial_number = String::from("OTHER");
+        let mut target = DeviceState {
+            serial_number: String::from("OTHER"),
+            ..DeviceState::default()
+        };
 
         slot.apply_to_device_state(&mut target);
 
@@ -1312,8 +1314,10 @@ mod tests {
         let original = mv6_example_state();
         let slot = PresetSlot::from_device_state("MV6 Test", &original, DeviceModel::Mv6);
 
-        let mut target = DeviceState::default();
-        target.serial_number = String::from("OTHER");
+        let mut target = DeviceState {
+            serial_number: String::from("OTHER"),
+            ..DeviceState::default()
+        };
 
         slot.apply_to_device_state(&mut target);
 

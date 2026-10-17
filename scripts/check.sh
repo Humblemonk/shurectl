@@ -10,14 +10,14 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-# Any warning fails the gate, including in test code that clippy never
-# compiles (dead imports in #[cfg(test)] modules). Dependencies are capped by
+# Any warning fails the gate, test code included. Dependencies are capped by
 # cargo and never fail it.
 export RUSTFLAGS="${RUSTFLAGS:-} -D warnings"
 
 # `probe` builds shurectl-probe and `qa` the --qa harness; without them
-# clippy and the build skip that code.
-cargo clippy --features probe,qa
+# clippy and the build skip that code. The build also links shurectl-probe,
+# which no test does.
+cargo clippy --all-targets --features probe,qa
 cargo build --all-targets --features probe,qa
 cargo fmt --check
 cargo test
