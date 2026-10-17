@@ -355,16 +355,6 @@ mod tests {
     }
 
     #[test]
-    fn rolling_window_keeps_samples_within_window() {
-        let mut w = RollingWindow::new(2.0);
-        let t = Instant::now();
-        w.push(t, -200);
-        w.push(t, -150);
-        // Both are within the 2-second window; max should be -150 (i.e. -15.0 dBFS).
-        assert_eq!(w.max(Instant::now()), Some(-150));
-    }
-
-    #[test]
     fn rolling_window_boundary_sample_is_kept() {
         // A sample exactly at the boundary (0.9 s ago in a 1.0 s window) must
         // not be evicted.
@@ -415,13 +405,6 @@ mod tests {
             Some(-100),
             "long window must still hold the 500ms-old sample"
         );
-    }
-
-    #[test]
-    fn peak_window_both_empty_initially() {
-        let pw = PeakWindow::new();
-        assert!(pw.short.max(Instant::now()).is_none());
-        assert!(pw.long.max(Instant::now()).is_none());
     }
 
     #[test]

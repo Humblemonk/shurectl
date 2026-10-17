@@ -41,4 +41,3 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
 - `load_all_presets()` runs at startup; missing files → `None`
 - `DeviceAction` variants: `SavePreset`, `LoadPreset` (applies, then sends all SETs; the
   MV7 only the changed ones), `DeletePreset`, `PersistPresetName`
-- Tests use `tempfile` for hermetic temp dirs

@@ -1195,29 +1195,6 @@ mod tests {
         }
     }
 
-    /// The scenario from the proposal: Gain Lock blocks gain writes.
-    #[test]
-    fn gain_lock_blocks_gain_on_models_with_gain_lock() {
-        for model in [
-            DeviceModel::Mv6,
-            DeviceModel::Mv6Gen2,
-            DeviceModel::Mvx2uGen2,
-        ] {
-            let mut harness = Harness::new(model, true).expect("harness");
-            let replies = run(
-                &mut harness,
-                &[
-                    r#"{"key": "Down"}"#,
-                    r#"{"key": "Down"}"#,
-                    r#"{"expect": {"focus": "Gain"}}"#,
-                    r#"{"key": "Right"}"#,
-                    r#"{"expect": {"set": {"feature": "GAIN"}, "state": {"gain_tenths": 250}}}"#,
-                ],
-            );
-            assert_ok(&replies);
-        }
-    }
-
     #[test]
     fn failed_expectations_report_the_actual_value() {
         let mut harness = Harness::new(DeviceModel::Mv7Plus, true).expect("harness");

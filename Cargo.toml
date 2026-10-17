@@ -57,7 +57,6 @@ hidapi = { version = "2.4.1", default-features = false, features = ["macos-share
 hidapi = "2.4.1"
 
 [dev-dependencies]
-tempfile = "3"
 serde_json = "1"
 portable-pty = "0.9"
 

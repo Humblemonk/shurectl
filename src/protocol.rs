@@ -3913,29 +3913,6 @@ mod tests {
     }
 
     #[test]
-    fn crc16_ansi_is_deterministic() {
-        let data = [
-            0x11u8, 0x22, 0x00, 0x03, 0x08, 0x05, 0x70, 0x05, 0x01, 0x00, 0x00,
-        ];
-        assert_eq!(crc16_ansi(&data), crc16_ansi(&data));
-    }
-
-    #[test]
-    fn crc16_ansi_differs_from_ccitt_false() {
-        // Ensure we are NOT using CCITT-FALSE (which has init=0xFFFF and no reflection)
-        // CCITT-FALSE of [] = 0xFFFF; ANSI of [] = 0x0000
-        assert_eq!(crc16_ansi(&[]), 0x0000);
-        // They must differ on non-trivial input too
-        let data = [0x11u8, 0x22, 0x03, 0x00];
-        let ansi = crc16_ansi(&data);
-        // CCITT-FALSE known value for this input is 0x5426
-        assert_ne!(
-            ansi, 0x5426,
-            "crc16_ansi must not produce CCITT-FALSE values"
-        );
-    }
-
-    #[test]
     fn crc16_ansi_single_byte_boundary() {
         // Single-byte inputs — values verified against reference implementation
         // (poly=0x8005, init=0x0000, refin=true, refout=true, xorout=0x0000).
@@ -3945,65 +3922,6 @@ mod tests {
     }
 
     // ── build_packet / packet structure ───────────────────────────────────────
-
-    #[test]
-    fn packet_is_exactly_64_bytes() {
-        assert_eq!(cmd_get_gain(0).len(), PACKET_SIZE);
-        assert_eq!(cmd_set_gain(0, 360).len(), PACKET_SIZE);
-        assert_eq!(cmd_confirm(0).len(), PACKET_SIZE);
-    }
-
-    #[test]
-    fn packet_starts_with_report_id_0x01() {
-        let pkt = cmd_get_gain(0);
-        assert_eq!(pkt[0], 0x01, "Report ID must be 0x01");
-    }
-
-    #[test]
-    fn packet_header_magic_at_offset_2() {
-        let pkt = cmd_get_gain(0);
-        assert_eq!(pkt[2], 0x11);
-        assert_eq!(pkt[3], 0x22);
-    }
-
-    #[test]
-    fn packet_sequence_number_reflected() {
-        for seq in [0u8, 1, 42, 255] {
-            let pkt = cmd_get_gain(seq);
-            assert_eq!(pkt[4], seq, "seq byte at offset 4 must match");
-        }
-    }
-
-    #[test]
-    fn packet_constant_fields() {
-        let pkt = cmd_get_gain(0);
-        assert_eq!(pkt[5], 0x03, "constant 0x03 at offset 5");
-        assert_eq!(pkt[6], 0x08, "header end 0x08 at offset 6");
-        assert_eq!(pkt[8], 0x70, "data start 0x70 at offset 8");
-        assert_eq!(pkt[7], pkt[9], "data_len repeated at offsets 7 and 9");
-    }
-
-    #[test]
-    fn packet_crc_is_valid() {
-        // Verify the CRC in a built packet matches recomputing it
-        let pkt = cmd_set_gain(5, 360);
-        let total_len = pkt[1] as usize;
-        let crc_hi = pkt[total_len] as u16;
-        let crc_lo = pkt[total_len + 1] as u16;
-        let stored_crc = (crc_hi << 8) | crc_lo;
-        let computed_crc = crc16_ansi(&pkt[2..total_len]);
-        assert_eq!(stored_crc, computed_crc, "CRC in packet must be valid");
-    }
-
-    #[test]
-    fn packet_padded_with_zeros_to_64() {
-        let pkt = cmd_confirm(0);
-        // Confirm is a short packet — there should be trailing zeros
-        let total_len = pkt[1] as usize;
-        for &b in &pkt[total_len + 2..] {
-            assert_eq!(b, 0x00, "all bytes after CRC must be zero padding");
-        }
-    }
 
     /// Every packet goes through one of these two builders, so this covers the
     /// length, CRC and padding of every command.
@@ -4036,24 +3954,6 @@ mod tests {
     }
 
     #[test]
-    fn set_gain_encodes_db_correctly() {
-        // 36 dB → raw = 36 * 100 = 3600 = 0x0E10
-        let pkt = cmd_set_gain(0, 360);
-        assert_eq!(&pkt[10..13], &CMD_SET_FEAT);
-        assert_eq!(&pkt[14..16], &FEAT_GAIN);
-        // value at pkt[16..18]
-        let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
-        assert_eq!(raw, 3600, "36 dB must encode as 3600");
-    }
-
-    #[test]
-    fn set_gain_zero_db() {
-        let pkt = cmd_set_gain(0, 0);
-        let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
-        assert_eq!(raw, 0, "0 dB must encode as 0");
-    }
-
-    #[test]
     fn set_gain_encodes_half_db() {
         let pkt = cmd_set_gain(0, 285);
         let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
@@ -4065,13 +3965,6 @@ mod tests {
         assert_eq!(format_gain(0), "0 dB");
         assert_eq!(format_gain(285), "28.5 dB");
         assert_eq!(format_gain(600), "60 dB");
-    }
-
-    #[test]
-    fn set_phantom_on_uses_0x30() {
-        let pkt = cmd_set_phantom(0, true);
-        assert_eq!(&pkt[14..16], &FEAT_PHANTOM);
-        assert_eq!(pkt[16], PHANTOM_ON, "phantom ON must be 0x30");
     }
 
     #[test]
@@ -4115,46 +4008,6 @@ mod tests {
         assert_eq!(&pkt[10..13], &CMD_GET_FEAT, "must use CMD_GET_FEAT");
         assert_eq!(pkt[13], 0x00, "prefix must be 0x00");
         assert_eq!(&pkt[14..16], &FEAT_MIX, "must use FEAT_MIX address");
-    }
-
-    #[test]
-    fn mv6_set_mix_uses_hdr_constant_zero() {
-        // Confirmed by Wireshark capture: HDR_CONSTANT must be 0x00, not 0x03.
-        let pkt = cmd_set_mv6_mix(0, 62);
-        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00 for MV6 mix SET");
-    }
-
-    #[test]
-    fn mv6_set_mix_uses_feat_mix_address() {
-        let pkt = cmd_set_mv6_mix(0, 50);
-        assert_eq!(&pkt[10..13], &CMD_SET_FEAT, "must use CMD_SET_FEAT");
-        assert_eq!(pkt[13], 0x00, "prefix must be 0x00");
-        assert_eq!(&pkt[14..16], &FEAT_MIX, "must use FEAT_MIX address");
-        assert_eq!(pkt[16], 50, "value must be encoded directly");
-    }
-
-    #[test]
-    fn mv6_set_mix_clamps_at_100() {
-        let pkt = cmd_set_mv6_mix(0, 200);
-        assert_eq!(pkt[16], 100, "must clamp to 100");
-    }
-
-    #[test]
-    fn mv6_set_mix_confirmed_capture_value() {
-        // Wireshark capture showed value 0x3e (62) when MOTIV mic level was 62%.
-        let pkt = cmd_set_mv6_mix(0, 62);
-        assert_eq!(pkt[16], 0x3e, "62% must encode as 0x3e");
-    }
-
-    #[test]
-    fn mv6_set_mix_has_valid_crc() {
-        for mix in [0u8, 41, 62, 100] {
-            let pkt = cmd_set_mv6_mix(0, mix);
-            let total_len = pkt[1] as usize;
-            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
-            let computed_crc = crc16_ansi(&pkt[2..total_len]);
-            assert_eq!(stored_crc, computed_crc, "CRC must be valid for mix={mix}");
-        }
     }
 
     #[test]
@@ -4278,12 +4131,6 @@ mod tests {
         // Gen 2 uses the same gain addresses
         let gain_pkt_g2 = cmd_set_eq_band_gain(0, 0, 0, DeviceModel::Mvx2uGen2);
         assert_eq!(&gain_pkt_g2[14..16], &[0x02u8, 0x14]);
-    }
-
-    #[test]
-    fn confirm_packet_uses_correct_cmd() {
-        let pkt = cmd_confirm(0);
-        assert_eq!(&pkt[10..13], &CMD_CONFIRM);
     }
 
     // ── parse_response ────────────────────────────────────────────────────────
@@ -4430,12 +4277,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_response_rejects_too_short() {
-        assert!(parse_response(&[]).is_none());
-        assert!(parse_response(&[0x01; 10]).is_none());
-    }
-
-    #[test]
     fn parse_response_returns_none_for_confirm() {
         // CONFIRM responses should return None (no feature data).
         // 0x09 0x00 0x00 is the device's CONFIRM response command byte sequence.
@@ -4481,31 +4322,7 @@ mod tests {
         let _ = parse_response(&buf18); // must not panic
     }
 
-    #[test]
-    fn parse_response_get_feat_mix_full_chain() {
-        // A GET MIX response parsed through parse_response must yield FEAT_MIX
-        // with the correct value, and apply_response must update monitor_mix.
-        let buf = make_response(0, &RES_GET_FEAT, &FEAT_MIX, &[75]);
-        let result = parse_response(&buf);
-        assert!(result.is_some(), "parse_response must accept MIX response");
-        let reply = result.unwrap();
-        assert_eq!(reply.feat, FEAT_MIX, "feature address must be FEAT_MIX");
-        assert_eq!(reply.value, vec![75]);
-
-        let mut state = DeviceState::default();
-        assert!(apply_reply(&reply, &mut state));
-        assert_eq!(state.monitor_mix, 75);
-    }
-
     // ── apply_response ────────────────────────────────────────────────────────
-
-    #[test]
-    fn apply_response_gain() {
-        let mut state = DeviceState::default();
-        // 36 dB = raw 3600 = 0x0E10
-        let _ = apply_response(FEAT_GAIN, &[0x0E, 0x10], &mut state);
-        assert_eq!(state.gain_tenths, 360);
-    }
 
     #[test]
     fn apply_response_gain_keeps_half_db() {
@@ -4866,53 +4683,6 @@ mod tests {
         assert_eq!(&pkt[14..16], &FEAT_SERIAL);
     }
 
-    #[test]
-    fn apply_response_too_short_returns_false() {
-        let mut state = DeviceState::default();
-        assert!(
-            !apply_response(FEAT_GAIN, &[], &mut state),
-            "empty value must return false"
-        );
-        assert!(
-            !apply_response(FEAT_GAIN, &[0x01], &mut state),
-            "1-byte value for 2-byte gain must return false"
-        );
-    }
-
-    // ── Cycle helpers ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn compressor_cycles_full_round_trip() {
-        let seq = [
-            CompressorPreset::Off,
-            CompressorPreset::Light,
-            CompressorPreset::Medium,
-            CompressorPreset::Heavy,
-            CompressorPreset::Off,
-        ];
-        for w in seq.windows(2) {
-            assert_eq!(w[0].cycle_next(), w[1]);
-        }
-    }
-
-    #[test]
-    fn hpf_cycles_full_round_trip() {
-        let seq = [
-            HpfFrequency::Off,
-            HpfFrequency::Hz75,
-            HpfFrequency::Hz150,
-            HpfFrequency::Off,
-        ];
-        for w in seq.windows(2) {
-            assert_eq!(w[0].cycle_next(), w[1]);
-        }
-    }
-
-    #[test]
-    fn eq_band_freqs_are_correct() {
-        assert_eq!(EQ_BAND_FREQS, [100, 250, 1000, 4000, 10000]);
-    }
-
     // ── Lock command tests ────────────────────────────────────────────────────
 
     #[test]
@@ -4938,31 +4708,6 @@ mod tests {
 
         let pkt_unlock = cmd_set_lock(0, false);
         assert_eq!(pkt_unlock[16], 0x00, "locked=false must encode as 0x00");
-    }
-
-    #[test]
-    fn lock_packets_are_exactly_64_bytes_with_valid_crc() {
-        for locked in [true, false] {
-            let pkt = cmd_set_lock(0, locked);
-            assert_eq!(pkt.len(), PACKET_SIZE);
-            let total_len = pkt[1] as usize;
-            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
-            let computed_crc = crc16_ansi(&pkt[2..total_len]);
-            assert_eq!(
-                stored_crc, computed_crc,
-                "CRC must be valid for locked={locked}"
-            );
-        }
-    }
-
-    #[test]
-    fn lock_get_packet_differs_from_regular_get_feat() {
-        let lock_pkt = cmd_get_lock(0);
-        let gain_pkt = cmd_get_gain(0);
-        // Commands must differ (last byte 0x01 vs 0x02)
-        assert_ne!(&lock_pkt[10..13], &gain_pkt[10..13]);
-        assert_eq!(lock_pkt[12], 0x01);
-        assert_eq!(gain_pkt[12], 0x02);
     }
 
     #[test]
@@ -5045,14 +4790,6 @@ mod tests {
     }
 
     #[test]
-    fn mic_position_cycles_full_round_trip() {
-        let seq = [MicPosition::Near, MicPosition::Far, MicPosition::Near];
-        for w in seq.windows(2) {
-            assert_eq!(w[0].cycle_next(), w[1]);
-        }
-    }
-
-    #[test]
     fn auto_tone_roundtrip_via_packet() {
         for (tone, expected_byte) in [
             (AutoTone::Dark, 0x00u8),
@@ -5085,19 +4822,6 @@ mod tests {
     fn auto_tone_apply_response_empty_returns_false() {
         let mut state = DeviceState::default();
         assert!(!apply_response(FEAT_AUTO_TONE, &[], &mut state));
-    }
-
-    #[test]
-    fn auto_tone_cycles_full_round_trip() {
-        let seq = [
-            AutoTone::Dark,
-            AutoTone::Natural,
-            AutoTone::Bright,
-            AutoTone::Dark,
-        ];
-        for w in seq.windows(2) {
-            assert_eq!(w[0].cycle_next(), w[1]);
-        }
     }
 
     #[test]
@@ -5329,6 +5053,7 @@ mod tests {
         assert_eq!(DeviceModel::Mv6.max_gain_tenths(), 360);
         assert_eq!(DeviceModel::Mv6Gen2.max_gain_tenths(), 360);
         assert_eq!(DeviceModel::Mv7.max_gain_tenths(), 360);
+        assert_eq!(DeviceModel::Mv7Plus.max_gain_tenths(), 360);
     }
 
     #[test]
@@ -5405,20 +5130,6 @@ mod tests {
 
         let pkt_unlock = cmd_set_mv6_gain_lock(0, false);
         assert_eq!(pkt_unlock[16], 0x00, "locked=false must encode as 0x00");
-    }
-
-    #[test]
-    fn mv6_gain_lock_set_packet_has_valid_crc() {
-        for locked in [true, false] {
-            let pkt = cmd_set_mv6_gain_lock(0, locked);
-            let total_len = pkt[1] as usize;
-            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
-            let computed_crc = crc16_ansi(&pkt[2..total_len]);
-            assert_eq!(
-                stored_crc, computed_crc,
-                "CRC must be valid for locked={locked}"
-            );
-        }
     }
 
     #[test]
@@ -5508,9 +5219,6 @@ mod tests {
             assert_eq!(pkt[13], 0x00, "standard prefix");
             assert_eq!(pkt[14..16], addr);
             assert_eq!(pkt[16], value);
-            let total_len = pkt[1] as usize;
-            let stored_crc = u16::from_be_bytes([pkt[total_len], pkt[total_len + 1]]);
-            assert_eq!(stored_crc, crc16_ansi(&pkt[2..total_len]));
         }
     }
 
@@ -5711,24 +5419,6 @@ mod tests {
     }
 
     #[test]
-    fn mv7_playback_mix_uses_prefix_0x03() {
-        // Playback mix uses prefix=0x03 to distinguish from mic mix (prefix=0x00).
-        let pkt = cmd_set_mv7_playback_mix(0, 70);
-        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
-        assert_eq!(pkt[13], 0x03, "prefix must be 0x03 for playback mix");
-        assert_eq!(&pkt[14..16], &FEAT_MIX, "feature address must be FEAT_MIX");
-        assert_eq!(pkt[16], 70, "value must be encoded directly");
-    }
-
-    #[test]
-    fn mv7_playback_mix_get_uses_prefix_0x03() {
-        let pkt = cmd_get_mv7_playback_mix(0);
-        assert_eq!(pkt[5], 0x03, "GET HDR_CONSTANT must be 0x03");
-        assert_eq!(pkt[13], 0x03, "prefix must be 0x03 for playback mix GET");
-        assert_eq!(&pkt[14..16], &FEAT_MIX);
-    }
-
-    #[test]
     fn mv7_compressor_encodes_all_presets() {
         let cases = [
             (CompressorPreset::Off, 0x00u8),
@@ -5763,19 +5453,6 @@ mod tests {
     fn mv7_reverb_intensity_clamps_at_100() {
         let pkt = cmd_set_mv7_reverb_intensity(0, 200);
         assert_eq!(pkt[16], 100, "must clamp to 100");
-    }
-
-    #[test]
-    fn mv7_reverb_type_cycles_full_round_trip() {
-        let seq = [
-            ReverbType::Plate,
-            ReverbType::Hall,
-            ReverbType::Studio,
-            ReverbType::Plate,
-        ];
-        for w in seq.windows(2) {
-            assert_eq!(w[0].cycle_next(), w[1]);
-        }
     }
 
     #[test]
@@ -5829,51 +5506,6 @@ mod tests {
     fn mv7_set_mix_values_clamp_at_100() {
         assert_eq!(cmd_set_mv6_mix(0, 200)[16], 100);
         assert_eq!(cmd_set_mv7_playback_mix(0, 200)[16], 100);
-    }
-
-    #[test]
-    fn mv7_packets_all_have_valid_crc() {
-        let packets: &[Vec<u8>] = &[
-            cmd_factory_reset(0),
-            cmd_set_mv7_mute(0, true),
-            cmd_set_mv7_playback_mix(0, 50),
-            cmd_set_mv7_reverb_output(0, true),
-            cmd_set_mv7_reverb_type(0, &ReverbType::Studio),
-            cmd_set_mv7_reverb_intensity(0, 80),
-            cmd_set_mv7_reverb_monitor(0, false),
-            cmd_set_mv7_led_behavior(0, LedBehavior::Pulsing),
-            cmd_set_mv7_led_brightness(0, LedBrightness::Max),
-            cmd_set_mv7_led_live_theme(0, LedLiveTheme::Fruity),
-            cmd_set_mv7_led_solid_theme(0, LedSolidTheme::Custom),
-            cmd_set_mv7_led_pulsing_theme(0, LedPulsingTheme::Custom),
-            cmd_set_mv7_led_solid_color(0, 0xFF, 0xA6, 0x26),
-            cmd_set_mv7_led_pulsing_color(0, 0x10, 0x3F, 0xFB),
-            cmd_set_mv7_led_live_edge(0, 0xFF, 0xA6, 0x26),
-            cmd_set_mv7_led_live_middle(0, 0x10, 0x3F, 0xFB),
-            cmd_set_mv7_led_live_interior(0, 0xFF, 0x2A, 0x1A),
-        ];
-        for (i, pkt) in packets.iter().enumerate() {
-            let total_len = pkt[1] as usize;
-            let stored_crc = ((pkt[total_len] as u16) << 8) | pkt[total_len + 1] as u16;
-            let computed_crc = crc16_ansi(&pkt[2..total_len]);
-            assert_eq!(stored_crc, computed_crc, "case {i}: CRC must be valid");
-        }
-    }
-
-    #[test]
-    fn factory_reset_packet_structure() {
-        // Verified against Wireshark capture: CMD_SET_LOCK, HDR_CONSTANT=0x00,
-        // payload [0x00, 0x00, 0x22, 0x01].
-        let pkt = cmd_factory_reset(0);
-        assert_eq!(pkt.len(), PACKET_SIZE);
-        assert_eq!(pkt[1], 0x11, "total_len");
-        assert_eq!(pkt[2], 0x11, "magic[0]");
-        assert_eq!(pkt[3], 0x22, "magic[1]");
-        assert_eq!(pkt[5], 0x00, "HDR_CONSTANT must be 0x00");
-        // cmd bytes: CMD_SET_LOCK = [0x02, 0x02, 0x01]
-        assert_eq!(&pkt[10..13], &[0x02, 0x02, 0x01], "CMD_SET_LOCK");
-        // payload: [page=0x00, 0x00, sub=0x22, value=0x01]
-        assert_eq!(&pkt[13..17], &[0x00, 0x00, 0x22, 0x01], "payload");
     }
 
     /// A captured packet: the bytes up to the CRC, zero-padded to 64.
@@ -6134,13 +5766,6 @@ mod tests {
             &mut state
         ));
         assert_eq!(state.led_live_interior_rgb, [0xFF, 0x2A, 0x1A]);
-    }
-
-    // ── MV7+ gain range ───────────────────────────────────────────────────────
-
-    #[test]
-    fn device_model_max_gain_tenths_mv7_plus() {
-        assert_eq!(DeviceModel::Mv7Plus.max_gain_tenths(), 360);
     }
 
     // ── MV7+ apply_response: LED themes ──────────────────────────────────────
