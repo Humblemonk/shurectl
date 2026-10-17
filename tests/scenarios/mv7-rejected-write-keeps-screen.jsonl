@@ -1,0 +1,12 @@
+{"scenario": "mv7-rejected-write-keeps-screen", "models": ["mv7"], "modes": ["fake"]}
+{"device": {"refuse": 1}}
+{"key": "Enter"}
+{"expect": {"connected": true, "status": "rejected \"dspMode", "status_is_error": true, "state": {"mode": "Manual"}}}
+{"click_on": "Mute:"}
+{"device": {"refuse": 1}}
+{"key": "Enter"}
+{"expect": {"focus": "Mute", "connected": true, "status": "rejected \"micMute on\"", "state": {"muted": false}, "screen_not_contains": "● ON"}}
+{"key": "Down"}
+{"device": {"refuse": 1}}
+{"key": "Right"}
+{"expect": {"focus": "Gain", "connected": true, "status": "rejected \"inputGain 25.5\"", "state": {"gain_tenths": 240}, "screen_contains": "24 dB"}}

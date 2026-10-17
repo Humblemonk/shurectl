@@ -1,6 +1,6 @@
 {"scenario": "refused-command-stays-connected", "models": "all", "modes": ["fake"]}
 {"device": {"refuse": 1}}
 {"key": "r"}
-{"expect": {"connected": true, "status": "Ignored an unrecognised reply"}}
+{"expect": {"connected": true, "status": "state loaded", "state": {"gain_tenths": 240}}}
 {"tick": 2000}
 {"expect": {"connected": true}}

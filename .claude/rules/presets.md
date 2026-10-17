@@ -11,16 +11,31 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   types stay serde-free and the on-disk format is decoupled from internal enum changes
 - `PresetSlot` captures all DSP settings from `DeviceState`. Identity fields
   (`serial_number`, `firmware_version`) are excluded and preserved on apply
+- **Per-model settings** are `Option`s, saved only by a model that has the setting (the
+  `match` in `from_device_state()`, which mirrors `main.rs::apply_binary_preset()` and the
+  MV7's `setting_changes()`). `None` keeps the device's value on load, so a preset from
+  another model can't reset what that model lacks (Gain Lock, Mute Button, Limiter;
+  checked on hardware between the MVX2U Gen 2 and MV6 Gen 2). Loading writes only what the
+  preset saved (`apply_binary_preset()`), never the shown state's copy, which may be stale.
+  One exception: writing the gain needs Gain Lock off, so a preset without it re-locks to
+  the shown setting. The MV7 applies the preset onto its own fresh readback
+  (`load_mv7_preset()`). The summary
+  leaves `None` parts out. A new per-model field goes in that `match` and that load too
+- **EQ band switches** (`SerEqBand::enabled`) exist only on the MVX2U Gen 1, so only it
+  saves them and only it is sent them (`write_eq_bands()`); the Gen 2 and MV6 Gen 2 save
+  and get band gains alone
 - **New fields** need `#[serde(default)]`, and `apply_to_device_state()` must keep the
-  current value when the default means "not saved". Older files and presets from models
-  without the setting otherwise zero it on load (Playback Mix 0 = not saved, 73476a4)
+  current value when the field is missing. Older files otherwise zero it on load (Playback
+  Mix 0 = not saved, 73476a4)
 - **Monitor Mix** is a balance on the MVX2U Gen 1 and MV7 but the Mic Level elsewhere.
   `monitor_mix_is_mic_level` records which (`from_device_state()` takes the model), and
   `apply_preset_to_state()` skips a Monitor Mix of the other kind, without writing it.
   `None` (older files) loads as before
-- **Phantom power** is saved only on models with `has_phantom_power()`. `None` keeps the
-  device's 48V as it is, so a mic's preset can't cut power to a condenser mic. Older files
-  carry `phantom_power = false` from every model and still apply it
+- **Phantom power** is one of those, saved only on models with `has_phantom_power()`, so a
+  mic's preset can't cut power to a condenser mic
+- **Older files** hold every field from every model and still apply them all: before
+  2.12.0 that includes `phantom_power = false`, before 2.13.1 every other per-model setting.
+  Nothing in them records which model saved them
 - **Gain Lock** in `main.rs::apply_binary_preset()`: unlock, write the gain, re-lock
   straight away. A locked device ignores gain writes
 - `load_all_presets()` runs at startup; missing files → `None`

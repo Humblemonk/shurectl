@@ -1,4 +1,4 @@
-{"scenario": "readback-extra-ack-keeps-eq-band-5", "models": ["mvx2u-gen2"], "modes": ["fake"], "known_bug": "one ack too many shifts the readback, so the last GET's reply (EQ band 5 gain) is never read"}
+{"scenario": "readback-extra-ack-keeps-eq-band-5", "models": ["mvx2u-gen2"], "modes": ["fake"]}
 {"click_on": "EQ"}
 {"key": "Enter"}
 {"wheel": "down", "at": [100, 20]}
@@ -8,4 +8,4 @@
 {"key": "Up"}
 {"wheel": "down", "at": [100, 20]}
 {"key": "r"}
-{"expect": {"status": "State refreshed from device.", "status_is_error": false, "screen_contains": "Gain: -"}}
+{"expect": {"status": "Reconnected to Shure MVX2U Gen 2 — state loaded.", "status_is_error": false, "connected": true, "screen_contains": "Gain: -1.0 dB"}}

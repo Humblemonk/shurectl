@@ -47,8 +47,8 @@ use clap::Parser;
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent,
-        MouseEventKind,
+        self, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -266,11 +266,11 @@ fn main() -> Result<()> {
 fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
     if let Some(dev) = device {
         match reload_state(app, dev) {
-            Ok(unrecognised) => {
+            Ok(skipped) => {
                 app.set_ok(format!(
                     "Connected to {} — state loaded.{}",
                     dev.model.display_name(),
-                    unrecognised_note(&unrecognised)
+                    skipped_note(&skipped)
                 ));
             }
             Err(e) => {
@@ -346,7 +346,7 @@ fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
         .context("Could not read device state")?
         .state;
     let write_monitor_mix = apply_preset_to_state(&slot, &mut state, model);
-    let refused = apply_preset_to_device(&Some(dev), &state, model, write_monitor_mix)
+    let refused = apply_preset_to_device(&Some(dev), &slot, &state, model, write_monitor_mix)
         .context("Could not load preset")?;
     println!("Loaded \"{}\".{}", slot.name, refused_note(&refused));
     Ok(())
@@ -478,9 +478,25 @@ fn run_event_loop(
 struct LoopState {
     last_presence_poll: Instant,
     seen_back: bool,
-    /// The newest wheel adjustment, its control, and when the burst began. Wheel
-    /// adjustments carry absolute values, so the newest one supersedes the rest.
-    pending_scroll: Option<(app::Focus, DeviceAction, Instant)>,
+    pending_scroll: Option<PendingScroll>,
+}
+
+/// A wheel adjustment not written yet. Wheel adjustments carry absolute values,
+/// so the newest one of a burst on one control supersedes the rest.
+struct PendingScroll {
+    focus: app::Focus,
+    action: DeviceAction,
+    /// When the burst began.
+    started: Instant,
+    /// The state before the burst's first tick, put back if its write fails.
+    before: protocol::DeviceState,
+}
+
+/// Write the pending wheel adjustment, if any.
+fn flush_scroll(app: &mut App, device: &mut Option<ShureDevice>, loop_state: &mut LoopState) {
+    if let Some(pending) = loop_state.pending_scroll.take() {
+        apply_action(app, device, pending.action, Some(pending.before));
+    }
 }
 
 impl LoopState {
@@ -511,13 +527,43 @@ fn step(
 ) {
     let queued = event.is_some();
     if let Some(event) = event {
-        let is_scroll = matches!(
-            event,
+        let scroll_target = match event {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::ScrollUp | MouseEventKind::ScrollDown,
+                column,
+                row,
                 ..
-            })
+            }) => Some(hits.target_at(column, row)),
+            Event::Key(_)
+            | Event::Mouse(_)
+            | Event::Resize(_, _)
+            | Event::FocusGained
+            | Event::FocusLost
+            | Event::Paste(_) => None,
+        };
+        // Write a pending wheel adjustment before this event can change the
+        // screen, unless it is another tick on the same control: writes stay in
+        // input order, and each one's `before` holds only its own change. A
+        // button release, resize or focus change can't act, so the burst goes on.
+        let can_act = scroll_target.is_some()
+            || matches!(
+                event,
+                Event::Key(KeyEvent {
+                    kind: KeyEventKind::Press,
+                    ..
+                }) | Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(_),
+                    ..
+                })
+            );
+        let same_control = matches!(
+            (&loop_state.pending_scroll, scroll_target),
+            (Some(pending), Some(Some(mouse::Target::Control(focus)))) if pending.focus == focus
         );
+        if can_act && !same_control {
+            flush_scroll(app, device, loop_state);
+        }
+        let before = can_act.then(|| app.device_state.clone());
         let action = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
                 handle_key_too_small(app, key.code, key.modifiers);
@@ -539,35 +585,35 @@ fn step(
             | Event::Paste(_) => None,
         };
         match action {
-            Some(action) if is_scroll => {
-                let started = match loop_state.pending_scroll.take() {
-                    Some((focus, _, started)) if focus == app.focus => started,
-                    Some((_, earlier, _)) => {
-                        apply_action(app, device, earlier);
-                        now
-                    }
-                    None => now,
+            Some(action) if scroll_target.is_some() => {
+                // Only a burst on this control can still be pending.
+                let (started, before) = match (loop_state.pending_scroll.take(), before) {
+                    (Some(pending), _) => (pending.started, pending.before),
+                    (None, before) => (now, before.unwrap_or_else(|| app.device_state.clone())),
                 };
-                loop_state.pending_scroll = Some((app.focus, action, started));
+                loop_state.pending_scroll = Some(PendingScroll {
+                    focus: app.focus,
+                    action,
+                    started,
+                    before,
+                });
             }
-            Some(action) => {
-                // Keep device writes in input order.
-                if let Some((_, earlier, _)) = loop_state.pending_scroll.take() {
-                    apply_action(app, device, earlier);
-                }
-                apply_action(app, device, action);
-            }
+            Some(action) => apply_action(app, device, action, before),
             None => {}
         }
     }
 
-    if let Some((_, action, _)) = loop_state.pending_scroll.take_if(|(_, _, started)| {
-        !queued || app.should_quit || now.duration_since(*started) >= SCROLL_FLUSH_INTERVAL
+    let poll_due = now.duration_since(loop_state.last_presence_poll) >= PRESENCE_POLL_INTERVAL;
+    if loop_state.pending_scroll.as_ref().is_some_and(|pending| {
+        !queued
+            || app.should_quit
+            || poll_due
+            || now.duration_since(pending.started) >= SCROLL_FLUSH_INTERVAL
     }) {
-        apply_action(app, device, action);
+        flush_scroll(app, device, loop_state);
     }
 
-    if now.duration_since(loop_state.last_presence_poll) >= PRESENCE_POLL_INTERVAL {
+    if poll_due {
         loop_state.last_presence_poll = now;
         poll_presence(app, device, &mut loop_state.seen_back);
     }
@@ -766,7 +812,15 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     }
 }
 
-fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceAction) {
+/// Send `action` to the device: the only place that writes to it. `before` is
+/// the state before the key changed the screen, put back if the write clearly
+/// didn't land; `None` when no key changed it (a presence poll's reconnect).
+fn apply_action(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    action: DeviceAction,
+    before: Option<protocol::DeviceState>,
+) {
     // handle_key() refuses these first and undoes the screen change. This also
     // catches a write queued before the state became unread, such as a wheel
     // adjustment pending across a reconnect whose readback failed.
@@ -1058,6 +1112,7 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
                     apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 apply_preset_to_device(
                     device,
+                    slot,
                     &app.device_state,
                     app.device_model,
                     write_monitor_mix,
@@ -1113,32 +1168,44 @@ fn apply_action(app: &mut App, device: &mut Option<ShureDevice>, action: DeviceA
     };
 
     if let Err(e) = result {
-        if is_disconnect(&e) {
-            app.device_connected = false;
-            app.set_err(format!("Device error: {e} — {RECONNECT_HINT}"));
-        } else {
-            app.set_err(format!("Device error: {e}"));
-        }
+        recover_from_failure(app, device, &action, before, &e);
     }
 
-    // A readback or preset may have changed the mode under the current tab.
+    // A readback, a preset or an undone write may have changed the mode under
+    // the current tab.
     app.settle_focus(mode_before);
 }
 
 /// Status for a write refused because the device's settings haven't been read.
 const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
 
-/// Whether `action` is safe before the device's settings have been read: it
-/// reads them, or it doesn't depend on them.
-fn reads_no_state(action: &DeviceAction) -> bool {
+/// What an action does, which decides whether it may run before the device's
+/// settings have been read (`reads_no_state()`) and how a failure is undone
+/// (`recover_from_failure()`).
+enum ActionKind {
+    /// Reads the device or reconnects to it, and reports its own failures.
+    Connection,
+    /// Changes preset files only.
+    PresetFile,
+    /// Saves the shown state as a preset.
+    SavePreset,
+    /// One write whose value doesn't come from the shown state.
+    FixedWrite,
+    /// One write built on the shown state.
+    Write,
+    /// Several writes, which can stop partway.
+    Writes,
+}
+
+fn action_kind(action: &DeviceAction) -> ActionKind {
     match action {
-        DeviceAction::Refresh
-        | DeviceAction::Reconnect
-        | DeviceAction::DeletePreset(_)
-        | DeviceAction::PersistPresetName(_)
-        | DeviceAction::RenameDevice(_)
-        | DeviceAction::FactoryReset => true,
-        // Writes built on the shown state, and saving that state as a preset.
+        DeviceAction::Refresh | DeviceAction::Reconnect => ActionKind::Connection,
+        DeviceAction::DeletePreset(_) | DeviceAction::PersistPresetName(_) => {
+            ActionKind::PresetFile
+        }
+        DeviceAction::SavePreset(_) => ActionKind::SavePreset,
+        DeviceAction::RenameDevice(_) | DeviceAction::FactoryReset => ActionKind::FixedWrite,
+        DeviceAction::LoadPreset(_) | DeviceAction::FlattenEq => ActionKind::Writes,
         DeviceAction::SetGain(_)
         | DeviceAction::SetMode(_)
         | DeviceAction::SetAutoPosition(_)
@@ -1180,17 +1247,78 @@ fn reads_no_state(action: &DeviceAction) -> bool {
         | DeviceAction::SetMv7LedLiveInteriorRgb(_)
         | DeviceAction::SetEqPreset(_)
         | DeviceAction::SetLedLiveMeter(_)
-        | DeviceAction::SetLedNightMode(_)
-        | DeviceAction::SavePreset(_)
-        | DeviceAction::LoadPreset(_)
-        | DeviceAction::FlattenEq => false,
+        | DeviceAction::SetLedNightMode(_) => ActionKind::Write,
     }
+}
+
+/// Whether `action` is safe before the device's settings have been read: it
+/// reads them, or it doesn't depend on them.
+fn reads_no_state(action: &DeviceAction) -> bool {
+    match action_kind(action) {
+        ActionKind::Connection | ActionKind::PresetFile | ActionKind::FixedWrite => true,
+        ActionKind::SavePreset | ActionKind::Write | ActionKind::Writes => false,
+    }
+}
+
+/// After `action` failed, make the screen show what the device has. A single
+/// write the device clearly didn't take (it is gone, or the MV7 rejected it) is
+/// undone; the device being gone also covers a re-read after the write, which a
+/// reconnect repeats anyway. Anything else (a timeout, a re-read that failed
+/// after the write landed, several writes that stopped partway) leaves the
+/// device's settings unknown: they are read again, or marked unread until `r`.
+fn recover_from_failure(
+    app: &mut App,
+    device: &Option<ShureDevice>,
+    action: &DeviceAction,
+    before: Option<protocol::DeviceState>,
+    e: &anyhow::Error,
+) {
+    let mut gone = is_disconnect(e);
+    let read_back = match action_kind(action) {
+        ActionKind::Connection | ActionKind::PresetFile | ActionKind::SavePreset => None,
+        ActionKind::FixedWrite | ActionKind::Write if gone || is_rejected(e) => {
+            if let Some(state) = before {
+                app.device_state = state;
+            }
+            None
+        }
+        ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes => {
+            let read = match device {
+                Some(dev) if !gone => match reload_state(app, dev) {
+                    Ok(_) => true,
+                    Err(read_err) => {
+                        gone = is_disconnect(&read_err);
+                        false
+                    }
+                },
+                Some(_) | None => false,
+            };
+            app.state_unread |= !read;
+            Some(read)
+        }
+    };
+    if gone {
+        app.device_connected = false;
+    }
+    app.set_err(if gone {
+        format!("Device error: {e} — {RECONNECT_HINT}")
+    } else {
+        match read_back {
+            Some(true) => format!("Device error: {e}. Settings read back from the device."),
+            Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
+            None => format!("Device error: {e}"),
+        }
+    });
 }
 
 /// Whether `e` means the device is gone (a HID read or write failed), as
 /// opposed to a device that is present but refused a command.
 fn is_disconnect(e: &anyhow::Error) -> bool {
     e.downcast_ref::<device::Disconnected>().is_some()
+}
+
+fn is_rejected(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<device::Rejected>().is_some()
 }
 
 /// Re-read the device state. If that fails, the handle has usually gone stale
@@ -1206,11 +1334,11 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         return Ok(());
     };
     let read_err = match reload_state(app, dev) {
-        Ok(unrecognised) => {
+        Ok(skipped) => {
             app.device_connected = true;
             app.set_ok(format!(
                 "State refreshed from device.{}",
-                unrecognised_note(&unrecognised)
+                skipped_note(&skipped)
             ));
             return Ok(());
         }
@@ -1240,11 +1368,11 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
     // Keep the new handle even if its readback failed: the old one may be dead.
     *device = Some(reopened);
     match loaded {
-        Ok(unrecognised) => {
+        Ok(skipped) => {
             app.device_connected = true;
             app.set_ok(format!(
                 "Reconnected to {name} — state loaded.{}",
-                unrecognised_note(&unrecognised)
+                skipped_note(&skipped)
             ));
             Ok(())
         }
@@ -1308,32 +1436,33 @@ fn poll_presence(app: &mut App, device: &mut Option<ShureDevice>, seen_back: &mu
                 dev.model.display_name()
             ));
         }
-        PollStep::Reconnect => apply_action(app, device, DeviceAction::Reconnect),
+        PollStep::Reconnect => apply_action(app, device, DeviceAction::Reconnect, None),
     }
     *seen_back = present && !app.device_connected;
 }
 
-/// Status-bar suffix for replies a readback could not match to any setting,
-/// so they can be seen and reported without writing to the terminal.
-fn unrecognised_note(unrecognised: &[String]) -> String {
-    match unrecognised {
+/// Status-bar suffix for optional settings a readback couldn't read, so they
+/// can be seen and reported without writing to the terminal.
+fn skipped_note(skipped: &[String]) -> String {
+    match skipped {
         [] => String::new(),
-        [only] => format!(" Ignored an unrecognised reply: {only}."),
+        [only] => format!(" Couldn't read an optional setting: {only}."),
         [first, ..] => format!(
-            " Ignored {} unrecognised replies, first: {first}.",
-            unrecognised.len()
+            " Couldn't read {} optional settings, first: {first}.",
+            skipped.len()
         ),
     }
 }
 
 /// Replace the app's state with a full readback from the device. Returns the
-/// replies it could not match, for the caller's status message.
+/// optional settings it couldn't read, for the caller's status message. If
+/// the readback fails, the app's state is left as it was.
 fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     let readback = dev.get_state()?;
     app.device_state = readback.state;
     app.state_unread = false;
     app.device_state.serial_number = dev.serial_number.clone();
-    Ok(readback.unrecognised)
+    Ok(readback.skipped)
 }
 
 /// The MV7 stores mode, mic position and tone as one setting, and changing it
@@ -1343,10 +1472,9 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
         Some(dev) if dev.model == DeviceModel::Mv7 => {
-            let unrecognised = reload_state(app, dev)?;
+            let skipped = reload_state(app, dev)?;
             // Keep the caller's message ("Mode → …") and add the note to it.
-            app.status_message
-                .push_str(&unrecognised_note(&unrecognised));
+            app.status_message.push_str(&skipped_note(&skipped));
             Ok(())
         }
         Some(_) | None => Ok(()),
@@ -1405,44 +1533,56 @@ fn apply_preset_to_state(
     monitor_mix_applies
 }
 
-/// Writes a preset's Playback Level, except 0. A preset's 0 means "not saved" (so
-/// the state still holds the device's level), and a 0 in the state can be a
-/// level that was never read (an unanswered GET, demo mode, a failed readback),
-/// which written would silence playback.
-fn set_playback_level(d: &ShureDevice, level: u8) -> Result<()> {
-    if level > 0 {
-        d.set_mv7_playback_mix(level)?;
+/// Writes a preset's Playback Level when it saved one. A preset's 0 means "not
+/// saved", so the shown level (possibly stale, or 0 if it was never read and
+/// would silence playback) is never written in its place.
+fn write_playback_level(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+) -> Result<()> {
+    if slot.playback_mix > 0 {
+        d.set_mv7_playback_mix(state.playback_mix)?;
     }
     Ok(())
 }
 
-/// Send the configurable fields of `state` to the device, after loading a preset.
-/// Two are skipped: Monitor Mix when `write_monitor_mix` is false (the preset's
-/// was of the other kind, so the device keeps its own, which may never have
-/// been read), and a Playback Level of 0 (see `set_playback_level()`).
+/// Send `slot`'s settings to the device, as `apply_preset_to_state()` put them
+/// in `state`. Skipped: settings the preset didn't save (from a model without
+/// them), which the device keeps rather than get the shown state's copy, which
+/// may be stale; Monitor Mix when `write_monitor_mix` is false (the preset's was
+/// of the other kind); and a Playback Level of 0 (see `set_playback_level()`).
 /// Returns the settings the device refused; only the MV7 refuses any, and it
 /// is sent only the settings that differ (`ShureDevice::load_mv7_preset()`).
 fn apply_preset_to_device(
     device: &Option<ShureDevice>,
+    slot: &PresetSlot,
     state: &protocol::DeviceState,
     model: DeviceModel,
     write_monitor_mix: bool,
 ) -> Result<Vec<String>> {
     send_if_connected(device, |d| match model {
-        DeviceModel::Mv7 => d.load_mv7_preset(state, write_monitor_mix),
+        // Built on the mic's own fresh readback, so an unsaved setting keeps its value.
+        DeviceModel::Mv7 => d.load_mv7_preset(
+            |target| {
+                apply_preset_to_state(slot, target, model);
+            },
+            write_monitor_mix,
+        ),
         DeviceModel::Mvx2u
         | DeviceModel::Mvx2uGen2
         | DeviceModel::Mv6
         | DeviceModel::Mv6Gen2
         | DeviceModel::Mv7Plus => {
-            apply_binary_preset(d, state, model, write_monitor_mix).map(|()| Vec::new())
+            apply_binary_preset(d, slot, state, model, write_monitor_mix).map(|()| Vec::new())
         }
     })
 }
 
-/// `apply_preset_to_device()` for the binary models, which take every setting.
+/// `apply_preset_to_device()` for the binary models.
 fn apply_binary_preset(
     d: &ShureDevice,
+    slot: &PresetSlot,
     state: &protocol::DeviceState,
     model: DeviceModel,
     write_monitor_mix: bool,
@@ -1455,7 +1595,8 @@ fn apply_binary_preset(
     // Order: mode → gain → mute → HPF.
     // A gain-locked device ignores gain writes (checked on hardware), so
     // unlock, write the gain, then lock straight away so a later failed
-    // write can't leave the device unlocked behind a locked UI.
+    // write can't leave the device unlocked behind a locked UI. A preset
+    // without Gain Lock re-locks to the shown state's setting.
     if model.has_gain_lock() {
         d.set_mv6_gain_lock(false)?;
     }
@@ -1464,76 +1605,89 @@ fn apply_binary_preset(
         d.set_mv6_gain_lock(state.mv6_gain_locked)?;
     }
     d.set_mute(state.muted)?;
-    if model.has_hpf() {
+    if model.has_hpf() && slot.hpf.is_some() {
         d.set_hpf(&state.hpf)?;
     }
     match model {
         DeviceModel::Mvx2u => {
-            d.set_auto_position(state.auto_position, state.auto_tone)?;
-            d.set_auto_tone(state.auto_position, state.auto_tone)?;
-            d.set_auto_gain(&state.auto_gain)?;
-            d.set_phantom(state.phantom_power)?;
-            d.set_limiter(state.limiter_enabled)?;
-            d.set_compressor(&state.compressor)?;
-            d.set_eq_enable(state.eq_enabled)?;
-            for (band, eq) in state.eq_bands.iter().enumerate() {
-                d.set_eq_band_enable(band, eq.enabled)?;
-                d.set_eq_band_gain(band, eq.gain_db)?;
+            if slot.auto_position.is_some() {
+                d.set_auto_position(state.auto_position, state.auto_tone)?;
             }
+            if slot.auto_tone.is_some() {
+                d.set_auto_tone(state.auto_position, state.auto_tone)?;
+            }
+            if slot.auto_gain.is_some() {
+                d.set_auto_gain(&state.auto_gain)?;
+            }
+            if slot.phantom_power.is_some() {
+                d.set_phantom(state.phantom_power)?;
+            }
+            write_limiter_and_compressor(d, slot, state)?;
+            if slot.eq_enabled.is_some() {
+                d.set_eq_enable(state.eq_enabled)?;
+            }
+            write_eq_bands(d, slot, state, true)?;
         }
         DeviceModel::Mvx2uGen2 => {
-            d.set_phantom(state.phantom_power)?;
-            set_playback_level(d, state.playback_mix)?;
-            d.set_limiter(state.limiter_enabled)?;
-            d.set_compressor(&state.compressor)?;
-            d.set_mv6_denoiser(state.denoiser_enabled)?;
-            d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
-            d.set_mv6_tone(state.tone)?;
-            for (band, eq) in state.eq_bands.iter().enumerate() {
-                d.set_eq_band_gain(band, eq.gain_db)?;
+            if slot.phantom_power.is_some() {
+                d.set_phantom(state.phantom_power)?;
             }
+            write_playback_level(d, slot, state)?;
+            write_limiter_and_compressor(d, slot, state)?;
+            write_voice_settings(d, slot, state)?;
+            write_eq_bands(d, slot, state, false)?;
         }
         DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => {
-            d.set_mv6_denoiser(state.denoiser_enabled)?;
-            d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
-            d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
-            d.set_mv6_tone(state.tone)?;
-            set_playback_level(d, state.playback_mix)?;
+            write_voice_settings(d, slot, state)?;
+            if slot.mute_btn_disabled.is_some() {
+                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+            }
+            write_playback_level(d, slot, state)?;
             if model == DeviceModel::Mv6Gen2 {
-                d.set_auto_gain(&state.auto_gain)?;
-                d.set_adaptation_rate(state.adaptation_rate_fast)?;
-                d.set_denoiser_level(state.denoiser_level)?;
-                for (band, eq) in state.eq_bands.iter().enumerate() {
-                    d.set_eq_band_gain(band, eq.gain_db)?;
+                if slot.auto_gain.is_some() {
+                    d.set_auto_gain(&state.auto_gain)?;
                 }
-                d.set_tone_mode(state.tone_advanced)?;
+                if slot.adaptation_rate_fast.is_some() {
+                    d.set_adaptation_rate(state.adaptation_rate_fast)?;
+                }
+                if slot.denoiser_level.is_some() {
+                    d.set_denoiser_level(state.denoiser_level)?;
+                }
+                write_eq_bands(d, slot, state, false)?;
+                if slot.tone_advanced.is_some() {
+                    d.set_tone_mode(state.tone_advanced)?;
+                }
             }
         }
         DeviceModel::Mv7 => {
             anyhow::bail!("The MV7 loads presets through ShureDevice::load_mv7_preset()")
         }
         DeviceModel::Mv7Plus => {
-            d.set_mv6_denoiser(state.denoiser_enabled)?;
-            d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
-            d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
-            d.set_mv6_tone(state.tone)?;
-            d.set_limiter(state.limiter_enabled)?;
-            d.set_compressor(&state.compressor)?;
-            set_playback_level(d, state.playback_mix)?;
-            d.set_mv7_reverb_output(state.reverb_on_output)?;
-            d.set_mv7_reverb_monitor(state.reverb_monitoring)?;
-            d.set_mv7_reverb_type(&state.reverb_type)?;
-            d.set_mv7_reverb_intensity(state.reverb_intensity)?;
-            d.set_mv7_led_behavior(state.led_behavior)?;
-            d.set_mv7_led_brightness(state.led_brightness)?;
-            d.set_mv7_led_live_theme(state.led_live_theme)?;
-            d.set_mv7_led_solid_theme(state.led_solid_theme)?;
-            d.set_mv7_led_pulsing_theme(state.led_pulsing_theme)?;
-            d.set_mv7_led_solid_color(state.led_solid_rgb)?;
-            d.set_mv7_led_pulsing_color(state.led_pulsing_rgb)?;
-            d.set_mv7_led_live_edge(state.led_live_edge_rgb)?;
-            d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
-            d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
+            write_voice_settings(d, slot, state)?;
+            if slot.mute_btn_disabled.is_some() {
+                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+            }
+            write_limiter_and_compressor(d, slot, state)?;
+            write_playback_level(d, slot, state)?;
+            // The MV7+ saves its reverb and LED settings together.
+            if slot.reverb_on_output.is_some() {
+                d.set_mv7_reverb_output(state.reverb_on_output)?;
+                d.set_mv7_reverb_monitor(state.reverb_monitoring)?;
+                d.set_mv7_reverb_type(&state.reverb_type)?;
+                d.set_mv7_reverb_intensity(state.reverb_intensity)?;
+            }
+            if slot.led_behavior.is_some() {
+                d.set_mv7_led_behavior(state.led_behavior)?;
+                d.set_mv7_led_brightness(state.led_brightness)?;
+                d.set_mv7_led_live_theme(state.led_live_theme)?;
+                d.set_mv7_led_solid_theme(state.led_solid_theme)?;
+                d.set_mv7_led_pulsing_theme(state.led_pulsing_theme)?;
+                d.set_mv7_led_solid_color(state.led_solid_rgb)?;
+                d.set_mv7_led_pulsing_color(state.led_pulsing_rgb)?;
+                d.set_mv7_led_live_edge(state.led_live_edge_rgb)?;
+                d.set_mv7_led_live_middle(state.led_live_middle_rgb)?;
+                d.set_mv7_led_live_interior(state.led_live_interior_rgb)?;
+            }
         }
     }
     if write_monitor_mix {
@@ -1542,9 +1696,343 @@ fn apply_binary_preset(
     Ok(())
 }
 
+/// Limiter and Compressor, where the preset saved them.
+fn write_limiter_and_compressor(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+) -> Result<()> {
+    if slot.limiter_enabled.is_some() {
+        d.set_limiter(state.limiter_enabled)?;
+    }
+    if slot.compressor.is_some() {
+        d.set_compressor(&state.compressor)?;
+    }
+    Ok(())
+}
+
+/// Denoiser, Popper Stopper and Tone, where the preset saved them.
+fn write_voice_settings(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+) -> Result<()> {
+    if slot.denoiser_enabled.is_some() {
+        d.set_mv6_denoiser(state.denoiser_enabled)?;
+    }
+    if slot.popper_stopper_enabled.is_some() {
+        d.set_mv6_popper_stopper(state.popper_stopper_enabled)?;
+    }
+    if slot.tone.is_some() {
+        d.set_mv6_tone(state.tone)?;
+    }
+    Ok(())
+}
+
+/// The five EQ bands' gains, and on a model with per-band switches (the MVX2U
+/// Gen 1, `band_switches`) each band's switch where the preset saved one. Other
+/// models have no switch address, so it is never sent to them, even from a Gen 1
+/// preset or an older file that holds switches.
+fn write_eq_bands(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+    band_switches: bool,
+) -> Result<()> {
+    let Some(saved) = &slot.eq_bands else {
+        return Ok(());
+    };
+    for (band, (eq, saved)) in state.eq_bands.iter().zip(saved).enumerate() {
+        if band_switches && saved.enabled.is_some() {
+            d.set_eq_band_enable(band, eq.enabled)?;
+        }
+        d.set_eq_band_gain(band, eq.gain_db)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fake_hid::FakeDevice;
+    use protocol::{DeviceState, EqBand, EqPreset};
+
+    #[test]
+    fn a_failed_write_is_undone_only_when_it_clearly_did_not_land() {
+        let before = DeviceState::default();
+        let shown = DeviceState {
+            muted: true,
+            ..before.clone()
+        };
+        let mut app = App {
+            device_state: shown.clone(),
+            ..App::default()
+        };
+        let mute = DeviceAction::SetMute(true);
+
+        // The MV7 rejected it: the old value is certain.
+        let rejected = anyhow::Error::from(device::Rejected("rejected".into()));
+        recover_from_failure(&mut app, &None, &mute, Some(before.clone()), &rejected);
+        assert!(!app.device_state.muted);
+        assert!(!app.state_unread);
+
+        // Unplugged: the write never reached it.
+        app.device_state = shown.clone();
+        let gone = anyhow::Error::from(device::Disconnected("gone".into()));
+        recover_from_failure(&mut app, &None, &mute, Some(before.clone()), &gone);
+        assert!(!app.device_state.muted);
+        assert!(!app.device_connected);
+
+        // No reply: the mic may have taken it, so nothing is assumed.
+        app.device_connected = true;
+        app.device_state = shown.clone();
+        let timeout = anyhow::anyhow!("No reply from the MV7");
+        recover_from_failure(&mut app, &None, &mute, Some(before.clone()), &timeout);
+        assert!(app.state_unread, "writes wait for a readback");
+        assert!(app.status_message.contains(STATE_UNREAD_HINT));
+
+        // With the device still there, it is read back instead.
+        let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            device_state: shown,
+            ..App::default()
+        };
+        recover_from_failure(&mut app, &Some(fake.open()), &mute, Some(before), &timeout);
+        assert!(!app.device_state.muted);
+        assert!(!app.state_unread);
+        assert!(app.status_message.contains("read back"));
+    }
+
+    #[test]
+    fn a_preset_load_that_stops_partway_is_not_rolled_back() {
+        // Mute and gain may already have landed; the state is unknown.
+        let loaded = DeviceState {
+            gain_tenths: 300,
+            ..DeviceState::default()
+        };
+        let mut app = App {
+            device_state: loaded.clone(),
+            ..App::default()
+        };
+        let gone = anyhow::Error::from(device::Disconnected("gone".into()));
+        recover_from_failure(
+            &mut app,
+            &None,
+            &DeviceAction::LoadPreset(0),
+            Some(DeviceState::default()),
+            &gone,
+        );
+        assert_eq!(app.device_state, loaded);
+        assert!(app.state_unread, "the reconnect reads it back");
+
+        // A preset file failing to save touches no device state.
+        let mut app = App::default();
+        let disk = anyhow::anyhow!("disk full");
+        recover_from_failure(&mut app, &None, &DeviceAction::SavePreset(0), None, &disk);
+        assert!(!app.state_unread);
+    }
+
+    /// Findings of the f3281ae review: Gen 1 band switches went to models
+    /// without them, and a preset without a Playback Level wrote the shown one.
+    #[test]
+    fn a_preset_load_writes_nothing_the_model_lacks_or_the_preset_left_out() {
+        // A Gen 1 preset holds band switches; the MV6 Gen 2 has no address for them.
+        let gen1 =
+            PresetSlot::from_device_state("Gen 1", &DeviceState::default(), DeviceModel::Mvx2u);
+        assert!(
+            gen1.eq_bands
+                .is_some_and(|bands| bands[0].enabled.is_some())
+        );
+        let mv6_gen2 = FakeDevice::with_state(
+            DeviceModel::Mv6Gen2,
+            DeviceState {
+                playback_mix: 70,
+                ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
+            },
+        );
+        // The shown Playback Level is stale; the preset (from a Gen 1) has none.
+        let shown = DeviceState {
+            playback_mix: 20,
+            ..DeviceState::default()
+        };
+        let after = load_on_fake(&mv6_gen2, &gen1, shown);
+        assert_eq!(after.playback_mix, 70);
+        let unknown: Vec<String> = mv6_gen2
+            .log_since(0)
+            .into_iter()
+            .filter_map(|packet| match packet.kind {
+                fake_hid::PacketKind::Set { feature, .. }
+                    if feature.starts_with("unrecognised") =>
+                {
+                    Some(feature)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "SETs to addresses the MV6 Gen 2 lacks: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn a_re_read_that_finds_the_device_gone_says_so() {
+        let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
+        let device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            ..App::default()
+        };
+        fake.faults_mut(|faults| faults.fail_io = true);
+        let timeout = anyhow::anyhow!("No reply");
+        recover_from_failure(
+            &mut app,
+            &device,
+            &DeviceAction::SetMute(true),
+            None,
+            &timeout,
+        );
+        assert!(!app.device_connected);
+        assert!(app.state_unread);
+        assert!(
+            app.status_message.contains(RECONNECT_HINT),
+            "{}",
+            app.status_message
+        );
+    }
+
+    /// Finding of the 09e9569 review: a wheel adjustment still pending when the
+    /// next key changed the screen took that key's change in with it.
+    #[test]
+    fn a_pending_wheel_adjustment_goes_out_before_the_next_key() {
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let mut hits = mouse::HitMap::default();
+        hits.control(ratatui::layout::Rect::new(1, 5, 70, 3), app::Focus::Gain);
+        let now = Instant::now();
+        let mut loop_state = LoopState::new(now);
+        let key = |code| {
+            Some(Event::Key(crossterm::event::KeyEvent::new(
+                code,
+                KeyModifiers::NONE,
+            )))
+        };
+        let wheel = Some(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 30,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            wheel,
+            now,
+            &mut loop_state,
+        );
+        assert!(loop_state.pending_scroll.is_some());
+        // ↑ to Mute writes the pending gain first.
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            key(KeyCode::Up),
+            now,
+            &mut loop_state,
+        );
+        assert!(loop_state.pending_scroll.is_none());
+        assert_eq!(app.focus, app::Focus::Mute);
+        // The mic rejects the mute: only the mute is undone, the gain stands.
+        fake.faults_mut(|faults| faults.refuse = 1);
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            key(KeyCode::Enter),
+            now,
+            &mut loop_state,
+        );
+        assert!(!app.device_state.muted);
+        assert_eq!(app.device_state.gain_tenths, 255);
+        let mic = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        assert!(!mic.muted);
+        assert_eq!(mic.gain_tenths, 255);
+    }
+
+    /// Load `slot` on `fake` the way the Presets tab does, from a shown state
+    /// that may be stale, and return what the device then has.
+    fn load_on_fake(fake: &FakeDevice, slot: &PresetSlot, shown: DeviceState) -> DeviceState {
+        let device = Some(fake.open());
+        let model = fake.model();
+        let mut state = shown;
+        let write_monitor_mix = apply_preset_to_state(slot, &mut state, model);
+        apply_preset_to_device(&device, slot, &state, model, write_monitor_mix).expect("load");
+        let dev = device.as_ref().expect("device");
+        dev.get_state().expect("readback").state
+    }
+
+    #[test]
+    fn a_preset_leaves_settings_it_did_not_save_on_the_device() {
+        // An MVX2U Gen 2 preset has no Mute Button or Denoiser level. The shown
+        // state is stale (defaults), but the MV6 Gen 2 keeps its own values.
+        let gen2 =
+            PresetSlot::from_device_state("Gen 2", &DeviceState::default(), DeviceModel::Mvx2uGen2);
+        let mv6_gen2 = FakeDevice::with_state(
+            DeviceModel::Mv6Gen2,
+            DeviceState {
+                mute_btn_disabled: true,
+                denoiser_level: 80,
+                ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
+            },
+        );
+        let after = load_on_fake(&mv6_gen2, &gen2, DeviceState::default());
+        assert!(after.mute_btn_disabled);
+        assert_eq!(after.denoiser_level, 80);
+
+        // Its EQ bands carry no on/off switch, which only the Gen 1 has.
+        let gen1 = FakeDevice::with_state(
+            DeviceModel::Mvx2u,
+            DeviceState {
+                eq_bands: [EqBand {
+                    enabled: true,
+                    gain_db: 0,
+                }; 5],
+                ..FakeDevice::seed_state(DeviceModel::Mvx2u)
+            },
+        );
+        let after = load_on_fake(&gen1, &gen2, DeviceState::default());
+        assert!(after.eq_bands.iter().all(|band| band.enabled));
+
+        // The MV7 builds the preset on its own readback: an MV7+ preset has no
+        // EQ preset, so the mic keeps Presence Boost however stale the screen is.
+        let mv7plus =
+            PresetSlot::from_device_state("MV7+", &DeviceState::default(), DeviceModel::Mv7Plus);
+        let mv7 = FakeDevice::with_state(
+            DeviceModel::Mv7,
+            DeviceState {
+                eq_preset: EqPreset::PresenceBoost,
+                ..FakeDevice::seed_state(DeviceModel::Mv7)
+            },
+        );
+        let after = load_on_fake(&mv7, &mv7plus, DeviceState::default());
+        assert_eq!(after.eq_preset, EqPreset::PresenceBoost);
+    }
 
     #[test]
     fn cli_parses_mute_status_and_preset_slot() {
@@ -1590,7 +2078,7 @@ mod tests {
         let action = handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(&action, Some(DeviceAction::RenameDevice(n)) if n == "Desk 2q"));
         assert!(!app.editing_device_name);
-        apply_action(&mut app, &mut None, action.expect("rename action"));
+        apply_action(&mut app, &mut None, action.expect("rename action"), None);
         assert_eq!(app.device_state.device_name, "Desk 2q");
     }
 
@@ -1643,7 +2131,7 @@ mod tests {
         // A write that skipped handle_key() (a queued wheel adjustment) is
         // refused too.
         app.set_ok("");
-        apply_action(&mut app, &mut None, DeviceAction::SetGain(100));
+        apply_action(&mut app, &mut None, DeviceAction::SetGain(100), None);
         assert_eq!(app.status_message, STATE_UNREAD_HINT);
     }
 
@@ -1837,7 +2325,7 @@ mod tests {
             presets,
             ..App::default()
         };
-        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0), None);
         assert!(
             !app.device_state.mv6_gain_locked,
             "the flag must not linger to be saved into MV7+ presets"
@@ -1855,7 +2343,7 @@ mod tests {
     fn refresh_without_device_reports_demo_mode() {
         let mut app = App::default();
         let mut device = None;
-        apply_action(&mut app, &mut device, DeviceAction::Refresh);
+        apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
         assert!(!app.status_is_error);
         assert_eq!(app.status_message, "Demo mode — no device to refresh.");
         assert!(device.is_none());
@@ -1889,7 +2377,7 @@ mod tests {
             presets,
             ..App::default()
         };
-        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0), None);
         assert!(app.device_state.mv6_gain_locked);
         assert!(app.gain_locked());
     }
@@ -1923,15 +2411,15 @@ mod tests {
     }
 
     #[test]
-    fn unrecognised_note_is_empty_or_names_the_first_reply() {
-        assert_eq!(unrecognised_note(&[]), "");
+    fn skipped_note_is_empty_or_names_the_first_query() {
+        assert_eq!(skipped_note(&[]), "");
         assert_eq!(
-            unrecognised_note(&["feature 0x01 0x99".into()]),
-            " Ignored an unrecognised reply: feature 0x01 0x99."
+            skipped_note(&["feature 0x01 0x99".into()]),
+            " Couldn't read an optional setting: feature 0x01 0x99."
         );
         assert_eq!(
-            unrecognised_note(&["feature 0x01 0x99".into(), "feature 0x02 0x77".into()]),
-            " Ignored 2 unrecognised replies, first: feature 0x01 0x99."
+            skipped_note(&["feature 0x01 0x99".into(), "feature 0x02 0x77".into()]),
+            " Couldn't read 2 optional settings, first: feature 0x01 0x99."
         );
     }
 
@@ -1955,12 +2443,12 @@ mod tests {
     #[test]
     fn gen2_eq_preset_is_snapped_to_the_gen1_grid_on_load() {
         let mut app = app_with_preset(DeviceModel::Mvx2u, gen2_eq_state());
-        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0), None);
         assert_eq!(app.device_state.eq_bands[0].gain_db, 20);
         assert_eq!(app.device_state.eq_bands[1].gain_db, -20);
 
         let mut app = app_with_preset(DeviceModel::Mvx2uGen2, gen2_eq_state());
-        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0), None);
         assert_eq!(app.device_state.eq_bands[0].gain_db, 15);
         assert_eq!(app.device_state.eq_bands[1].gain_db, -25);
     }
@@ -1978,7 +2466,7 @@ mod tests {
             ..app_with_preset(DeviceModel::Mvx2u, saved)
         };
         assert_eq!(app.device_state.mode, InputMode::Auto);
-        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0));
+        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0), None);
         assert_eq!(app.device_state.mode, InputMode::Manual);
         assert_eq!(app.active_tab, app::Tab::Presets);
         assert_eq!(app.focus, app::Focus::PresetActions(0));

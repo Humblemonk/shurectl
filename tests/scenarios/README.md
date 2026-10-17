@@ -25,10 +25,10 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
   (Edge, Middle, Interior)
 - Mouse: click targets on the EQ, Reverb, LED, Presets and Info tabs and in Auto; a second
   click on a toggle fires it; preset Load/Delete arming by click; resize while editing a name
-- Connection: keys while disconnected; I/O failure (`fail_io`) and recovery with `r`; poll
-  timing (no disconnect before the first poll); `r` in demo mode
+- Connection: recovery from an I/O failure with `r`; poll timing (no disconnect before the
+  first poll); `r` in demo mode
 - Presets: an empty slot; one SET per stored setting in the same order on every model;
-  presets from another model (Gain Lock, Monitor Mix kind); name length limit; `s` and `d`
+  a preset with the other Monitor Mix kind; name length limit; `s` and `d`
   on the name row; MODE before EQ and Dynamics on load; loading while disconnected
 - Info: device name length limit; Tab or `q` while Factory Reset is armed; the MV7 Info
   tab has nothing focusable; the help overlay matches the readme key table
@@ -113,6 +113,9 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `preset-load-unlocks-relocks` | MV6, MV6 Gen 2, MVX2U Gen 2 | fake | Loading under Gain Lock sends unlock → GAIN → re-lock, in that order, and the gain applies |
 | `preset-old-file-keeps-fields` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | A pre-Playback-Level preset file (`fixtures/presets-v2.9`) loads without zeroing Playback Level |
 | `mv7-text-shell` | MV7 | fake | Gain, mute, a preset load that has to restore a changed gain, and Mode all go over the MV7 text shell |
+| `preset-from-mvx2u-gen2-keeps-mv6-gen2-settings` | MV6 Gen 2 | fake | An MVX2U Gen 2 preset keeps the MV6 Gen 2's Mute Button and Denoiser level, which the Gen 2 doesn't have |
+| `preset-from-mv6-gen2-keeps-mvx2u-gen2-settings` | MVX2U Gen 2 | fake | An MV6 Gen 2 preset keeps the MVX2U Gen 2's Limiter and Compressor |
+| `preset-without-gain-lock-keeps-it` | MV6, MV6 Gen 2, MVX2U Gen 2 | fake | An MV7+ preset (no Gain Lock) unlocks to write the gain, then locks again |
 
 ## Info tab and device lifecycle
 
@@ -124,8 +127,10 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `factory-reset-reconnects` | MV7+, MV6 Gen 2, MVX2U Gen 2 | fake | After a reset the device drops off, reconnects, and reads back factory state |
 | `unplug-replug` | all | fake | An unplug shows DISCONNECTED; replugging reconnects on the second poll or straight away on `r` |
 | `readback-order` | MVX2U Gen 2, MV7+ | fake | A dropped ack doesn't shift the replies of a later `r` |
-| `refused-command-stays-connected` | all | fake | An unrecognised reply is reported but doesn't mark the device disconnected |
+| `refused-command-stays-connected` | all | fake | A refused GET fails `r`'s readback without marking the device disconnected; the reconnect reads it again |
+| `write-failed-keeps-screen` | all | fake | When a write fails (I/O error), Mute and Gain keep showing what the device has |
+| `mv7-rejected-write-keeps-screen` | MV7 | fake | A Mode, Mute or Gain change the MV7 rejects is undone on screen, and the mic stays connected |
 | `readback-failed-reconnect-refuses-writes` | all | fake | If a reconnect can't read the device, writes are refused and the screen kept until `r` succeeds |
-| `readback-unanswered-get-keeps-state` | all | fake | **Known bug.** A GET left without a usable reply during `r` should keep that setting, not reset gain to 36 dB |
-| `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | **Known bug.** After one ack too many, `r` should still read EQ band 5's gain |
+| `readback-unanswered-get-keeps-state` | all | fake | A GET left without a usable reply during `r` keeps that setting, not resetting gain to 36 dB |
+| `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
 | `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |

@@ -1,0 +1,11 @@
+{"scenario": "preset-from-mv6-gen2-keeps-mvx2u-gen2-settings", "models": ["mvx2u-gen2"], "modes": ["fake"]}
+{"click_on": "Dynamics"}
+{"key": "Enter"}
+{"key": "Down"}
+{"key": "Enter", "repeat": 2}
+{"expect": {"focus": "Compressor", "state": {"limiter_enabled": true, "compressor": "Medium"}}}
+{"preset_dir": "fixtures/presets-mv6-gen2"}
+{"click_on": "Presets"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"status": "Loaded \"MV6 Gen 2 Voice\".", "state": {"limiter_enabled": true, "compressor": "Medium"}}}

@@ -962,9 +962,9 @@ mod tests {
             let fake = FakeDevice::with_state(model, seeded.clone());
             let readback = fake.open().get_state().expect("readback");
             assert!(
-                readback.unrecognised.is_empty(),
+                readback.skipped.is_empty(),
                 "{model:?}: {:?}",
-                readback.unrecognised
+                readback.skipped
             );
             let state = fake.0.borrow();
             for packet in fake.log_since(0) {
@@ -1013,7 +1013,7 @@ mod tests {
             let readback = device.get_state().expect("readback");
             assert!(readback.state.muted, "{model:?}");
             assert_eq!(readback.state.gain_tenths, 240, "{model:?}");
-            assert!(readback.unrecognised.is_empty(), "{model:?}");
+            assert!(readback.skipped.is_empty(), "{model:?}");
         }
     }
 
@@ -1057,20 +1057,31 @@ mod tests {
         }
     }
 
-    /// Documents a known bug (481dc76's class), not intended behaviour: after
-    /// one ack too many, every later GET reads the reply before its own.
-    /// Replies route by address, so most values still land, but the last GET's
-    /// reply is never read and its field keeps `DeviceState::default()`. A fix
-    /// must flip these asserts, as it must the `readback-extra-ack-*` scenarios.
+    /// After one ack too many, every later GET reads the reply before its own.
+    /// The MVX2U Gen 2's ack doesn't parse, so the first GET counts as
+    /// unanswered and the readback fails rather than show a default.
+    #[test]
+    fn extra_ack_fails_the_readback_when_the_ack_does_not_parse() {
+        let model = DeviceModel::Mvx2uGen2;
+        let seeded = distinct_state(model);
+        let fake = FakeDevice::with_state(model, seeded.clone());
+        let device = fake.open();
+        fake.faults_mut(|f| f.extra_acks = 1);
+        device.set_mute(seeded.muted).expect("set mute");
+        assert!(device.get_state().is_err());
+    }
+
+    /// Documents a known bug (481dc76's class), not intended behaviour: where
+    /// the extra ack parses as a reply (the MV7+ SET echo), every GET gets an
+    /// applied reply, so the readback passes. Replies route by address, so most
+    /// values still land, but the last GET's reply is never read and its field
+    /// keeps `DeviceState::default()`. A fix must flip these asserts, as it
+    /// must the `readback-extra-ack-keeps-serial` scenario.
     #[test]
     fn extra_ack_loses_the_last_readback_field_known_bug() {
         type Field = fn(&DeviceState) -> Value;
-        let cases: [(DeviceModel, &str, Field); 2] = [
-            (DeviceModel::Mvx2uGen2, "EQ band 5 gain", |s| {
-                json!(s.eq_bands[4].gain_db)
-            }),
-            (DeviceModel::Mv7Plus, "serial", |s| json!(s.factory_serial)),
-        ];
+        let cases: [(DeviceModel, &str, Field); 1] =
+            [(DeviceModel::Mv7Plus, "serial", |s| json!(s.factory_serial))];
         for (model, name, field) in cases {
             let seeded = distinct_state(model);
             let fake = FakeDevice::with_state(model, seeded.clone());

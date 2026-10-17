@@ -1,0 +1,38 @@
+# Saved on the MVX2U Gen 2 by shurectl 2.13.1, which saves only the settings the model has
+# (no Mute Button setting, Denoiser level or Adaptation Rate). Loading it elsewhere must
+# keep those.
+name = "MVX2U Gen 2 Voice"
+gain_db = 24.0
+mode = "manual"
+muted = false
+monitor_mix = 0
+monitor_mix_is_mic_level = true
+playback_mix = 0
+hpf = "off"
+phantom_power = false
+limiter_enabled = false
+compressor = "off"
+denoiser_enabled = false
+popper_stopper_enabled = true
+tone = 0
+mv6_gain_locked = false
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0
+
+[[eq_bands]]
+enabled = false
+gain_db = 0

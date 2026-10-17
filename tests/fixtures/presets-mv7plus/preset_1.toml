@@ -1,0 +1,50 @@
+# Saved on the MV7+ by shurectl 2.13.1, which saves only the settings the model has (no
+# Gain Lock). Loading it elsewhere must keep those.
+name = "MV7+ Voice"
+gain_db = 24.0
+mode = "manual"
+muted = false
+monitor_mix = 0
+monitor_mix_is_mic_level = true
+playback_mix = 0
+hpf = "off"
+limiter_enabled = false
+compressor = "off"
+denoiser_enabled = false
+popper_stopper_enabled = true
+mute_btn_disabled = false
+tone = 0
+reverb_on_output = false
+reverb_monitoring = false
+reverb_type = "plate"
+reverb_intensity = 50
+led_behavior = "live"
+led_brightness = "high"
+led_live_theme = "default"
+led_solid_theme = "shure"
+led_pulsing_theme = "shure"
+led_solid_rgb = [
+    178,
+    255,
+    51,
+]
+led_pulsing_rgb = [
+    16,
+    63,
+    251,
+]
+led_live_edge_rgb = [
+    255,
+    255,
+    255,
+]
+led_live_middle_rgb = [
+    31,
+    31,
+    31,
+]
+led_live_interior_rgb = [
+    0,
+    0,
+    0,
+]

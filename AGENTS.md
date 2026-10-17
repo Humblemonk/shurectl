@@ -189,7 +189,7 @@ Shared across all models unless the hardware makes it impossible:
 - No `println!()` once the TUI runs: use `eprintln!()` only at startup, and the TUI status
   bar after that. The one-shot commands (`--list`, `--mute`, `--preset`) and
   `shurectl-probe` print their results to stdout, so scripts can read them.
-  State readback collects unrecognised replies in `Readback::unrecognised` for this
+  State readback collects optional settings it couldn't read in `Readback::skipped` for this
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
 - Exhaustive match arms; no wildcard `_` that silently swallows variants
@@ -241,11 +241,19 @@ rather than promoting a lower one.
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
   byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
+  `get_state()` fails unless every GET got a usable reply, so no field is left at its default
+  (36 dB gain). `query_optional()` is only for a GET unchecked on that model's hardware.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must
-  not zero the setting on load (73476a4). Check `#[serde(default)]` and
+  not zero the setting on load (73476a4). A per-model setting is an `Option`, saved only in
+  `from_device_state()`'s `match` for models that have it. Check `#[serde(default)]` and
   `apply_to_device_state()`.
+- **Failed writes**: `recover_from_failure()` puts back the key's `before` snapshot only for
+  one write that clearly didn't land (`Disconnected`, or the MV7's `Rejected`). A timeout, or
+  a preset load or `f` that stopped partway, re-reads the device or marks the state unread.
+  `step()` writes a pending wheel adjustment before the next event changes the screen, so
+  each snapshot holds only its own change.
 - **Model checks**: use `DeviceModel::has_*()` and exhaustive matches, never a model name or
   `_`. A wildcard sent the MV6 Gen 2 the wrong EQ encoding (a800e26).
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
@@ -270,8 +278,8 @@ rather than promoting a lower one.
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's
   possibly stale copy
-- Presets saved before 2.12.0 applying the `phantom_power` they hold. Files from models
-  without 48V hold `false` and switch it off; nothing records which model saved them
+- Presets saved before 2.13.1 applying every per-model setting they hold, and before 2.12.0
+  `phantom_power = false`, even from a model without it; nothing records which model saved them
 - `fake_hid.rs` agreeing with `protocol.rs` by construction: it proves sequencing and
   routing, never that a packet is right. Don't cite it as protocol evidence
 
