@@ -1001,6 +1001,22 @@ mod tests {
         }
     }
 
+    /// Too few acks after a CONFIRM cost a timeout but must not shift any
+    /// later GET (481dc76): refresh still lands every value on its field.
+    #[test]
+    fn dropped_ack_leaves_readback_in_order() {
+        for model in [DeviceModel::Mvx2uGen2, DeviceModel::Mv7Plus] {
+            let fake = FakeDevice::new(model);
+            let device = fake.open();
+            fake.faults_mut(|f| f.drop_acks = 1);
+            device.set_mute(true).expect("set mute");
+            let readback = device.get_state().expect("readback");
+            assert!(readback.state.muted, "{model:?}");
+            assert_eq!(readback.state.gain_tenths, 240, "{model:?}");
+            assert!(readback.skipped.is_empty(), "{model:?}");
+        }
+    }
+
     /// `send_set()` must drain every report the device sends after a CONFIRM.
     /// One left queued (a short drain, 481dc76) shifts every later GET by one,
     /// and the last reply is never read, so a readback after a SET has to

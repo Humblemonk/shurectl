@@ -3954,6 +3954,13 @@ mod tests {
     }
 
     #[test]
+    fn set_gain_zero_db() {
+        let pkt = cmd_set_gain(0, 0);
+        let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
+        assert_eq!(raw, 0, "0 dB must encode as 0");
+    }
+
+    #[test]
     fn set_gain_encodes_half_db() {
         let pkt = cmd_set_gain(0, 285);
         let raw = u16::from_be_bytes([pkt[16], pkt[17]]);
