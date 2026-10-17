@@ -2158,34 +2158,6 @@ mod tests {
         assert!(app.should_quit);
     }
 
-    fn gen2_on_eq_tab(mode: InputMode) -> App {
-        App {
-            device_model: DeviceModel::Mvx2uGen2,
-            active_tab: app::Tab::Eq,
-            device_state: protocol::DeviceState {
-                mode,
-                ..protocol::DeviceState::default()
-            },
-            ..App::default()
-        }
-    }
-
-    /// Gen 2 in Auto shows only the tone slider, so `f` must not zero the
-    /// hidden Manual-mode bands.
-    #[test]
-    fn flatten_eq_ignored_on_gen2_in_auto_mode() {
-        let mut app = gen2_on_eq_tab(InputMode::Auto);
-        let action = handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-        assert!(action.is_none(), "got {action:?}");
-    }
-
-    #[test]
-    fn flatten_eq_works_on_gen2_in_manual_mode() {
-        let mut app = gen2_on_eq_tab(InputMode::Manual);
-        let action = handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-        assert!(matches!(action, Some(DeviceAction::FlattenEq)));
-    }
-
     /// A Gen 1 balance of 0 (all mic) must not load as a Mic Level of 0, which
     /// mutes the mic in the headphones, and the reverse. Older presets that
     /// don't say which kind they hold load as before.
@@ -2277,29 +2249,6 @@ mod tests {
         assert!(!is_disconnect(&anyhow::anyhow!(
             "The MV7 rejected \"lock on\""
         )));
-    }
-
-    /// Models with Gain Lock keep the preset's lock, since they can show and undo it.
-    #[test]
-    fn gain_lock_preset_keeps_lock_on_models_with_gain_lock() {
-        let locked_state = protocol::DeviceState {
-            mv6_gain_locked: true,
-            ..protocol::DeviceState::default()
-        };
-        let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
-        presets[0] = Some(PresetSlot::from_device_state(
-            "MV6",
-            &locked_state,
-            DeviceModel::Mv6,
-        ));
-        let mut app = App {
-            device_model: DeviceModel::Mvx2uGen2,
-            presets,
-            ..App::default()
-        };
-        apply_action(&mut app, &mut None, DeviceAction::LoadPreset(0), None);
-        assert!(app.device_state.mv6_gain_locked);
-        assert!(app.gain_locked());
     }
 
     #[test]

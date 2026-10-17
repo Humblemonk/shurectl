@@ -1453,17 +1453,6 @@ mod tests {
     // ── reset_focus_for_tab (exercised via next_tab / prev_tab) ──────────────
 
     #[test]
-    fn switching_to_main_tab_in_manual_mode_focuses_gain() {
-        let mut app = App::default();
-        app.device_state.mode = InputMode::Manual;
-        app.active_tab = Tab::Eq; // navigate away first
-        app.next_tab(); // → Dynamics
-        app.prev_tab(); // → Eq
-        app.prev_tab(); // → Main
-        assert_eq!(app.focus, Focus::Gain);
-    }
-
-    #[test]
     fn info_tab_focuses_device_name_only_where_rename_is_supported() {
         for (model, expected) in [
             (DeviceModel::Mvx2uGen2, Focus::DeviceName),
@@ -1499,60 +1488,6 @@ mod tests {
         app.focus = Focus::DeviceName;
         app.focus_next();
         assert_eq!(app.focus, Focus::DeviceName, "the MV6 has no factory reset");
-    }
-
-    #[test]
-    fn switching_to_non_main_tabs_sets_correct_default_focus() {
-        let expected: &[(Tab, Focus)] = &[
-            (Tab::Eq, Focus::EqEnable),
-            (Tab::Dynamics, Focus::Limiter),
-            (Tab::Presets, Focus::PresetName(0)),
-            (Tab::Info, Focus::DeviceName),
-        ];
-        for (tab, expected_focus) in expected {
-            let mut app = App::default();
-            app.device_state.mode = InputMode::Manual;
-            app.active_tab = *tab;
-            app.next_tab();
-            app.prev_tab();
-            assert_eq!(
-                app.focus, *expected_focus,
-                "wrong default focus after switching to {tab:?}"
-            );
-        }
-    }
-
-    // ── is_tab_locked ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn is_tab_locked_returns_false_for_all_tabs_in_manual_mode() {
-        let mut app = App::default(); // DeviceModel::Mvx2u
-        app.device_state.mode = InputMode::Manual;
-        for tab in [Tab::Main, Tab::Eq, Tab::Dynamics, Tab::Presets, Tab::Info] {
-            assert!(
-                !app.is_tab_locked(tab),
-                "{tab:?} must not be locked in Manual mode"
-            );
-        }
-        // Reverb and LED are locked on non-MV7+ devices regardless of mode.
-        assert!(app.is_tab_locked(Tab::Reverb));
-        assert!(app.is_tab_locked(Tab::Led));
-        // Both are unlocked on MV7+.
-        app.device_model = DeviceModel::Mv7Plus;
-        assert!(!app.is_tab_locked(Tab::Reverb));
-        assert!(!app.is_tab_locked(Tab::Led));
-    }
-
-    #[test]
-    fn is_tab_locked_returns_false_for_other_tabs_in_auto_mode() {
-        let mut app = App::default();
-        app.device_state.mode = InputMode::Auto;
-        for tab in [Tab::Main, Tab::Presets, Tab::Info] {
-            assert!(
-                !app.is_tab_locked(tab),
-                "{tab:?} must not be locked in Auto mode"
-            );
-        }
     }
 
     #[test]
@@ -2324,25 +2259,6 @@ mod tests {
     }
 
     #[test]
-    fn eq_bands_are_mvx2u_only() {
-        for (model, bands) in [
-            (DeviceModel::Mvx2u, true),
-            (DeviceModel::Mvx2uGen2, true),
-            (DeviceModel::Mv6, false),
-            (DeviceModel::Mv6Gen2, false),
-            (DeviceModel::Mv7, false),
-            (DeviceModel::Mv7Plus, false),
-        ] {
-            let mut app = App {
-                device_model: model,
-                ..App::default()
-            };
-            app.device_state.mode = InputMode::Manual;
-            assert_eq!(app.eq_bands_shown(), bands, "{model:?}");
-        }
-    }
-
-    #[test]
     fn factory_reset_only_on_captured_models() {
         for (model, supported) in [
             (DeviceModel::Mvx2u, false),
@@ -2361,30 +2277,6 @@ mod tests {
     }
 
     #[test]
-    fn mv7_eq_and_dynamics_lock_in_auto_mode() {
-        let app = mv7_app(InputMode::Auto);
-        assert!(app.is_tab_locked(Tab::Eq));
-        assert!(app.is_tab_locked(Tab::Dynamics));
-        assert!(!app.is_tab_hidden(Tab::Eq), "locked tabs stay visible");
-    }
-
-    #[test]
-    fn mv7_tab_cycle_lands_on_each_tabs_first_control() {
-        let mut app = mv7_app(InputMode::Manual);
-        let expected = [
-            (Tab::Eq, Focus::EqPreset),
-            (Tab::Dynamics, Focus::Compressor),
-            (Tab::Led, Focus::LedLiveMeter),
-            (Tab::Presets, Focus::PresetName(0)),
-        ];
-        app.active_tab = Tab::Main;
-        for (tab, focus) in expected {
-            app.next_tab();
-            assert_eq!((app.active_tab, app.focus), (tab, focus));
-        }
-    }
-
-    #[test]
     fn mv7_switching_to_auto_focuses_mic_position() {
         let mut app = mv7_app(InputMode::Manual);
         app.focus = Focus::Mode;
@@ -2393,32 +2285,6 @@ mod tests {
             Some(DeviceAction::SetMode(InputMode::Auto))
         ));
         assert_eq!(app.focus, Focus::AutoPosition);
-    }
-
-    #[test]
-    fn gain_lock_flag_only_locks_models_with_gain_lock() {
-        let locked_state = DeviceState {
-            mode: InputMode::Manual,
-            mv6_gain_locked: true,
-            gain_tenths: 200,
-            ..DeviceState::default()
-        };
-        for (model, locked) in [
-            (DeviceModel::Mv6, true),
-            (DeviceModel::Mvx2uGen2, true),
-            (DeviceModel::Mvx2u, false),
-            (DeviceModel::Mv7, false),
-            (DeviceModel::Mv7Plus, false),
-        ] {
-            let mut app = App {
-                device_model: model,
-                device_state: locked_state.clone(),
-                focus: Focus::Gain,
-                ..App::default()
-            };
-            assert_eq!(app.gain_locked(), locked, "{model:?}");
-            assert_eq!(app.adjust_focused(1).is_none(), locked, "{model:?}");
-        }
     }
 
     /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to Mute.

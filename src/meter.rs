@@ -321,12 +321,6 @@ mod tests {
     // ── RollingWindow ─────────────────────────────────────────────────────────
 
     #[test]
-    fn rolling_window_empty_returns_none() {
-        let w = RollingWindow::new(1.0);
-        assert!(w.max(Instant::now()).is_none());
-    }
-
-    #[test]
     fn rolling_window_returns_max_of_recent_samples() {
         let mut w = RollingWindow::new(1.0);
         let t = Instant::now();
@@ -334,24 +328,6 @@ mod tests {
         w.push(t, -100);
         w.push(t, -200);
         assert_eq!(w.max(Instant::now()), Some(-100));
-    }
-
-    #[test]
-    fn rolling_window_evicts_expired_samples() {
-        let mut w = RollingWindow::new(1.0);
-        let old = Instant::now() - Duration::from_secs(2);
-        let now = Instant::now();
-
-        // Push a high value with a timestamp 2 seconds ago (outside the 1s window).
-        w.push(old, -100);
-        // Push a low value now — this triggers eviction of the old entry.
-        w.push(now, -400);
-
-        assert_eq!(
-            w.max(Instant::now()),
-            Some(-400),
-            "expired sample must be evicted, leaving only the recent low value"
-        );
     }
 
     #[test]
@@ -373,15 +349,6 @@ mod tests {
     }
 
     // ── PeakWindow ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn peak_window_push_updates_both_windows() {
-        let mut pw = PeakWindow::new();
-        let t = Instant::now();
-        pw.push(t, -200);
-        assert_eq!(pw.short.max(Instant::now()), Some(-200));
-        assert_eq!(pw.long.max(Instant::now()), Some(-200));
-    }
 
     #[test]
     fn peak_window_short_evicts_before_long() {

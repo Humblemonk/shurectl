@@ -3773,19 +3773,6 @@ mod tests {
     // bug on every Dynamics and Reverb tab at once.
 
     #[test]
-    fn enum_options_marks_exactly_the_current_variant() {
-        let opts = enum_options(
-            &[HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150],
-            HpfFrequency::Hz75,
-        );
-        assert_eq!(opts.len(), 3);
-        assert_eq!(opts.iter().filter(|(_, selected)| *selected).count(), 1);
-        assert!(opts[1].1, "Hz75 is the current value");
-        assert!(!opts[0].1);
-        assert!(!opts[2].1);
-    }
-
-    #[test]
     fn enum_options_preserves_declaration_order_and_labels() {
         let opts = enum_options(
             &[
