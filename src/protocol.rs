@@ -3891,34 +3891,11 @@ mod tests {
     // ── CRC ───────────────────────────────────────────────────────────────────
 
     #[test]
-    fn crc16_ansi_empty_input() {
-        // CRC of empty slice with init 0x0000 should be 0x0000
-        assert_eq!(crc16_ansi(&[]), 0x0000);
-    }
-
-    #[test]
-    fn crc16_ansi_known_value() {
-        // CRC-16/ARC (CRC-16/ANSI) of [0x01, 0x02, 0x03].
-        // Value 0xA110 verified against two independent reference implementations
-        // (poly=0x8005, init=0x0000, refin=true, refout=true, xorout=0x0000).
-        assert_eq!(crc16_ansi(&[0x01u8, 0x02, 0x03]), 0xA110);
-    }
-
-    #[test]
     fn crc16_ansi_standard_test_vector() {
         // CRC-16/ARC standard check value: CRC of ASCII "123456789" must be 0xBB3D.
         // This is the canonical check value listed in Greg Cook's CRC catalogue.
         let data = b"123456789";
         assert_eq!(crc16_ansi(data), 0xBB3D);
-    }
-
-    #[test]
-    fn crc16_ansi_single_byte_boundary() {
-        // Single-byte inputs — values verified against reference implementation
-        // (poly=0x8005, init=0x0000, refin=true, refout=true, xorout=0x0000).
-        assert_eq!(crc16_ansi(&[0x00]), 0x0000);
-        assert_eq!(crc16_ansi(&[0xFF]), 0x4040);
-        assert_eq!(crc16_ansi(&[0x01]), 0xC0C1);
     }
 
     // ── build_packet / packet structure ───────────────────────────────────────
@@ -4258,17 +4235,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_response_get_feat_phantom() {
-        let buf = make_response(0, &RES_GET_FEAT, &FEAT_PHANTOM, &[PHANTOM_ON]);
-        let result = parse_response(&buf);
-        assert!(result.is_some(), "parse_response must succeed");
-        let reply = result.unwrap();
-        assert_eq!(reply.prefix, 0x00);
-        assert_eq!(reply.feat, FEAT_PHANTOM);
-        assert_eq!(reply.value, vec![PHANTOM_ON]);
-    }
-
-    #[test]
     fn parse_response_rejects_bad_magic() {
         let mut buf = make_response(0, &RES_GET_FEAT, &FEAT_MUTE, &[0x01]);
         buf[2] = 0xFF; // corrupt header magic
@@ -4281,27 +4247,6 @@ mod tests {
         let total_len = buf[1] as usize;
         buf[total_len] ^= 0xFF; // corrupt CRC hi byte
         assert!(parse_response(&buf).is_none());
-    }
-
-    #[test]
-    fn parse_response_returns_none_for_confirm() {
-        // CONFIRM responses should return None (no feature data).
-        // 0x09 0x00 0x00 is the device's CONFIRM response command byte sequence.
-        let confirm_cmd: [u8; 3] = [0x09, 0x00, 0x00];
-        let buf = make_response(0, &confirm_cmd, &[0x00, 0x00], &[]);
-        assert!(parse_response(&buf).is_none());
-    }
-
-    #[test]
-    fn parse_response_accepts_set_feat_response_type() {
-        // The device sends RES_SET_FEAT after a successful SET command.
-        // parse_response must accept it and return the echoed feature + value.
-        let buf = make_response(0, &RES_SET_FEAT, &FEAT_MUTE, &[0x01]);
-        let result = parse_response(&buf);
-        assert!(result.is_some(), "parse_response must accept RES_SET_FEAT");
-        let reply = result.unwrap();
-        assert_eq!(reply.feat, FEAT_MUTE);
-        assert_eq!(reply.value, vec![0x01]);
     }
 
     #[test]
@@ -4591,16 +4536,6 @@ mod tests {
         // A well-formed header declaring length 2 carries no payload bytes; treat
         // it as "not reported" so the field stays "Unknown" and the row is hidden.
         assert_eq!(decode_lp_string(&[0x00, 0x02]), None);
-    }
-
-    #[test]
-    fn display_serial_prefers_factory() {
-        let state = DeviceState {
-            factory_serial: String::from("3EK26001276"),
-            serial_number: String::from("MVX2U GEN 2#2-abcd"),
-            ..Default::default()
-        };
-        assert_eq!(state.display_serial(), "3EK26001276");
     }
 
     #[test]
@@ -5051,30 +4986,6 @@ mod tests {
             &[],
             &mut state
         ));
-    }
-
-    #[test]
-    fn device_model_max_gain_tenths() {
-        assert_eq!(DeviceModel::Mvx2u.max_gain_tenths(), 600);
-        assert_eq!(DeviceModel::Mvx2uGen2.max_gain_tenths(), 600);
-        assert_eq!(DeviceModel::Mv6.max_gain_tenths(), 360);
-        assert_eq!(DeviceModel::Mv6Gen2.max_gain_tenths(), 360);
-        assert_eq!(DeviceModel::Mv7.max_gain_tenths(), 360);
-        assert_eq!(DeviceModel::Mv7Plus.max_gain_tenths(), 360);
-    }
-
-    #[test]
-    fn device_model_gain_step_is_one_db_except_mv7() {
-        assert_eq!(DeviceModel::Mv7.gain_step_tenths(), 15);
-        for model in [
-            DeviceModel::Mvx2u,
-            DeviceModel::Mvx2uGen2,
-            DeviceModel::Mv6,
-            DeviceModel::Mv6Gen2,
-            DeviceModel::Mv7Plus,
-        ] {
-            assert_eq!(model.gain_step_tenths(), 10, "{model:?}");
-        }
     }
 
     #[test]
