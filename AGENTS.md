@@ -20,17 +20,12 @@ scripts/check.sh                # verification gate; CI runs the same script
 ```
 
 Run `scripts/check.sh` before calling any change complete. It runs clippy and
-`cargo build --all-targets` (both with `--features probe,qa`), `cargo fmt --check`,
-`cargo test` and the end-to-end scenarios, and any warning fails it. Change the gate in the
-script, not in docs or CI.
+`cargo build`, both `--all-targets --features probe,qa`, then `cargo fmt --check`,
+`cargo test` and the end-to-end scenarios, and any warning fails it, test code included.
+Change the gate in the script, not in docs or CI.
 
 - Without `--features probe,qa`, clippy skips `shurectl-probe` and the `--qa` harness.
-- `cargo build --all-targets` catches dead imports in `#[cfg(test)]` code that clippy never
-  compiles. Clippy itself skips `--all-targets` until test code is clean: mostly
-  `field_reassign_with_default` (in `app.rs`, `protocol.rs` and `presets.rs` tests; fold
-  them into struct literals), plus one `type_complexity` in `protocol.rs` and one
-  `unnecessary_filter_map` in `ui.rs`.
-- CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual):
+- CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2% actual):
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared
   helper; don't raise the threshold.
 
@@ -265,7 +260,6 @@ rather than promoting a lower one.
 - `ACK_TIMEOUT_MS` is 15 ms on every model
 - `unsafe` `dup`/`dup2` in `meter.rs` (silences ALSA/JACK probing)
 - `send_if_connected()` succeeding silently in demo mode
-- Clippy not running with `--all-targets` (see Commands)
 - The MV7 bypassing `send_set()`/`send_get()` for its text shell
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's

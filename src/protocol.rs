@@ -4009,8 +4009,8 @@ mod tests {
     /// length, CRC and padding of every command.
     #[test]
     fn both_builders_make_64_byte_packets_with_valid_crc() {
-        let builders: [(fn(u8, &[u8; 3], &[u8]) -> Vec<u8>, u8); 2] =
-            [(build_packet, 0x03), (build_packet_hdr0, 0x00)];
+        type Builder = fn(u8, &[u8; 3], &[u8]) -> Vec<u8>;
+        let builders: [(Builder, u8); 2] = [(build_packet, 0x03), (build_packet_hdr0, 0x00)];
         for (build, hdr_constant) in builders {
             for payload in [&[][..], &[0x00, 0x01, 0x86, 0x64][..]] {
                 let pkt = build(7, &CMD_SET_FEAT, payload);
@@ -4552,8 +4552,10 @@ mod tests {
 
     #[test]
     fn apply_response_phantom_off() {
-        let mut state = DeviceState::default();
-        state.phantom_power = true;
+        let mut state = DeviceState {
+            phantom_power: true,
+            ..DeviceState::default()
+        };
         let _ = apply_response(FEAT_PHANTOM, &[0x00], &mut state);
         assert!(!state.phantom_power);
     }
@@ -4973,8 +4975,10 @@ mod tests {
 
     #[test]
     fn apply_response_lock_unlocked() {
-        let mut state = DeviceState::default();
-        state.locked = true;
+        let mut state = DeviceState {
+            locked: true,
+            ..DeviceState::default()
+        };
         let _ = apply_response(FEAT_LOCK, &[0x00], &mut state);
         assert!(!state.locked);
     }

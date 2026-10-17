@@ -1648,10 +1648,12 @@ mod tests {
 
     #[test]
     fn eq_tab_focus_cycles_enable_band_select_enable_gain() {
-        let mut app = App::default();
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqEnable;
-        app.eq_selected_band = 0;
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqEnable,
+            eq_selected_band: 0,
+            ..App::default()
+        };
 
         // Forward: EqEnable → EqBandSelect → EqBandEnable(0) → EqGain(0) → EqEnable
         app.focus_next();
@@ -1680,10 +1682,12 @@ mod tests {
             Focus::Lock,
             Focus::Mode, // wrap
         ];
-        let mut app = App::default();
-        app.active_tab = Tab::Main;
+        let mut app = App {
+            active_tab: Tab::Main,
+            focus: Focus::Mode,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Manual;
-        app.focus = Focus::Mode;
 
         for expected in &forward[1..] {
             app.focus_next();
@@ -1710,10 +1714,12 @@ mod tests {
             Focus::Lock,
             Focus::Mode, // wrap
         ];
-        let mut app = App::default();
-        app.active_tab = Tab::Main;
+        let mut app = App {
+            active_tab: Tab::Main,
+            focus: Focus::Mode,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Auto;
-        app.focus = Focus::Mode;
 
         for expected in &forward[1..] {
             app.focus_next();
@@ -1738,11 +1744,13 @@ mod tests {
             Focus::PlaybackMix,
             Focus::Mode, // wrap
         ];
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.active_tab = Tab::Main;
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            active_tab: Tab::Main,
+            focus: Focus::Mode,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Manual;
-        app.focus = Focus::Mode;
 
         for expected in &forward[1..] {
             app.focus_next();
@@ -1762,11 +1770,13 @@ mod tests {
     #[test]
     fn mv6_main_tab_auto_mode_focus_cycles_forward_and_back() {
         // MV6 Auto: Mode → Mute → MonitorMix → PlaybackMix → Mode
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.active_tab = Tab::Main;
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            active_tab: Tab::Main,
+            focus: Focus::Mode,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Auto;
-        app.focus = Focus::Mode;
 
         app.focus_next();
         assert_eq!(app.focus, Focus::Mute);
@@ -1951,9 +1961,11 @@ mod tests {
 
     #[test]
     fn dynamics_tab_focus_cycles_all_three_controls() {
-        let mut app = App::default();
-        app.active_tab = Tab::Dynamics;
-        app.focus = Focus::Limiter;
+        let mut app = App {
+            active_tab: Tab::Dynamics,
+            focus: Focus::Limiter,
+            ..App::default()
+        };
 
         app.focus_next();
         assert_eq!(app.focus, Focus::Compressor);
@@ -1969,8 +1981,10 @@ mod tests {
 
     #[test]
     fn presets_tab_focus_cycles_through_name_and_actions_rows() {
-        let mut app = App::default();
-        app.active_tab = Tab::Presets;
+        let mut app = App {
+            active_tab: Tab::Presets,
+            ..App::default()
+        };
 
         // Walk forward through all slots: Name(0) → Actions(0) → Name(1) → ... → Actions(3) → Name(0)
         app.focus = Focus::PresetName(0);
@@ -2011,8 +2025,10 @@ mod tests {
 
     #[test]
     fn adjust_gain_increments_and_clamps_at_max() {
-        let mut app = App::default();
-        app.focus = Focus::Gain;
+        let mut app = App {
+            focus: Focus::Gain,
+            ..App::default()
+        };
         app.device_state.gain_tenths = 590;
 
         app.adjust_focused(1);
@@ -2027,8 +2043,10 @@ mod tests {
 
     #[test]
     fn adjust_gain_decrements_and_clamps_at_zero() {
-        let mut app = App::default();
-        app.focus = Focus::Gain;
+        let mut app = App {
+            focus: Focus::Gain,
+            ..App::default()
+        };
         app.device_state.gain_tenths = 10;
 
         app.adjust_focused(-1);
@@ -2040,8 +2058,10 @@ mod tests {
 
     #[test]
     fn adjust_gain_steps_one_db_and_snaps_off_grid_values() {
-        let mut app = App::default();
-        app.focus = Focus::Gain;
+        let mut app = App {
+            focus: Focus::Gain,
+            ..App::default()
+        };
         // A device that reports a fractional gain lands back on the 1 dB grid.
         app.device_state.gain_tenths = 283;
 
@@ -2089,8 +2109,10 @@ mod tests {
 
     #[test]
     fn adjust_monitor_mix_steps_by_one_and_clamps() {
-        let mut app = App::default();
-        app.focus = Focus::MonitorMix;
+        let mut app = App {
+            focus: Focus::MonitorMix,
+            ..App::default()
+        };
         app.device_state.monitor_mix = 99;
 
         app.adjust_focused(1);
@@ -2137,10 +2159,12 @@ mod tests {
 
     #[test]
     fn adjust_eq_band_select_cycles_through_five_bands() {
-        let mut app = App::default();
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqBandSelect;
-        app.eq_selected_band = 4;
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqBandSelect,
+            eq_selected_band: 4,
+            ..App::default()
+        };
 
         let action = app.adjust_focused(1);
         assert_eq!(
@@ -2156,9 +2180,11 @@ mod tests {
     #[test]
     fn adjust_eq_gain_clamps_at_plus_sixty_and_minus_eighty_tenths() {
         // Gen 1: steps of 20 tenths (2.0 dB)
-        let mut app = App::default();
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqGain(0);
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqGain(0),
+            ..App::default()
+        };
         app.device_state.eq_bands[0].gain_db = 60;
 
         app.adjust_focused(1);
@@ -2177,10 +2203,12 @@ mod tests {
 
     #[test]
     fn adjust_eq_gain_gen1_steps_by_twenty_tenths() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2u;
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqGain(2);
+        let mut app = App {
+            device_model: DeviceModel::Mvx2u,
+            active_tab: Tab::Eq,
+            focus: Focus::EqGain(2),
+            ..App::default()
+        };
         app.device_state.eq_bands[2].gain_db = 0;
 
         let action = app.adjust_focused(1);
@@ -2193,10 +2221,12 @@ mod tests {
 
     #[test]
     fn adjust_eq_gain_gen2_steps_by_five_tenths() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2uGen2;
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqGain(2);
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            active_tab: Tab::Eq,
+            focus: Focus::EqGain(2),
+            ..App::default()
+        };
         app.device_state.eq_bands[2].gain_db = 0;
 
         let action = app.adjust_focused(1);
@@ -2229,9 +2259,11 @@ mod tests {
 
     #[test]
     fn adjust_gain_blocked_when_mv6_gain_locked() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.focus = Focus::Gain;
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            focus: Focus::Gain,
+            ..App::default()
+        };
         app.device_state.gain_tenths = 200;
         app.device_state.mv6_gain_locked = true;
 
@@ -2248,9 +2280,11 @@ mod tests {
 
     #[test]
     fn adjust_gain_allowed_when_mv6_gain_unlocked() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.focus = Focus::Gain;
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            focus: Focus::Gain,
+            ..App::default()
+        };
         app.device_state.gain_tenths = 200;
         app.device_state.mv6_gain_locked = false;
 
@@ -2263,8 +2297,10 @@ mod tests {
 
     #[test]
     fn toggle_mute_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.focus = Focus::Mute;
+        let mut app = App {
+            focus: Focus::Mute,
+            ..App::default()
+        };
         app.device_state.muted = false;
 
         let action = app.toggle_focused();
@@ -2278,8 +2314,10 @@ mod tests {
 
     #[test]
     fn toggle_mode_switches_state_and_moves_focus() {
-        let mut app = App::default();
-        app.focus = Focus::Mode;
+        let mut app = App {
+            focus: Focus::Mode,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Auto;
 
         // Auto → Manual: focus jumps to Gain
@@ -2309,8 +2347,10 @@ mod tests {
 
     #[test]
     fn toggle_auto_position_cycles_near_far_and_returns_action() {
-        let mut app = App::default();
-        app.focus = Focus::AutoPosition;
+        let mut app = App {
+            focus: Focus::AutoPosition,
+            ..App::default()
+        };
         app.device_state.auto_position = MicPosition::Near;
 
         let action = app.toggle_focused();
@@ -2330,8 +2370,10 @@ mod tests {
 
     #[test]
     fn toggle_auto_tone_cycles_all_values_and_returns_action() {
-        let mut app = App::default();
-        app.focus = Focus::AutoTone;
+        let mut app = App {
+            focus: Focus::AutoTone,
+            ..App::default()
+        };
         app.device_state.auto_tone = AutoTone::Dark;
 
         app.toggle_focused();
@@ -2348,8 +2390,10 @@ mod tests {
 
     #[test]
     fn toggle_auto_gain_cycles_all_values_and_returns_action() {
-        let mut app = App::default();
-        app.focus = Focus::AutoGain;
+        let mut app = App {
+            focus: Focus::AutoGain,
+            ..App::default()
+        };
         app.device_state.auto_gain = AutoGain::Quiet;
 
         app.toggle_focused();
@@ -2366,8 +2410,10 @@ mod tests {
 
     #[test]
     fn toggle_compressor_cycles_through_all_presets() {
-        let mut app = App::default();
-        app.focus = Focus::Compressor;
+        let mut app = App {
+            focus: Focus::Compressor,
+            ..App::default()
+        };
         app.device_state.compressor = CompressorPreset::Off;
 
         app.toggle_focused();
@@ -2382,9 +2428,11 @@ mod tests {
 
     #[test]
     fn toggle_eq_band_enable_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqBandEnable(1);
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqBandEnable(1),
+            ..App::default()
+        };
         app.device_state.eq_bands[1].enabled = false;
 
         let action = app.toggle_focused();
@@ -2404,8 +2452,10 @@ mod tests {
 
     #[test]
     fn toggle_lock_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.focus = Focus::Lock;
+        let mut app = App {
+            focus: Focus::Lock,
+            ..App::default()
+        };
         app.device_state.locked = false;
 
         let action = app.toggle_focused();
@@ -2419,9 +2469,11 @@ mod tests {
 
     #[test]
     fn toggle_gain_lock_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.focus = Focus::GainLock;
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            focus: Focus::GainLock,
+            ..App::default()
+        };
         app.device_state.mv6_gain_locked = false;
 
         let action = app.toggle_focused();
@@ -2435,8 +2487,10 @@ mod tests {
 
     #[test]
     fn toggle_phantom_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.focus = Focus::Phantom;
+        let mut app = App {
+            focus: Focus::Phantom,
+            ..App::default()
+        };
         app.device_state.phantom_power = false;
 
         let action = app.toggle_focused();
@@ -2450,9 +2504,11 @@ mod tests {
 
     #[test]
     fn toggle_eq_enable_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.active_tab = Tab::Eq;
-        app.focus = Focus::EqEnable;
+        let mut app = App {
+            active_tab: Tab::Eq,
+            focus: Focus::EqEnable,
+            ..App::default()
+        };
         app.device_state.eq_enabled = false;
 
         let action = app.toggle_focused();
@@ -2466,9 +2522,11 @@ mod tests {
 
     #[test]
     fn toggle_limiter_flips_state_and_returns_action() {
-        let mut app = App::default();
-        app.active_tab = Tab::Dynamics;
-        app.focus = Focus::Limiter;
+        let mut app = App {
+            active_tab: Tab::Dynamics,
+            focus: Focus::Limiter,
+            ..App::default()
+        };
         app.device_state.limiter_enabled = false;
 
         let action = app.toggle_focused();
@@ -2554,10 +2612,12 @@ mod tests {
 
     #[test]
     fn mv6_dynamics_tab_focus_cycles_all_four_controls() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv6;
-        app.active_tab = Tab::Dynamics;
-        app.focus = Focus::Denoiser;
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            active_tab: Tab::Dynamics,
+            focus: Focus::Denoiser,
+            ..App::default()
+        };
 
         // Forward: Denoiser → PopperStopper → MuteBtnDisable → Hpf → Denoiser
         app.focus_next();
@@ -2584,11 +2644,13 @@ mod tests {
     /// in `draw_gen2_dynamics_tab()`.
     #[test]
     fn gen2_dynamics_tab_manual_focus_cycles_all_five_controls() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2uGen2;
-        app.active_tab = Tab::Dynamics;
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            active_tab: Tab::Dynamics,
+            focus: Focus::Limiter,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Manual;
-        app.focus = Focus::Limiter;
 
         // Forward: Limiter → Compressor → Denoiser → PopperStopper → Hpf → wrap
         for expected in [
@@ -2619,11 +2681,13 @@ mod tests {
     /// rather than land on a control the tab does not draw.
     #[test]
     fn gen2_dynamics_tab_auto_focus_skips_limiter_and_compressor() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mvx2uGen2;
-        app.active_tab = Tab::Dynamics;
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            active_tab: Tab::Dynamics,
+            focus: Focus::Denoiser,
+            ..App::default()
+        };
         app.device_state.mode = InputMode::Auto;
-        app.focus = Focus::Denoiser;
 
         for expected in [Focus::PopperStopper, Focus::Hpf, Focus::Denoiser] {
             app.focus_next();
@@ -2642,10 +2706,12 @@ mod tests {
     /// `draw_mv7plus_dynamics_tab()`.
     #[test]
     fn mv7plus_dynamics_tab_focus_cycles_all_six_controls() {
-        let mut app = App::default();
-        app.device_model = DeviceModel::Mv7Plus;
-        app.active_tab = Tab::Dynamics;
-        app.focus = Focus::Limiter;
+        let mut app = App {
+            device_model: DeviceModel::Mv7Plus,
+            active_tab: Tab::Dynamics,
+            focus: Focus::Limiter,
+            ..App::default()
+        };
 
         for expected in [
             Focus::Compressor,
@@ -2676,9 +2742,11 @@ mod tests {
 
     #[test]
     fn toggle_preset_actions_filled_returns_load_preset() {
-        let mut app = App::default();
-        app.active_tab = Tab::Presets;
-        app.focus = Focus::PresetActions(2);
+        let mut app = App {
+            active_tab: Tab::Presets,
+            focus: Focus::PresetActions(2),
+            ..App::default()
+        };
         // Populate slot 2 with a minimal preset.
         app.presets[2] = Some(crate::presets::PresetSlot::from_device_state(
             "Test",

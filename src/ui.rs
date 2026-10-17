@@ -3593,7 +3593,7 @@ mod tests {
         ];
         let (text, hits) = render_text(draw_ui, app, width, height);
         let mut content: BTreeSet<String> = (0..height.saturating_sub(1))
-            .flat_map(|y| (0..width).filter_map(move |x| Some((x, y))))
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
             .filter_map(|(x, y)| hits.target_at(x, y))
             .map(|target| format!("{target:?}"))
             .collect();
