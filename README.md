@@ -53,6 +53,9 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 macOS and Windows need no setup.
 
+Upgrading? [What changed in each release](doc/CHANGELOG.md) lists new features and fixes,
+and notes the few releases that ask you to re-save presets.
+
 ## Usage
 
 ```bash
