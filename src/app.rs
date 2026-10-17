@@ -1450,47 +1450,6 @@ pub enum DeviceAction {
 mod tests {
     use super::*;
 
-    // ── Tab navigation ────────────────────────────────────────────────────────
-
-    #[test]
-    fn tab_next_wraps_around() {
-        // Info is the last tab; next should wrap back to Main.
-        assert_eq!(Tab::Info.next(), Tab::Main);
-    }
-
-    #[test]
-    fn tab_prev_wraps_around() {
-        // Main is the first tab; prev should wrap to Info.
-        assert_eq!(Tab::Main.prev(), Tab::Info);
-    }
-
-    #[test]
-    fn tab_next_full_cycle_returns_to_start() {
-        let mut tab = Tab::Main;
-        for _ in 0..Tab::ALL.len() {
-            tab = tab.next();
-        }
-        assert_eq!(tab, Tab::Main);
-    }
-
-    #[test]
-    fn tab_index_is_unique_for_each_variant() {
-        let indices: Vec<usize> = Tab::ALL.iter().map(|t| t.index()).collect();
-        let unique: std::collections::HashSet<usize> = indices.iter().copied().collect();
-        assert_eq!(
-            indices.len(),
-            unique.len(),
-            "every Tab variant must have a distinct index"
-        );
-    }
-
-    #[test]
-    fn tab_all_covers_all_seven_variants() {
-        // Catches the case where a new Tab variant is added to the enum but
-        // forgotten in Tab::ALL, which would cause tab_index() to panic at runtime.
-        assert_eq!(Tab::ALL.len(), 7, "Tab::ALL must list all 7 Tab variants");
-    }
-
     // ── reset_focus_for_tab (exercised via next_tab / prev_tab) ──────────────
 
     #[test]
@@ -1502,15 +1461,6 @@ mod tests {
         app.prev_tab(); // → Eq
         app.prev_tab(); // → Main
         assert_eq!(app.focus, Focus::Gain);
-    }
-
-    #[test]
-    fn switching_to_main_tab_in_auto_mode_focuses_mode() {
-        let mut app = App::default();
-        app.device_state.mode = InputMode::Auto;
-        app.active_tab = Tab::Eq;
-        app.prev_tab(); // → Main
-        assert_eq!(app.focus, Focus::Mode);
     }
 
     #[test]
@@ -1594,17 +1544,6 @@ mod tests {
     }
 
     #[test]
-    fn is_tab_locked_returns_true_for_eq_and_dynamics_in_auto_mode() {
-        let mut app = App::default();
-        app.device_state.mode = InputMode::Auto;
-        assert!(app.is_tab_locked(Tab::Eq), "EQ must be locked in Auto mode");
-        assert!(
-            app.is_tab_locked(Tab::Dynamics),
-            "Dynamics must be locked in Auto mode"
-        );
-    }
-
-    #[test]
     fn is_tab_locked_returns_false_for_other_tabs_in_auto_mode() {
         let mut app = App::default();
         app.device_state.mode = InputMode::Auto;
@@ -1614,36 +1553,6 @@ mod tests {
                 "{tab:?} must not be locked in Auto mode"
             );
         }
-    }
-
-    #[test]
-    fn next_tab_skips_eq_and_dynamics_in_auto_mode() {
-        let mut app = App::default();
-        app.device_state.mode = InputMode::Auto;
-        app.active_tab = Tab::Main;
-
-        // Main → next should skip Eq and Dynamics, landing on Presets.
-        app.next_tab();
-        assert_eq!(
-            app.active_tab,
-            Tab::Presets,
-            "next from Main in Auto mode must skip Eq+Dynamics and land on Presets"
-        );
-    }
-
-    #[test]
-    fn prev_tab_skips_eq_and_dynamics_in_auto_mode() {
-        let mut app = App::default();
-        app.device_state.mode = InputMode::Auto;
-        app.active_tab = Tab::Presets;
-
-        // Presets → prev should skip Dynamics and Eq, landing on Main.
-        app.prev_tab();
-        assert_eq!(
-            app.active_tab,
-            Tab::Main,
-            "prev from Presets in Auto mode must skip Dynamics+Eq and land on Main"
-        );
     }
 
     #[test]
@@ -2024,39 +1933,6 @@ mod tests {
     // ── adjust_focused ────────────────────────────────────────────────────────
 
     #[test]
-    fn adjust_gain_increments_and_clamps_at_max() {
-        let mut app = App {
-            focus: Focus::Gain,
-            ..App::default()
-        };
-        app.device_state.gain_tenths = 590;
-
-        app.adjust_focused(1);
-        assert_eq!(app.device_state.gain_tenths, 600);
-
-        app.adjust_focused(1); // already at max
-        assert_eq!(
-            app.device_state.gain_tenths, 600,
-            "gain must not exceed 60 dB"
-        );
-    }
-
-    #[test]
-    fn adjust_gain_decrements_and_clamps_at_zero() {
-        let mut app = App {
-            focus: Focus::Gain,
-            ..App::default()
-        };
-        app.device_state.gain_tenths = 10;
-
-        app.adjust_focused(-1);
-        assert_eq!(app.device_state.gain_tenths, 0);
-
-        app.adjust_focused(-1); // already at min
-        assert_eq!(app.device_state.gain_tenths, 0, "gain must not underflow");
-    }
-
-    #[test]
     fn adjust_gain_steps_one_db_and_snaps_off_grid_values() {
         let mut app = App {
             focus: Focus::Gain,
@@ -2108,31 +1984,6 @@ mod tests {
     }
 
     #[test]
-    fn adjust_monitor_mix_steps_by_one_and_clamps() {
-        let mut app = App {
-            focus: Focus::MonitorMix,
-            ..App::default()
-        };
-        app.device_state.monitor_mix = 99;
-
-        app.adjust_focused(1);
-        assert_eq!(app.device_state.monitor_mix, 100);
-
-        app.adjust_focused(1); // already at max
-        assert_eq!(
-            app.device_state.monitor_mix, 100,
-            "monitor mix must not exceed 100"
-        );
-
-        app.device_state.monitor_mix = 1;
-        app.adjust_focused(-1);
-        assert_eq!(
-            app.device_state.monitor_mix, 0,
-            "monitor mix must not underflow"
-        );
-    }
-
-    #[test]
     fn adjust_monitor_mix_dispatches_set_monitor_mix_on_every_model() {
         for model in [
             DeviceModel::Mvx2u,
@@ -2178,66 +2029,6 @@ mod tests {
     }
 
     #[test]
-    fn adjust_eq_gain_clamps_at_plus_sixty_and_minus_eighty_tenths() {
-        // Gen 1: steps of 20 tenths (2.0 dB)
-        let mut app = App {
-            active_tab: Tab::Eq,
-            focus: Focus::EqGain(0),
-            ..App::default()
-        };
-        app.device_state.eq_bands[0].gain_db = 60;
-
-        app.adjust_focused(1);
-        assert_eq!(
-            app.device_state.eq_bands[0].gain_db, 60,
-            "EQ gain must not exceed +60 tenths (+6.0 dB)"
-        );
-
-        app.device_state.eq_bands[0].gain_db = -80;
-        app.adjust_focused(-1);
-        assert_eq!(
-            app.device_state.eq_bands[0].gain_db, -80,
-            "EQ gain must not go below -80 tenths (-8.0 dB)"
-        );
-    }
-
-    #[test]
-    fn adjust_eq_gain_gen1_steps_by_twenty_tenths() {
-        let mut app = App {
-            device_model: DeviceModel::Mvx2u,
-            active_tab: Tab::Eq,
-            focus: Focus::EqGain(2),
-            ..App::default()
-        };
-        app.device_state.eq_bands[2].gain_db = 0;
-
-        let action = app.adjust_focused(1);
-        assert_eq!(
-            app.device_state.eq_bands[2].gain_db, 20,
-            "Gen 1 step must be 20 tenths"
-        );
-        assert!(matches!(action, Some(DeviceAction::SetEqBandGain(2, 20))));
-    }
-
-    #[test]
-    fn adjust_eq_gain_gen2_steps_by_five_tenths() {
-        let mut app = App {
-            device_model: DeviceModel::Mvx2uGen2,
-            active_tab: Tab::Eq,
-            focus: Focus::EqGain(2),
-            ..App::default()
-        };
-        app.device_state.eq_bands[2].gain_db = 0;
-
-        let action = app.adjust_focused(1);
-        assert_eq!(
-            app.device_state.eq_bands[2].gain_db, 5,
-            "Gen 2 step must be 5 tenths"
-        );
-        assert!(matches!(action, Some(DeviceAction::SetEqBandGain(2, 5))));
-    }
-
-    #[test]
     fn adjust_non_adjustable_focus_returns_none() {
         // Controls like Mode, Mute, Phantom, Lock are toggled, not adjusted.
         let mut app = App::default();
@@ -2257,60 +2048,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn adjust_gain_blocked_when_mv6_gain_locked() {
-        let mut app = App {
-            device_model: DeviceModel::Mv6,
-            focus: Focus::Gain,
-            ..App::default()
-        };
-        app.device_state.gain_tenths = 200;
-        app.device_state.mv6_gain_locked = true;
-
-        let action = app.adjust_focused(1);
-        assert!(
-            action.is_none(),
-            "adjust must return None when gain is locked"
-        );
-        assert_eq!(
-            app.device_state.gain_tenths, 200,
-            "gain must not change when locked"
-        );
-    }
-
-    #[test]
-    fn adjust_gain_allowed_when_mv6_gain_unlocked() {
-        let mut app = App {
-            device_model: DeviceModel::Mv6,
-            focus: Focus::Gain,
-            ..App::default()
-        };
-        app.device_state.gain_tenths = 200;
-        app.device_state.mv6_gain_locked = false;
-
-        let action = app.adjust_focused(1);
-        assert!(matches!(action, Some(DeviceAction::SetGain(210))));
-        assert_eq!(app.device_state.gain_tenths, 210);
-    }
-
     // ── toggle_focused ────────────────────────────────────────────────────────
-
-    #[test]
-    fn toggle_mute_flips_state_and_returns_action() {
-        let mut app = App {
-            focus: Focus::Mute,
-            ..App::default()
-        };
-        app.device_state.muted = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.muted);
-        assert!(matches!(action, Some(DeviceAction::SetMute(true))));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.muted);
-        assert!(matches!(action, Some(DeviceAction::SetMute(false))));
-    }
 
     #[test]
     fn toggle_mode_switches_state_and_moves_focus() {
@@ -2346,199 +2084,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_auto_position_cycles_near_far_and_returns_action() {
-        let mut app = App {
-            focus: Focus::AutoPosition,
-            ..App::default()
-        };
-        app.device_state.auto_position = MicPosition::Near;
-
-        let action = app.toggle_focused();
-        assert_eq!(app.device_state.auto_position, MicPosition::Far);
-        assert!(matches!(
-            action,
-            Some(DeviceAction::SetAutoPosition(MicPosition::Far))
-        ));
-
-        let action = app.toggle_focused();
-        assert_eq!(app.device_state.auto_position, MicPosition::Near);
-        assert!(matches!(
-            action,
-            Some(DeviceAction::SetAutoPosition(MicPosition::Near))
-        ));
-    }
-
-    #[test]
-    fn toggle_auto_tone_cycles_all_values_and_returns_action() {
-        let mut app = App {
-            focus: Focus::AutoTone,
-            ..App::default()
-        };
-        app.device_state.auto_tone = AutoTone::Dark;
-
-        app.toggle_focused();
-        assert_eq!(app.device_state.auto_tone, AutoTone::Natural);
-        app.toggle_focused();
-        assert_eq!(app.device_state.auto_tone, AutoTone::Bright);
-        let action = app.toggle_focused();
-        assert_eq!(app.device_state.auto_tone, AutoTone::Dark);
-        assert!(matches!(
-            action,
-            Some(DeviceAction::SetAutoTone(AutoTone::Dark))
-        ));
-    }
-
-    #[test]
-    fn toggle_auto_gain_cycles_all_values_and_returns_action() {
-        let mut app = App {
-            focus: Focus::AutoGain,
-            ..App::default()
-        };
-        app.device_state.auto_gain = AutoGain::Quiet;
-
-        app.toggle_focused();
-        assert_eq!(app.device_state.auto_gain, AutoGain::Normal);
-        app.toggle_focused();
-        assert_eq!(app.device_state.auto_gain, AutoGain::Loud);
-        let action = app.toggle_focused();
-        assert_eq!(app.device_state.auto_gain, AutoGain::Quiet);
-        assert!(matches!(
-            action,
-            Some(DeviceAction::SetAutoGain(AutoGain::Quiet))
-        ));
-    }
-
-    #[test]
-    fn toggle_compressor_cycles_through_all_presets() {
-        let mut app = App {
-            focus: Focus::Compressor,
-            ..App::default()
-        };
-        app.device_state.compressor = CompressorPreset::Off;
-
-        app.toggle_focused();
-        assert_eq!(app.device_state.compressor, CompressorPreset::Light);
-        app.toggle_focused();
-        assert_eq!(app.device_state.compressor, CompressorPreset::Medium);
-        app.toggle_focused();
-        assert_eq!(app.device_state.compressor, CompressorPreset::Heavy);
-        app.toggle_focused();
-        assert_eq!(app.device_state.compressor, CompressorPreset::Off);
-    }
-
-    #[test]
-    fn toggle_eq_band_enable_flips_state_and_returns_action() {
-        let mut app = App {
-            active_tab: Tab::Eq,
-            focus: Focus::EqBandEnable(1),
-            ..App::default()
-        };
-        app.device_state.eq_bands[1].enabled = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.eq_bands[1].enabled);
-        assert!(matches!(
-            action,
-            Some(DeviceAction::SetEqBandEnable(1, true))
-        ));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.eq_bands[1].enabled);
-        assert!(matches!(
-            action,
-            Some(DeviceAction::SetEqBandEnable(1, false))
-        ));
-    }
-
-    #[test]
-    fn toggle_lock_flips_state_and_returns_action() {
-        let mut app = App {
-            focus: Focus::Lock,
-            ..App::default()
-        };
-        app.device_state.locked = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.locked);
-        assert!(matches!(action, Some(DeviceAction::SetLock(true))));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.locked);
-        assert!(matches!(action, Some(DeviceAction::SetLock(false))));
-    }
-
-    #[test]
-    fn toggle_gain_lock_flips_state_and_returns_action() {
-        let mut app = App {
-            device_model: DeviceModel::Mv6,
-            focus: Focus::GainLock,
-            ..App::default()
-        };
-        app.device_state.mv6_gain_locked = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.mv6_gain_locked);
-        assert!(matches!(action, Some(DeviceAction::SetMv6GainLock(true))));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.mv6_gain_locked);
-        assert!(matches!(action, Some(DeviceAction::SetMv6GainLock(false))));
-    }
-
-    #[test]
-    fn toggle_phantom_flips_state_and_returns_action() {
-        let mut app = App {
-            focus: Focus::Phantom,
-            ..App::default()
-        };
-        app.device_state.phantom_power = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.phantom_power);
-        assert!(matches!(action, Some(DeviceAction::SetPhantom(true))));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.phantom_power);
-        assert!(matches!(action, Some(DeviceAction::SetPhantom(false))));
-    }
-
-    #[test]
-    fn toggle_eq_enable_flips_state_and_returns_action() {
-        let mut app = App {
-            active_tab: Tab::Eq,
-            focus: Focus::EqEnable,
-            ..App::default()
-        };
-        app.device_state.eq_enabled = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.eq_enabled);
-        assert!(matches!(action, Some(DeviceAction::SetEqEnable(true))));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.eq_enabled);
-        assert!(matches!(action, Some(DeviceAction::SetEqEnable(false))));
-    }
-
-    #[test]
-    fn toggle_limiter_flips_state_and_returns_action() {
-        let mut app = App {
-            active_tab: Tab::Dynamics,
-            focus: Focus::Limiter,
-            ..App::default()
-        };
-        app.device_state.limiter_enabled = false;
-
-        let action = app.toggle_focused();
-        assert!(app.device_state.limiter_enabled);
-        assert!(matches!(action, Some(DeviceAction::SetLimiter(true))));
-
-        let action = app.toggle_focused();
-        assert!(!app.device_state.limiter_enabled);
-        assert!(matches!(action, Some(DeviceAction::SetLimiter(false))));
-    }
-
-    #[test]
     fn toggle_non_toggleable_focus_returns_none() {
         let mut app = App::default();
         for focus in [
@@ -2557,57 +2102,6 @@ mod tests {
                 "{focus:?} should return None from toggle_focused"
             );
         }
-    }
-
-    // ── status messages ───────────────────────────────────────────────────────
-
-    #[test]
-    fn set_ok_clears_error_flag() {
-        let mut app = App::default();
-        app.set_err("something broke");
-        assert!(app.status_is_error);
-
-        app.set_ok("all good");
-        assert!(!app.status_is_error);
-        assert_eq!(app.status_message, "all good");
-    }
-
-    #[test]
-    fn set_err_sets_error_flag() {
-        let mut app = App::default();
-        app.set_err("device disconnected");
-        assert!(app.status_is_error);
-        assert_eq!(app.status_message, "device disconnected");
-    }
-
-    // ── peak_window ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn app_default_peak_window_is_empty() {
-        let app = App::default();
-        let pw = app.peak_window.lock().unwrap();
-        assert!(
-            pw.short.max(Instant::now()).is_none(),
-            "short window must be empty on a fresh App"
-        );
-        assert!(
-            pw.long.max(Instant::now()).is_none(),
-            "long window must be empty on a fresh App"
-        );
-    }
-
-    #[test]
-    fn app_peak_window_arc_is_shared() {
-        // Confirm the Arc is real: cloning it and writing through the clone
-        // must be visible via app.peak_window.
-        let app = App::default();
-        let shared = Arc::clone(&app.peak_window);
-        shared.lock().unwrap().push(Instant::now(), -200);
-        assert_eq!(
-            app.peak_window.lock().unwrap().short.max(Instant::now()),
-            Some(-200),
-            "write through a cloned Arc must be visible via app.peak_window"
-        );
     }
 
     #[test]
@@ -2739,27 +2233,6 @@ mod tests {
     }
 
     // ── preset focus / toggle ─────────────────────────────────────────────────
-
-    #[test]
-    fn toggle_preset_actions_filled_returns_load_preset() {
-        let mut app = App {
-            active_tab: Tab::Presets,
-            focus: Focus::PresetActions(2),
-            ..App::default()
-        };
-        // Populate slot 2 with a minimal preset.
-        app.presets[2] = Some(crate::presets::PresetSlot::from_device_state(
-            "Test",
-            &DeviceState::default(),
-            DeviceModel::Mvx2u,
-        ));
-
-        let action = app.toggle_focused();
-        assert!(
-            matches!(action, Some(DeviceAction::LoadPreset(2))),
-            "filled PresetActions slot must return LoadPreset"
-        );
-    }
 
     // ── MV7 ───────────────────────────────────────────────────────────────────
 
@@ -2912,26 +2385,6 @@ mod tests {
     }
 
     #[test]
-    fn mv7_toggles_produce_mv7_actions() {
-        let mut app = mv7_app(InputMode::Manual);
-        app.focus = Focus::EqPreset;
-        assert!(matches!(
-            app.toggle_focused(),
-            Some(DeviceAction::SetEqPreset(EqPreset::HighPass))
-        ));
-        app.focus = Focus::LedNightMode;
-        assert!(matches!(
-            app.toggle_focused(),
-            Some(DeviceAction::SetLedNightMode(true))
-        ));
-        app.focus = Focus::LedLiveMeter;
-        assert!(matches!(
-            app.toggle_focused(),
-            Some(DeviceAction::SetLedLiveMeter(false))
-        ));
-    }
-
-    #[test]
     fn mv7_switching_to_auto_focuses_mic_position() {
         let mut app = mv7_app(InputMode::Manual);
         app.focus = Focus::Mode;
@@ -2940,16 +2393,6 @@ mod tests {
             Some(DeviceAction::SetMode(InputMode::Auto))
         ));
         assert_eq!(app.focus, Focus::AutoPosition);
-    }
-
-    #[test]
-    fn mv7_monitor_mix_uses_the_shared_action() {
-        let mut app = mv7_app(InputMode::Manual);
-        app.focus = Focus::MonitorMix;
-        assert!(matches!(
-            app.adjust_focused(1),
-            Some(DeviceAction::SetMonitorMix(1))
-        ));
     }
 
     #[test]

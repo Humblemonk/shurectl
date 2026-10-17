@@ -3824,49 +3824,21 @@ mod tests {
     // ── meter_color ───────────────────────────────────────────────────────────
 
     #[test]
-    fn meter_color_below_minus_12_is_green() {
-        assert_eq!(meter_color(-60.0), C_SUCCESS);
-        assert_eq!(meter_color(-13.0), C_SUCCESS);
-        // Just below the amber boundary.
-        assert_eq!(meter_color(-12.1), C_SUCCESS);
-    }
-
-    #[test]
-    fn meter_color_at_minus_12_is_amber() {
-        assert_eq!(meter_color(-12.0), C_WARN);
-    }
-
-    #[test]
-    fn meter_color_between_minus_12_and_minus_3_is_amber() {
-        assert_eq!(meter_color(-6.0), C_WARN);
-        // Just below the red boundary.
-        assert_eq!(meter_color(-3.1), C_WARN);
-    }
-
-    #[test]
-    fn meter_color_at_minus_3_is_red() {
-        assert_eq!(meter_color(-3.0), C_ERROR);
-    }
-
-    #[test]
-    fn meter_color_above_minus_3_is_red() {
-        assert_eq!(meter_color(-1.0), C_ERROR);
-        assert_eq!(meter_color(0.0), C_ERROR);
+    fn meter_color_is_green_below_minus_12_amber_below_minus_3_then_red() {
+        for (dbfs, color) in [
+            (-60.0, C_SUCCESS),
+            (-12.1, C_SUCCESS),
+            (-12.0, C_WARN),
+            (-6.0, C_WARN),
+            (-3.1, C_WARN),
+            (-3.0, C_ERROR),
+            (0.0, C_ERROR),
+        ] {
+            assert_eq!(meter_color(dbfs), color, "{dbfs} dBFS");
+        }
     }
 
     // ── build_ruler ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn build_ruler_output_is_exactly_inner_width_chars() {
-        for width in [40, 80, 120, 200] {
-            let ruler = build_ruler(width);
-            assert_eq!(
-                ruler.chars().count(),
-                width,
-                "ruler must be exactly {width} chars wide"
-            );
-        }
-    }
 
     #[test]
     fn build_ruler_end_labels_sit_at_both_edges() {
@@ -3894,22 +3866,9 @@ mod tests {
     }
 
     #[test]
-    fn build_ruler_skips_overlapping_labels_at_narrow_width() {
-        // At 10 chars only the first label(s) can fit; must not panic or overflow.
-        let ruler = build_ruler(10);
-        assert_eq!(ruler.chars().count(), 10);
-    }
-
-    #[test]
-    fn build_ruler_zero_width_returns_empty_string() {
-        let ruler = build_ruler(0);
-        assert_eq!(ruler, "", "zero-width ruler must be empty");
-    }
-
-    #[test]
     fn build_ruler_no_char_placed_beyond_inner_width() {
         // Regression: label placement must never write past the end of the buffer.
-        for width in [1, 2, 3, 5, 10, 40, 80] {
+        for width in [0, 1, 2, 3, 5, 10, 40, 80, 120, 200] {
             let ruler = build_ruler(width);
             assert_eq!(
                 ruler.chars().count(),

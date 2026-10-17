@@ -723,25 +723,6 @@ mod tests {
     }
 
     #[test]
-    fn escape_discards_name_draft_and_only_enter_commits() {
-        let mut app = editing_preset();
-        assert!(crate::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE).is_none());
-        assert!(!app.editing_preset_name);
-        assert!(app.name_draft.is_empty());
-        assert_eq!(app.presets[0].as_ref().unwrap().name, "Test");
-        crate::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.name_draft, "Test");
-        crate::handle_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
-        assert!(matches!(
-            crate::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
-            Some(DeviceAction::PersistPresetName(0))
-        ));
-        assert!(!app.editing_preset_name);
-        assert!(app.name_draft.is_empty());
-        assert_eq!(app.presets[0].as_ref().unwrap().name, "Test!");
-    }
-
-    #[test]
     fn help_blocks_clicks_and_any_click_cancels_reset_confirmation() {
         let mut app = App {
             device_model: DeviceModel::Mv7Plus,

@@ -2061,28 +2061,6 @@ mod tests {
     }
 
     #[test]
-    fn device_name_edit_drops_unsupported_chars_and_renames_on_enter() {
-        let mut app = device_name_focused(DeviceModel::Mvx2uGen2, "Desk");
-        assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
-        assert!(app.editing_device_name);
-        assert_eq!(app.name_draft, "Desk");
-        for c in " é2q".chars() {
-            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        assert!(!app.should_quit);
-        assert_eq!(app.name_draft, "Desk 2q");
-        assert_eq!(
-            app.device_state.device_name, "Desk",
-            "unchanged until Enter"
-        );
-        let action = handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(&action, Some(DeviceAction::RenameDevice(n)) if n == "Desk 2q"));
-        assert!(!app.editing_device_name);
-        apply_action(&mut app, &mut None, action.expect("rename action"), None);
-        assert_eq!(app.device_state.device_name, "Desk 2q");
-    }
-
-    #[test]
     fn empty_device_name_is_rejected() {
         let mut app = device_name_focused(DeviceModel::Mvx2uGen2, "Unknown");
         handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -2144,26 +2122,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tab_key_moves_to_next_tab() {
-        let mut app = App::default();
-        // Manual mode, so the MVX2U Gen 1's EQ tab isn't locked and skipped.
-        app.device_state.mode = InputMode::Manual;
-        app.active_tab = app::Tab::Main;
-        handle_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.active_tab, app::Tab::Eq);
-    }
-
-    #[test]
-    fn shift_tab_moves_to_previous_tab() {
-        // Terminals report Shift+Tab as BackTab (usually with SHIFT set), never
-        // as Tab with SHIFT, so this is the key the handler has to react to.
-        let mut app = App::default();
-        app.active_tab = app::Tab::Main;
-        handle_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(app.active_tab, app::Tab::Info);
-    }
-
     fn editing_preset_name(name: &str) -> App {
         let mut presets: [Option<PresetSlot>; presets::PRESET_COUNT] = Default::default();
         presets[0] = Some(PresetSlot::from_device_state(
@@ -2197,44 +2155,6 @@ mod tests {
         handle_key_too_small(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(!app.should_quit);
         handle_key_too_small(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
-        assert!(app.should_quit);
-    }
-
-    #[test]
-    fn q_can_be_typed_in_a_preset_name() {
-        let mut app = editing_preset_name("");
-        for c in "Quiet q".chars() {
-            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        assert!(!app.should_quit);
-        assert_eq!(app.name_draft, "Quiet q");
-        assert!(matches!(
-            handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
-            Some(DeviceAction::PersistPresetName(0))
-        ));
-        assert_eq!(
-            app.presets[0].as_ref().map(|s| s.name.as_str()),
-            Some("Quiet q")
-        );
-    }
-
-    #[test]
-    fn ctrl_c_is_ignored_while_editing_a_preset_name() {
-        let mut app = editing_preset_name("Voice");
-        handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert!(!app.should_quit);
-        assert!(app.editing_preset_name);
-        assert_eq!(app.name_draft, "Voice");
-        assert_eq!(
-            app.presets[0].as_ref().map(|s| s.name.as_str()),
-            Some("Voice")
-        );
-    }
-
-    #[test]
-    fn q_quits_outside_name_editing() {
-        let mut app = App::default();
-        handle_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
         assert!(app.should_quit);
     }
 

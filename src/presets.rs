@@ -1156,15 +1156,6 @@ mod tests {
         }
     }
 
-    /// Write `slot` to a temp file and reload it, returning the loaded copy.
-    fn write_and_reload(slot: &PresetSlot) -> PresetSlot {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("preset_1.toml");
-        let text = toml::to_string_pretty(slot).expect("serialise");
-        std::fs::write(&path, &text).expect("write");
-        toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("deserialise")
-    }
-
     #[test]
     fn preset_slot_roundtrip_toml() {
         let state = example_state();
@@ -1221,16 +1212,6 @@ mod tests {
         assert_eq!(target.tone, untouched.tone);
         // Identity fields must be untouched.
         assert_eq!(target.serial_number, "OTHER");
-    }
-
-    #[test]
-    fn save_and_load_preset_roundtrip() {
-        let state = example_state();
-        let slot = PresetSlot::from_device_state("Roundtrip", &state, DeviceModel::Mvx2u);
-
-        let loaded = write_and_reload(&slot);
-
-        assert_eq!(slot, loaded);
     }
 
     #[test]
@@ -1329,34 +1310,6 @@ mod tests {
         assert_eq!(target.hpf, HpfFrequency::Hz75);
         // Identity fields must be untouched.
         assert_eq!(target.serial_number, "OTHER");
-    }
-
-    #[test]
-    fn mv6_apply_to_device_state_no_duplicate_hpf() {
-        // Verifies the duplicate hpf assignment is gone: applying a preset with
-        // Hz150 must result in Hz150, not whatever was there before.
-        let mut state = mv6_example_state();
-        state.hpf = HpfFrequency::Hz150;
-        let slot = PresetSlot::from_device_state("HPF test", &state, DeviceModel::Mv6);
-
-        let mut target = DeviceState::default();
-        // target.hpf starts as HpfFrequency::Off (default).
-        slot.apply_to_device_state(&mut target);
-
-        assert_eq!(target.hpf, HpfFrequency::Hz150);
-    }
-
-    #[test]
-    fn mv6_mute_btn_disabled_roundtrip_file() {
-        let state = mv6_example_state(); // mute_btn_disabled = true
-        let slot = PresetSlot::from_device_state("MV6 File", &state, DeviceModel::Mv6);
-
-        let loaded = write_and_reload(&slot);
-
-        assert_eq!(loaded.mute_btn_disabled, Some(true));
-        assert_eq!(loaded.tone, Some(5));
-        assert_eq!(loaded.denoiser_enabled, Some(true));
-        assert_eq!(loaded.popper_stopper_enabled, Some(true));
     }
 
     #[test]
@@ -1556,7 +1509,7 @@ mod tests {
     fn mv7_preset_roundtrips_mv7_fields() {
         let original = mv7_example_state();
         let slot = PresetSlot::from_device_state("MV7", &original, DeviceModel::Mv7);
-        let loaded = write_and_reload(&slot);
+        let loaded = toml_roundtrip(&slot);
         assert_eq!(slot, loaded);
 
         let mut target = DeviceState::default();

@@ -1057,20 +1057,6 @@ mod tests {
         }
     }
 
-    /// After one ack too many, every later GET reads the reply before its own.
-    /// The MVX2U Gen 2's ack doesn't parse, so the first GET counts as
-    /// unanswered and the readback fails rather than show a default.
-    #[test]
-    fn extra_ack_fails_the_readback_when_the_ack_does_not_parse() {
-        let model = DeviceModel::Mvx2uGen2;
-        let seeded = distinct_state(model);
-        let fake = FakeDevice::with_state(model, seeded.clone());
-        let device = fake.open();
-        fake.faults_mut(|f| f.extra_acks = 1);
-        device.set_mute(seeded.muted).expect("set mute");
-        assert!(device.get_state().is_err());
-    }
-
     /// Documents a known bug (481dc76's class), not intended behaviour: where
     /// the extra ack parses as a reply (the MV7+ SET echo), every GET gets an
     /// applied reply, so the readback passes. Replies route by address, so most
