@@ -1,9 +1,9 @@
 # shurectl
 
 Terminal UI configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, MV6 Gen 2,
-MV7, MV7+) on Linux and macOS. Talks to the device directly over USB HID, replacing the
-Windows/Mac-only ShurePlus MOTIV Desktop app. Single-crate Rust binary. Prefer the simple,
-obvious solution over clever abstractions.
+MV7, MV7+) on Linux, macOS and Windows (CI covers Linux and macOS). Talks to the device
+directly over USB HID, replacing the Windows/Mac-only ShurePlus MOTIV Desktop app.
+Single-crate Rust binary. Prefer the simple, obvious solution over clever abstractions.
 
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
 `protocol.md` for `protocol.rs`/`device.rs`/`probe.rs` (HID packet format, usbmon
@@ -16,25 +16,23 @@ is read, so anything a reviewer must know from a diff alone belongs in **Review*
 ```
 cargo run -- --demo mv7plus     # no hardware; also mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7
 cargo run -- --list             # list connected devices
+scripts/check.sh                # verification gate; CI runs the same script
 ```
 
-**Verification gate** — run before calling any change complete. CI runs the same script:
+Run `scripts/check.sh` before calling any change complete. It runs clippy and
+`cargo build --all-targets` (both with `--features probe,qa`), `cargo fmt --check`,
+`cargo test` and the end-to-end scenarios, and any warning fails it. Change the gate in the
+script, not in docs or CI.
 
-```
-scripts/check.sh
-```
-
-- It runs clippy, `cargo build --all-targets`, `cargo fmt --check`, `cargo test` and the
-  end-to-end scenarios, and any warning fails it. Change the gate in the script, not in docs or CI.
-- `--features probe,qa` is required; otherwise clippy skips `shurectl-probe` and the `--qa`
-  harness. `qa` never ships (see **Testing**).
+- Without `--features probe,qa`, clippy skips `shurectl-probe` and the `--qa` harness.
 - `cargo build --all-targets` catches dead imports in `#[cfg(test)]` code that clippy never
-  compiles.
-- Clippy isn't run with `--all-targets` yet because of pre-existing
-  `field_reassign_with_default` warnings in `app.rs` tests. Fold them into struct literals before tightening.
-- CI runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual). Check with
-  `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared helper;
-  don't raise the threshold.
+  compiles. Clippy itself skips `--all-targets` until test code is clean: mostly
+  `field_reassign_with_default` (in `app.rs`, `protocol.rs` and `presets.rs` tests; fold
+  them into struct literals), plus one `type_complexity` in `protocol.rs` and one
+  `unnecessary_filter_map` in `ui.rs`.
+- CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2.5% actual):
+  `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared
+  helper; don't raise the threshold.
 
 ## Architecture
 
@@ -66,7 +64,7 @@ tests/
   `device.rs` from `ui.rs`, `app.rs` or `mouse.rs`. Mouse input only maps to key actions.
 - Raw protocol byte values live *only* in `protocol.rs` as named constants.
 - `shurectl-probe`, `--qa` and `fake_hid.rs` must never ship to end users via `cargo install`
-  or Homebrew. Keep the `qa` feature and `cfg(any(test, feature = "qa"))` gates intact.
+  or Homebrew. Keep the `probe`/`qa` features and `cfg(any(test, feature = "qa"))` gates intact.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
   the readme Credits and legal section).
 
@@ -83,32 +81,31 @@ present but refuses or ignores a command stays connected.
 
 ## Adding a New Command
 
-Follow this sequence without skipping steps:
+In order, without skipping steps:
 
-1. `protocol.rs`: `FEAT_*` constant, `cmd_get_*`/`cmd_set_*` constructors, and an
-   `apply_response()` branch decoding into `DeviceState`
+1. `protocol.rs`: `FEAT_*` constant, `cmd_get_*`/`cmd_set_*` constructors, an
+   `apply_response()` branch decoding into `DeviceState`, and one roundtrip test (see
+   **Testing**)
 2. `device.rs`: typed `get_*`/`set_*` methods on `ShureDevice`. If it's part of full
    readback, add the getter to the `getters` slice in the `get_state_*()` function of every
-   model that supports it (`get_state()` dispatches per model)
-   - 2b. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it.
-     `get_state_reads_back_the_seeded_state_on_every_model` fails until you do
-3. `app.rs`: `DeviceAction` variant if user-triggerable; wire it into `adjust_focused()` or
-   `toggle_focused()`
-4. `main.rs`: handle the variant in `apply_action()`
-5. `ui.rs`: UI element if needed. Follow **Cross-Device UI Consistency** below
-6. `presets.rs`: if it's a DSP setting, add it to `PresetSlot`, `from_device_state()`, and
-   `apply_to_device_state()` so presets capture it
-7. `protocol.rs`: roundtrip test for the new packet
-8. `README.md`: add a row to the collapsed Device support table (with the models that have
-   it) and update the key table if a shortcut changed. Keep the top of the readme for
-   install and first run; don't add sections there
+   model that supports it
+3. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it
+   (`get_state_reads_back_the_seeded_state_on_every_model` fails until you do)
+4. `app.rs`: `DeviceAction` variant if user-triggerable, wired into `adjust_focused()` or
+   `toggle_focused()`; `main.rs`: handle it in `apply_action()`
+5. `ui.rs`: UI element if needed, following **Cross-Device UI Consistency**
+6. `presets.rs`: if it's a DSP setting, add it to `PresetSlot`, `from_device_state()` and
+   `apply_to_device_state()` (see the **New `PresetSlot` field** trap under Review)
+7. `README.md`: a row in the collapsed Device support table, with the models that have it,
+   and the key table if a shortcut changed. Keep the top of the readme for install and first
+   run; don't add sections there
 
 ## TUI / Focus Model
 
 - `Tab` selects the visible panel; `Focus` selects the active control within it
 - `adjust_focused()` handles ←/→ for sliders; `toggle_focused()` handles Enter/Space for
-  booleans and enum cycling
-- Both return `Option<DeviceAction>`. `None` means a UI-only change with no HID write
+  booleans and enum cycling. Both return `Option<DeviceAction>`; `None` means a UI-only
+  change with no HID write
 - Preset name editing lives in `main.rs::handle_key()`, not `toggle_focused()`. While
   `editing_preset_name` is true, chars append (including `q`, which only quits outside
   editing), Enter commits (`PersistPresetName`), and Esc or clicking outside cancels
@@ -117,10 +114,9 @@ Follow this sequence without skipping steps:
 
 A user owns one device but reads one readme, one help overlay, and one set of screenshots.
 If "Gain Lock" on the Gen 2 is "Lock" on the MV6, the docs stop matching reality. Divergence
-is also the largest maintenance cost here: `ui.rs` has eleven `draw_main_left_*` variants and
-a six-way `DeviceModel` match in `draw_info_tab()`, and `app.rs` matches on `DeviceModel` in
-`reset_focus_for_tab()`, `focus_next()`, and `focus_prev()`. The Main tab's Summary is one
-ordered `SummaryRow` list; a model picks its rows in `summary_rows()` but can't reorder them.
+is also the largest maintenance cost here: `ui.rs` has a `draw_main_left_*` variant per
+model and mode plus a `DeviceModel` match in `draw_info_tab()`, and `app.rs` matches on
+`DeviceModel` in `reset_focus_for_tab()`, `focus_next()` and `focus_prev()`.
 
 **The rule:** any control that exists on more than one model has identical label, units,
 value formatting, keybinding, and position relative to its neighbours on all of them. Only
@@ -139,9 +135,12 @@ Shared across all models unless the hardware makes it impossible:
 
 - **Tab set and order**: `Tab::ALL` is the source of truth. Models filter it, never reorder it
 - **Keybindings**: Tab/Shift-Tab cycles tabs, ↑/↓ moves focus, ←/→ adjusts, Enter/Space
-  toggles, `?` help. No model-specific keys
+  toggles, `?` help. No key only one model responds to. A readme shortcut that works on
+  some devices only says which
 - **Focus traversal**: mode → mute → gain → monitor mix → device extras. Models skip entries
-  they lack; they don't reshuffle
+  they lack; they don't reorder them because it "reads better" there
+- **Summary**: the Main tab's Summary is one ordered `SummaryRow` list; a model picks its
+  rows in `summary_rows()` but can't reorder them
 - **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
   everywhere. dB values, percentages, and enum names render through the same code path
 - **Drawing helpers**: `draw_mode_mute_row()` (`draw_mode_block()`, `draw_mute_block()`),
@@ -150,7 +149,8 @@ Shared across all models unless the hardware makes it impossible:
   `segmented_span()`, `draw_main_shared()`; block styles `focus_border()`, `focus_block()`,
   `alert_block()`, `card_block()`; sliders `slider_gauge()`; Dynamics cards
   `draw_card_grid()`; focus hints `with_hint()`; EQ `eq_band_column()`; click targets
-  `control_rows()`. Extend a helper with a parameter rather than forking a near-copy
+  `control_rows()`. Extend a helper with a parameter rather than forking a near-copy, and
+  pass behaviour in rather than hardcoding a model name in it
 - **Status and error wording**: same phrasing for the same condition on every model
 
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
@@ -167,32 +167,26 @@ Shared across all models unless the hardware makes it impossible:
    shurectl name and control. Vendor naming stops at `protocol.rs`.
 2. Can an existing shared helper render it? Extend the helper.
 3. If a per-model `draw_*` fork is genuinely required, keep block order, borders, and spacing
-   identical to its siblings.
+   identical to its siblings. Don't bootstrap it by copying a sibling such as
+   `draw_main_left_gen2_manual()` and tweaking strings.
 4. Update *every* `DeviceModel` match: focus fns, `draw_main_left()`, `summary_rows()`,
-   `draw_info_tab()`, and preset serialization. Wherever `_` was used, a missing arm is a
+   `draw_info_tab()`, and preset serialization. Where an arm was `_`, a missing model is a
    silent UX divergence rather than a compile error.
-5. Verify with `--demo mvx2u`, `--demo mvx2u-gen2`, `--demo mv6`, `--demo mv6-gen2`, `--demo mv7`,
-   and `--demo mv7plus`.
-
-**Antipatterns:**
-
-- Copying `draw_main_left_gen2_manual()` to bootstrap a new model and tweaking strings
-- A keybinding only one model responds to
-- Reordering tabs or focus for one model because it "reads better" there
-- Hardcoding a model name in a shared helper instead of passing behaviour in
-- Documenting a shortcut in `README.md` that only works on some devices without saying so
+5. Verify with `--demo` on all six models (`mvx2u`, `mvx2u-gen2`, `mv6`, `mv6-gen2`, `mv7`,
+   `mv7plus`).
 
 ## Rust Rules
 
 - No `unwrap()`/`expect()` in production paths; no `panic!()` outside tests; no
   `todo!()`/`unimplemented!()` in final code
-- No `println!()` once the TUI runs: use `eprintln!()` only at startup, and the TUI status
-  bar after that. The one-shot commands (`--list`, `--mute`, `--preset`) and
-  `shurectl-probe` print their results to stdout, so scripts can read them.
-  State readback collects optional settings it couldn't read in `Readback::skipped` for this
+- No `println!()` once the TUI runs: `eprintln!()` only at startup, and the TUI status bar
+  after that. The one-shot commands (`--list`, `--mute`, `--preset`) and `shurectl-probe`
+  print results to stdout so scripts can read them. State readback collects optional
+  settings it couldn't read in `Readback::skipped` for this
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
-- Exhaustive match arms; no wildcard `_` that silently swallows variants
+- Exhaustive match arms; no wildcard `_` that silently swallows variants. Check models with
+  `DeviceModel::has_*()` or an exhaustive match, never a model name
 - Meaningful names (`gain_db` not `g`); delete replaced code, no versioned function names
 - Validate packet arguments before encoding (clamp, don't panic)
 - `ratatui`: use `Frame::render_widget()`, not direct buffer writes. `crossterm`: handle
@@ -205,9 +199,8 @@ Shared across all models unless the hardware makes it impossible:
 | New protocol command | One roundtrip test in `protocol.rs` first: the packet bytes (match a usbmon capture when there is one) and `apply_response()` decoding the reply. Length and CRC come from `build_packet()`, so don't re-test them per command |
 | Packet encoding changes (`build_packet()`, `build_packet_hdr0()`, `crc16_ansi()`) | Test CRC correctness and the 64-byte length invariant there |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
-| Focus/navigation changes | A scenario, or manual test in `--demo` for all six models |
+| User-visible behaviour (keys, focus, clicks, status, packet order, reconnects) | A scenario in `tests/scenarios/`, run on every model in its header, with a fake device and in demo mode. Record one with `shurectl --qa` (the `qa` skill, `.claude/skills/qa/SKILL.md`) |
 | `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo`. `every_screen_fits_the_min_size` fails when a screen no longer fits 80×24 (`MIN_SIZE`), or a focus hint is cut mid-word instead of going through `with_hint()` |
-| User-visible behaviour (keys, clicks, status, packet order, reconnects) | A scenario in `tests/scenarios/`, run by `cargo test --features qa --test e2e` on every model in its header, with a fake device and in demo mode. Record one with `shurectl --qa` (`.claude/skills/qa/SKILL.md`) |
 | `main()` / CLI args | No tests |
 
 Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific
@@ -215,9 +208,9 @@ bottleneck has been identified.
 
 ## Review
 
-The verification gate and CI already cover clippy, fmt, tests, the end-to-end scenarios and jscpd;
-don't report what they catch. `renders_match_golden` proves a `ui.rs` change is invisible when its golden file
-is unchanged; a changed golden file lists the screens to look at.
+The verification gate and CI already cover clippy, fmt, tests, the end-to-end scenarios and
+jscpd; don't report what they catch. `renders_match_golden` proves a `ui.rs` change is
+invisible when its golden file is unchanged; a changed golden file lists the screens to look at.
 
 **Severity.** Label each finding and lead with P0 and P1. When there are none, say so
 rather than promoting a lower one.
@@ -254,8 +247,8 @@ rather than promoting a lower one.
   a preset load or `f` that stopped partway, re-reads the device or marks the state unread.
   `step()` writes a pending wheel adjustment before the next event changes the screen, so
   each snapshot holds only its own change.
-- **Model checks**: use `DeviceModel::has_*()` and exhaustive matches, never a model name or
-  `_`. A wildcard sent the MV6 Gen 2 the wrong EQ encoding (a800e26).
+- **Model checks**: a wildcard `_` over `DeviceModel` sent the MV6 Gen 2 the wrong EQ
+  encoding (a800e26). See Rust Rules.
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
   check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f). Below 80×24 only a notice draws.
 - **Colors**: new colors use the `C_*` palette constants in `ui.rs`, never a raw
@@ -272,8 +265,7 @@ rather than promoting a lower one.
 - `ACK_TIMEOUT_MS` is 15 ms on every model
 - `unsafe` `dup`/`dup2` in `meter.rs` (silences ALSA/JACK probing)
 - `send_if_connected()` succeeding silently in demo mode
-- No firmware-update packets anywhere
-- `field_reassign_with_default` in `app.rs` tests (see Commands)
+- Clippy not running with `--all-targets` (see Commands)
 - The MV7 bypassing `send_set()`/`send_get()` for its text shell
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's

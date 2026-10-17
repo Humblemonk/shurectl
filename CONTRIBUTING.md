@@ -1,87 +1,48 @@
 # Contributing to shurectl
 
-## Development Setup
-
-### Prerequisites
+## Setup
 
 - Rust via [rustup](https://rustup.rs): `rust-toolchain.toml` selects stable with clippy and rustfmt
 - Linux: `libasound2-dev` and `libudev-dev`
-- A supported Shure device for hardware testing, or use `--demo` for UI-only work
-
-### Building
+- A supported Shure device for hardware testing, or `--demo` for UI-only work
 
 ```bash
 git clone https://github.com/Humblemonk/shurectl.git
 cd shurectl
-cargo build
+cargo run -- --demo mv7plus
 ```
 
-### Quality Gate
+## Quality gate
 
-This must pass before any commit. CI runs the same script on Linux and macOS:
+Run this before every commit. CI runs the same script on Linux and macOS:
 
 ```bash
 scripts/check.sh
 ```
 
-It runs clippy, the build, `cargo fmt --check`, the unit tests and the end-to-end
-scenarios, and fails on any warning. It builds with `--features probe,qa`:
-`shurectl-probe` is feature-gated and would otherwise be skipped by clippy entirely. The
-`qa` feature builds the headless `--qa` harness that `tests/e2e.rs` drives; it is for
-maintainers and CI and never ships.
+It runs clippy, the build, `cargo fmt --check`, the unit tests and the end-to-end scenarios,
+and fails on any warning. It builds with `--features probe,qa`, so clippy also covers
+`shurectl-probe` and the headless `--qa` harness; both are for maintainers and CI and never
+ship.
 
-There are no warnings — only requirements.
+## Project rules
 
----
+`AGENTS.md` is the authoritative guide to the architecture, layering rules, cross-device UI
+rules, coding standards and the checklist for adding a command. File-specific detail (HID
+packet format, meter, presets, UI palette) lives in `.claude/rules/`. Read them before a
+non-trivial change.
 
-## Using AI Assistants
+If you use an AI coding assistant, make sure it loads them too:
 
-> **If you use an AI coding assistant (Claude, Copilot, Cursor, etc.), make sure it loads
-> `AGENTS.md` before starting any work.**
+- **Claude Code**: automatic, via `CLAUDE.md` (which imports `AGENTS.md`) and `.claude/rules/`
+- **Codex, Cursor, Windsurf, GitHub Copilot**: read `AGENTS.md` natively
+- **Chat-based tools**: add `AGENTS.md` and the relevant `.claude/rules/` file as project
+  knowledge, or paste them at the start of the session
 
-`AGENTS.md` at the repository root is the authoritative source for this project's
-architecture, layering rules, cross-device UI rules, and coding standards. It covers the
-data flow between modules, forbidden patterns, and the required workflow for adding new
-commands. File-specific detail (USB HID packet format, meter, presets) lives in
-`.claude/rules/`. An AI working without these will produce code that conflicts with
-established patterns and is likely to introduce protocol bugs.
+## End-to-end scenarios
 
-How the common tools pick it up:
-
-- **Claude Code** — automatic, via `CLAUDE.md` (which imports `AGENTS.md`) and `.claude/rules/`
-- **Codex, Cursor, Windsurf, GitHub Copilot** — read `AGENTS.md` natively in current versions
-- **Claude Projects or any chat-based tool** — add `AGENTS.md` (and the relevant
-  `.claude/rules/` file) as project knowledge, or paste it at the start of your session
-
-The key rules AI assistants must follow are called out explicitly in `AGENTS.md`: confirm a
-plan before implementing non-trivial features, follow the new-command checklist, keep UI
-consistent across models, and run the quality gate before considering any work done.
-
----
-
-## Project Structure
-
-```
-src/
-├── main.rs       — Entry point, event loop, CLI args
-├── app.rs        — Application state, focus/tab navigation, DeviceAction events
-├── device.rs     — hidapi wrapper; open/send/receive for Shure devices
-├── meter.rs      — cpal audio capture; real-time dBFS metering, RollingWindow, PeakWindow
-├── presets.rs    — Host-side preset storage: TOML serialisation, load/save/delete, PresetSlot
-├── protocol.rs   — USB HID packet encoding, CRC-16/ANSI, command constructors, apply_response()
-├── ui.rs         — ratatui TUI rendering (all 5 tabs + help overlay)
-├── fake_hid.rs   — fake device for tests and --qa (never shipped)
-└── harness.rs    — headless --qa driver (never shipped)
-tests/
-├── e2e.rs        — runs tests/scenarios/*.jsonl against every model; PTY smoke test
-└── scenarios/    — end-to-end scenarios, one JSON-lines file each
-```
-
-### End-to-end scenarios
-
-`cargo test --features qa --test e2e` runs each file in `tests/scenarios/` through
-`shurectl --qa` on every model its header lists, with a fake device and in demo mode, and
-starts the real TUI once under a pseudo-terminal. To write one, drive the app by hand:
+`tests/scenarios/` holds one JSON-lines file per scenario; its `README.md` lists them and what
+they check. To write one, drive the app by hand:
 
 ```bash
 cargo build --features qa
@@ -91,53 +52,38 @@ printf '{"key":"Down"}\n{"key":"Enter"}\n{"query":"screen"}\n' \
 
 `.claude/skills/qa/SKILL.md` lists every line the harness understands.
 
-All USB HID command byte values, feature addresses, and packet structure details are documented inline in `src/protocol.rs`.
+## HID feature address probe
 
----
-
-## HID Feature Address Probe
-
-`src/bin/probe.rs` is a developer tool used for protocol reverse-engineering. It systematically sweeps HID feature addresses across all pages and logs every valid device response, which is how undocumented features are discovered on new or updated hardware.
-
-The probe is **read-only** — it only sends GET packets, never SET or CONFIRM. It is safe to run against a live device; no settings will be changed.
-
-The probe binary is named `shurectl-probe` and is gated behind the `probe` cargo feature, so it is **not built by default**. This keeps it out of `cargo install` and Homebrew installs — end users have no reason to have an HID address sweeper in their `PATH`.
+`shurectl-probe` (`src/bin/probe.rs`) sweeps HID feature addresses and logs every reply, which
+is how undocumented features are found on new hardware. It is **read-only**: it sends GET
+packets only, never SET or CONFIRM, so it is safe against a live device. It is gated behind the
+`probe` feature to keep it out of `cargo install` and Homebrew.
 
 ```bash
-cargo run --bin shurectl-probe --features probe                          # scan the connected device
-cargo run --bin shurectl-probe --features probe -- --pid 0x1013          # MVX2U Gen 1
-cargo run --bin shurectl-probe --features probe -- --pid 0x1026          # MV6
-cargo run --bin shurectl-probe --features probe -- --pid 0x1035          # MV6 Gen 2
-cargo run --bin shurectl-probe --features probe -- --also-mix-class      # also sweep mix-class prefix
-cargo run --bin shurectl-probe --features probe -- --also-lock-class     # also sweep lock-class
-cargo run --bin shurectl-probe --features probe -- --page 0x03           # sweep a specific page only
-cargo run --bin shurectl-probe --features probe -- --output results.txt  # write results to file
-cargo run --bin shurectl-probe --features probe -- --delay-ms 50         # increase if device misses responses
+cargo run --bin shurectl-probe --features probe                  # the one connected device
+cargo run --bin shurectl-probe --features probe -- --pid 0x1035  # pick a model by PID
+cargo run --bin shurectl-probe --features probe -- --help        # pages, prefix classes, delay
 ```
 
-See the module-level doc comment in `src/bin/probe.rs` for full details on packet classes and known limitations.
+The module doc comment in `src/bin/probe.rs` explains the packet classes and known limits.
 
----
+## Adding support for a new device
 
-## Adding Support for a New Device
+1. Capture USB traffic with usbmon/Wireshark against ShurePlus MOTIV
+2. Run the probe against the device to enumerate responding feature addresses
+3. Cross-reference captures with probe output to confirm address → feature mappings
+4. Implement each command as in **Adding a New Command** in `AGENTS.md`
+5. Add newly confirmed addresses to `KNOWN_FEATURES` in `src/bin/probe.rs`
 
-1. Capture USB traffic with usbmon/Wireshark against the official ShurePlus MOTIV Desktop app
-2. Run the probe tool against the device to enumerate responding feature addresses
-3. Cross-reference captures with probe output to confirm address→feature mappings
-4. Add `FEAT_*` constants, command constructors, and `apply_response()` branches in `protocol.rs`
-5. Add typed `get_*`/`set_*` methods in `device.rs` and wire up `DeviceAction` variants in `app.rs`
-6. Update `KNOWN_FEATURES` in `src/bin/probe.rs` with any newly confirmed addresses
+When protocol behaviour is uncertain, capture first. Don't guess.
 
-When protocol behaviour is uncertain, capture first — don't guess.
+## Commits
 
----
-
-## Commit Style
-
-This project follows [Conventional Commits](https://www.conventionalcommits.org/). Commit messages should explain the *why*, not just the *what*.
+Write the subject as a plain imperative sentence saying what changes for the user, with no
+type prefix. Use the body for the *why*, naming the models affected and any commit it fixes.
 
 ```
-feat: add gain lock support for MVX2U Gen 2
-fix: correct feature address for MV6 monitor mix SET packet
-docs: document HDR_CONSTANT quirk for MV6 lock commands
+Send EQ band switches only to the Gen 1, and keep unsaved Playback Level
+Undo only writes that clearly failed, and load only saved preset settings
+Release 2.12.0: safer preset loads, 48V kept, review severity
 ```

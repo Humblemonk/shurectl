@@ -16,7 +16,6 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
   rather than freezing on its last value.
 - The meter reads the system default input after the OS input volume, i.e. what apps record.
   It is only the Shure's level when the Shure is the default input.
-
 - `start_meter()` returns `MeterStatus`. The caller must keep the `Stream` in
   `MeterStatus::Running` alive; dropping it stops capture.
 - The meter does not start in demo mode.
