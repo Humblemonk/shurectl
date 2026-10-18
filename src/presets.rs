@@ -31,7 +31,8 @@ pub const PRESET_COUNT: usize = 4;
 /// `Option`, saved only by a model that has it (see `from_device_state()`).
 /// `None` keeps the device's current value on load, so a preset saved on
 /// another model can't reset a setting that model doesn't have. Presets saved
-/// before 2.13.1 held every field, and still apply them all.
+/// before 2.13.1 (2.12.0 for phantom power) held every field, and still apply
+/// them all.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PresetSlot {
     /// Human-readable name shown in the TUI (editable in-app or by hand in TOML).

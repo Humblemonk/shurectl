@@ -686,7 +686,8 @@ impl FakeState {
         }
     }
 
-    /// A gain-locked device ignores gain writes (checked on hardware).
+    /// A gain-locked device ignores gain writes (tested on the MV6, MV6 Gen 2
+    /// and MVX2U Gen 2, 2026-10-10).
     fn gain_locked_write(&self, key: Key) -> bool {
         let (Some(gain), Some(lock)) = (self.key_of("GAIN"), self.key_of("GAIN_LOCK")) else {
             return false;

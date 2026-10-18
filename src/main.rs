@@ -1603,10 +1603,11 @@ fn apply_binary_preset(
         state.auto_tone,
     )?;
     // Order: mode → gain → mute → HPF.
-    // A gain-locked device ignores gain writes (checked on hardware, 835c213), so
-    // unlock, write the gain, then lock straight away so a later failed
-    // write can't leave the device unlocked behind a locked UI. A preset
-    // without Gain Lock re-locks to the shown state's setting.
+    // A gain-locked device ignores gain writes (tested on the MV6, MV6 Gen 2
+    // and MVX2U Gen 2, 2026-10-10), so unlock, write the gain, then lock
+    // straight away so a later failed write can't leave the device unlocked
+    // behind a locked UI. A preset without Gain Lock re-locks to the shown
+    // state's setting.
     if model.has_gain_lock() {
         d.set_mv6_gain_lock(false)?;
     }
