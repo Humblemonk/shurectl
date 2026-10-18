@@ -276,6 +276,14 @@ fn pty_smoke() {
             }
         }
     };
+    // ConPTY asks for the cursor position at start and passes on no output
+    // until a terminal answers.
+    #[cfg(windows)]
+    {
+        wait_for(&mut seen, "\x1b[6n");
+        writer.write_all(b"\x1b[1;1R").expect("answer cursor query");
+        writer.flush().expect("flush");
+    }
     wait_for(&mut seen, "DEMO");
     writer.write_all(b"q").expect("send q");
     writer.flush().expect("flush");
