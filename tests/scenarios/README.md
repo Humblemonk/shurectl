@@ -27,9 +27,9 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
   click on a toggle fires it; preset Load/Delete arming by click; resize while editing a name
 - Connection: recovery from an I/O failure with `r`; poll timing (no disconnect before the
   first poll); `r` in demo mode
-- Presets: an empty slot; one SET per stored setting in the same order on every model;
-  a preset with the other Monitor Mix kind; name length limit; `s` and `d`
-  on the name row; MODE before EQ and Dynamics on load; loading while disconnected
+- Presets: an empty slot; name length limit; `s` and `d` on the name row; loading while
+  disconnected. (Which SETs each load sends, in what order, is `preset_loads_match_golden`
+  in `main.rs`.)
 - Info: device name length limit; Tab or `q` while Factory Reset is armed; the MV7 Info
   tab has nothing focusable; the help overlay matches the readme key table
 

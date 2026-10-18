@@ -33,8 +33,8 @@ Change the gate in the script, not in docs or CI.
 
 ```
 src/
-  main.rs       # Entry point, CLI args (--demo, --list, --mute), event loop, apply_action()
-  app.rs        # App state: Tab, Focus, DeviceState, DeviceAction events
+  main.rs       # Entry point, CLI args, one-shot commands, event loop, apply_action()
+  app.rs        # App state: Tab, Focus, DeviceAction; DeviceState lives in protocol.rs
   device.rs     # hidapi wrapper: open device, send/receive HID reports
   meter.rs      # cpal capture: dBFS metering, RollingWindow, PeakWindow
   mouse.rs      # HitMap from the last rendered frame; clicks/wheel → the same key actions
@@ -48,6 +48,7 @@ src/
 tests/
   e2e.rs        # Runs tests/scenarios/*.jsonl through `shurectl --qa` per model; PTY smoke
   scenarios/    # One JSON-lines file per scenario
+  fixtures/     # Older preset files, and preset-loads.golden (main.rs `preset_loads_match_golden`)
 ```
 
 **Control flow:** key event → `step()` → `handle_key()` → `DeviceAction` → `apply_action()`
@@ -66,13 +67,10 @@ tests/
 **Demo mode:** `--demo` runs with `device: None`, and `send_if_connected()` silently succeeds.
 State changes still apply; only HID writes are skipped. Demo mode must stay fully navigable.
 
-**Connection state:** `run_event_loop()` calls `poll_presence()` every 2 s. It checks the OS
-device list only (`ShureDevice::is_present()`), with no HID traffic. A missing device shows
-`[DISCONNECTED]` in the header; once it is back (after one more poll, to let it boot) it is
-reconnected through `DeviceAction::Reconnect`, so `apply_action()` stays the only writer.
-`r` refreshes and reconnects on demand. Only a `device::Disconnected` error (HID read/write
-failure, or the device not found again) marks the device disconnected; a device that is
-present but refuses or ignores a command stays connected.
+**Connection state:** `poll_presence()` checks the OS device list every 2 s, with no HID
+traffic. A device that is back is reconnected one poll later through `DeviceAction::Reconnect`
+(`r` does it on demand), so `apply_action()` stays the only writer. Only a
+`device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
 ## Adding a New Command
 
@@ -83,7 +81,8 @@ In order, without skipping steps:
    **Testing**)
 2. `device.rs`: typed `get_*`/`set_*` methods on `ShureDevice`. If it's part of full
    readback, add the getter to the `getters` slice in the `get_state_*()` function of every
-   model that supports it
+   model that supports it, and its UI name to `GET_LABELS` in `protocol.rs`
+   (`every_readback_query_names_its_setting` fails until you do)
 3. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it
    (`get_state_reads_back_the_seeded_state_on_every_model` fails until you do)
 4. `app.rs`: `DeviceAction` variant if user-triggerable, wired into `adjust_focused()` or
@@ -97,13 +96,9 @@ In order, without skipping steps:
 
 ## TUI / Focus Model
 
-- `Tab` selects the visible panel; `Focus` selects the active control within it
-- `adjust_focused()` handles ←/→ for sliders; `toggle_focused()` handles Enter/Space for
-  booleans and enum cycling. Both return `Option<DeviceAction>`; `None` means a UI-only
-  change with no HID write
-- Preset name editing lives in `main.rs::handle_key()`, not `toggle_focused()`. While
-  `editing_preset_name` is true, chars append (including `q`, which only quits outside
-  editing), Enter commits (`PersistPresetName`), and Esc or clicking outside cancels
+`Tab` is the panel, `Focus` the control in it. `adjust_focused()` (←/→) and `toggle_focused()`
+(Enter/Space) return `Option<DeviceAction>`; `None` is a UI-only change. Name editing lives in
+`main.rs::key_action()`: chars (`q` included) append, Enter commits, Esc or a click away cancels.
 
 ## Cross-Device UI Consistency
 
@@ -122,7 +117,8 @@ Intended differences (hardware, not divergence; don't flag them):
 - Gain: 0–60 dB on the MVX2U Gen 1 and Gen 2, 0–36 dB elsewhere; 1.5 dB steps on the MV7
 - EQ band steps: 0.5 dB on the MVX2U Gen 2, 2 dB on the Gen 1 and MV6 Gen 2
 - "Monitor Mix" (a balance) on the MVX2U Gen 1 and MV7; "Mic Level" on models with Playback Level
-- "Target Level" on the MV6 Gen 2 and "Auto Gain" on the MVX2U Gen 1 are different settings
+- "Auto Gain" (MVX2U Gen 1) and "Target Level" (MV6 Gen 2): one setting at FEAT_AUTO_GAIN,
+  labelled per model as MOTIV does (MOTIV screenshots; Gen 1 values per shux)
 - EQ and Dynamics locked in Auto only on the MVX2U Gen 1 and MV7 (`is_tab_locked()`)
 - Tabs and controls hidden per model, as the readme's Device support table lists
 
@@ -138,14 +134,9 @@ Shared across all models unless the hardware makes it impossible:
   rows in `summary_rows()` but can't reorder them
 - **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
   everywhere. dB values, percentages, and enum names render through the same code path
-- **Drawing helpers**: `draw_mode_mute_row()` (`draw_mode_block()`, `draw_mute_block()`),
-  `draw_gain_gauge()`, `draw_monitor_mix_gauge()`, `draw_gain_lock_block()`,
-  `draw_config_lock_block()`, `draw_phantom_block()`, `draw_auto_controls()`,
-  `segmented_span()`, `draw_main_shared()`; block styles `focus_border()`, `focus_block()`,
-  `alert_block()`, `card_block()`; sliders `slider_gauge()`; Dynamics cards
-  `draw_card_grid()`; focus hints `with_hint()`; EQ `eq_band_column()`; click targets
-  `control_rows()`. Extend a helper with a parameter rather than forking a near-copy, and
-  pass behaviour in rather than hardcoding a model name in it
+- **Drawing helpers** (listed in `.claude/rules/ui.md`): extend a shared helper with a
+  parameter rather than forking a near-copy, and pass behaviour in rather than hardcoding a
+  model name in it
 - **Status and error wording**: same phrasing for the same condition on every model
 
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
@@ -161,14 +152,10 @@ Shared across all models unless the hardware makes it impossible:
 1. Do other models have this capability under a different vendor name? Use the existing
    shurectl name and control. Vendor naming stops at `protocol.rs`.
 2. Can an existing shared helper render it? Extend the helper.
-3. If a per-model `draw_*` fork is genuinely required, keep block order, borders, and spacing
-   identical to its siblings. Don't bootstrap it by copying a sibling such as
-   `draw_main_left_gen2_manual()` and tweaking strings.
-4. Update *every* `DeviceModel` match: focus fns, `draw_main_left()`, `summary_rows()`,
-   `draw_info_tab()`, and preset serialization. Where an arm was `_`, a missing model is a
-   silent UX divergence rather than a compile error.
-5. Verify with `--demo` on all six models (`mvx2u`, `mvx2u-gen2`, `mv6`, `mv6-gen2`, `mv7`,
-   `mv7plus`).
+3. A per-model `draw_*` fork, if genuinely required, keeps its siblings' block order,
+   borders and spacing; don't start it by copying one and tweaking strings.
+4. Update every `DeviceModel` match (focus fns, `draw_main_left()`, `summary_rows()`,
+   `draw_info_tab()`, preset serialization), then check `--demo` on all six models.
 
 ## Rust Rules
 
@@ -176,8 +163,7 @@ Shared across all models unless the hardware makes it impossible:
   `todo!()`/`unimplemented!()` in final code
 - No `println!()` once the TUI runs: `eprintln!()` only at startup, and the TUI status bar
   after that. The one-shot commands (`--list`, `--mute`, `--preset`) and `shurectl-probe`
-  print results to stdout so scripts can read them. State readback collects optional
-  settings it couldn't read in `Readback::skipped` for this
+  print results to stdout so scripts can read them
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
 - Exhaustive match arms; no wildcard `_` that silently swallows variants. Check models with
@@ -196,6 +182,7 @@ Shared across all models unless the hardware makes it impossible:
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
 | User-visible behaviour (keys, focus, clicks, status, packet order, reconnects) | A scenario in `tests/scenarios/`, run on every model in its header, with a fake device and in demo mode. Record one with `shurectl --qa` (the `qa` skill, `.claude/skills/qa/SKILL.md`) |
 | `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo`. `every_screen_fits_the_min_size` fails when a screen no longer fits 80×24 (`MIN_SIZE`), or a focus hint is cut mid-word instead of going through `with_hint()` |
+| Preset save or load changes (`presets.rs`, `apply_binary_preset()`, `load_mv7_preset()`) | `preset_loads_match_golden` loads every preset source on every model, checks its rules (see the test) and compares the SETs with `tests/fixtures/preset-loads.golden`. For an intended change, rerun with `UPDATE_GOLDEN=1` and read the diff |
 | `main()` / CLI args | No tests |
 
 Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific
@@ -246,13 +233,14 @@ rather than promoting a lower one.
   encoding (a800e26). See Rust Rules.
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
   check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f). Below 80×24 only a notice draws.
-- **Colors**: new colors use the `C_*` palette constants in `ui.rs`, never a raw
-  `Color::Rgb` (the MV7+ LED channel sliders excepted). Lime is reserved for focus and active
-  states; values stay white. Red means errors, Muted, clipping and destructive actions, amber
-  cautions; neither is decoration. Text people read, including a bar's label in its bar color,
-  needs 4.5:1, so `C_DISABLED` is for inactive things only. See `.claude/rules/ui.md`.
+- **Colors** (`.claude/rules/ui.md`): `C_*` constants only, no raw `Color::Rgb` (MV7+ LED
+  sliders excepted). Lime only for focus and active states; values stay white. Red and amber
+  mean errors and cautions, never decoration. Readable text needs 4.5:1; `C_DISABLED` doesn't.
 - **Stale prose**: when a capability moves between models, update the doc comments, help
   overlay, status strings, Info tab and readme row too. Most "tidy" commits fix this.
+- **Hardware claims**: a diff that states or copies a claim about device behaviour with
+  neither its evidence nor "unconfirmed" (see **Workflow**). Copying an older claim counts:
+  check where it came from before repeating it.
 
 **Intentional, don't flag:**
 
@@ -274,5 +262,10 @@ rather than promoting a lower one.
 - For non-trivial features, explore the relevant code and confirm a plan before implementing.
 - If a byte offset or command value is uncertain, say so and propose a usbmon capture rather
   than guessing.
+- A comment, doc, changelog line or commit message that says how a device behaves names its
+  evidence: a usbmon capture, a probe run or a test on hardware, with the model and date
+  ("probed 2026-10-12 on the MV6 Gen 2"). Without evidence it says "unconfirmed". An
+  explanation that fits a result is not evidence: "the MV6 answers its Mic Level only after
+  a SET" explained a probe bug and was repeated for six months (0c3a0de).
 - When a cross-model UI divergence is unavoidable, name the affected models in the commit/PR
   body.
