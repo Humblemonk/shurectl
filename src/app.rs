@@ -74,8 +74,8 @@ impl Tab {
 /// Which control within the current tab has focus.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
-    // Main tab — Mode, Mute and Monitor Mix everywhere; Phantom (MVX2U) and
-    // Lock (MVX2U Gen 1, MV7) where the model has them
+    // Main tab — Mode, Mute and Monitor Mix everywhere; Phantom (MVX2U Gen 1
+    // and Gen 2) and Lock (MVX2U Gen 1, MV7) where the model has them
     Mode,
     Mute,
     Phantom,
@@ -89,7 +89,8 @@ pub enum Focus {
     AutoGain,
     // Main tab — MV6 Gen 2 Auto Level (Target Level reuses AutoGain)
     AdaptationRate,
-    // EQ tab — 5 bands (MVX2U; MV6 Gen 2 in Advanced); band enables are Gen 1 only
+    // EQ tab — 5 bands (MVX2U Gen 1 and Gen 2 in Manual, MV6 Gen 2 in Advanced);
+    // band enables are Gen 1 only
     EqEnable,
     EqBandSelect,
     EqBandEnable(usize),
@@ -104,7 +105,8 @@ pub enum Focus {
     Limiter,
     Compressor,
     Hpf,
-    // Dynamics tab — MV6-family controls (also MVX2U Gen 2, MV7+)
+    // Dynamics tab — MV6-family controls (also MVX2U Gen 2 and MV7+; the Mute
+    // Button not on the MVX2U Gen 2)
     Denoiser,
     PopperStopper,
     MuteBtnDisable,
@@ -160,12 +162,13 @@ pub struct App {
     pub eq_selected_band: usize,
     pub should_quit: bool,
     pub demo_mode: bool,
-    /// False after a HID read or write failed (the device was unplugged), until
-    /// a refresh reads from it or reconnects. Meaningless in demo mode.
+    /// False once the device is gone (a HID read or write failed, or the
+    /// presence poll no longer sees it), until a refresh or reconnect reads it
+    /// again. Meaningless in demo mode.
     pub device_connected: bool,
-    /// True while a connected device's settings have never been read, so
-    /// `device_state` holds defaults. Writes based on it are refused until a
-    /// refresh reads the device.
+    /// True while `device_state` may not match the device: its settings were
+    /// never read (defaults), or a failed write or reconnect left them unknown.
+    /// Writes based on it are refused until a refresh reads the device.
     pub state_unread: bool,
     pub help_visible: bool,
     /// Which device model is connected. Drives which controls are shown.
@@ -452,8 +455,8 @@ impl App {
     // MV6 EQ:      Tone (slider only, no bands)
     // MV6 Dynamics: Denoiser → PopperStopper → MuteBtnDisable → Hpf → (wrap)
     //
-    // MV6 Gen 2: as MV6, plus Playback Level after Mic Level (as on the MV7+), Mic
-    // Preset last (a device extra), and in Auto its Auto Level controls (Gen 1 order):
+    // MV6 Gen 2: as MV6, plus Mic Preset last (a device extra), and in Auto its
+    // Auto Level controls (Gen 1 order):
     //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → MicPreset → (wrap)
     //   Auto:   Mode → Mute → AutoGain (Target Level) → AdaptationRate → MonitorMix
     //           → PlaybackMix → MicPreset → (wrap)
@@ -476,7 +479,7 @@ impl App {
             &self.device_model,
             &self.device_state.mode,
         ) {
-            // ── MV6 Gen 2 Playback Level (after Mic Level, as on the MV7+) ────
+            // ── MV6 Gen 2 tail: Mic Level → Playback Level → Mic Preset ───────
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6Gen2, _) => Focus::PlaybackMix,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6Gen2, _) => Focus::MicPreset,
             (Tab::Main, Focus::MicPreset, DeviceModel::Mv6Gen2, _) => Focus::Mode,
@@ -721,7 +724,7 @@ impl App {
             &self.device_model,
             &self.device_state.mode,
         ) {
-            // ── MV6 Gen 2 Playback Level reverse ──────────────────────────────
+            // ── MV6 Gen 2 tail reverse ────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mv6Gen2, _) => Focus::MicPreset,
             (Tab::Main, Focus::MicPreset, DeviceModel::Mv6Gen2, _) => Focus::PlaybackMix,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6Gen2, _) => Focus::MonitorMix,
@@ -1386,7 +1389,7 @@ pub enum DeviceAction {
     /// `usize` is band index 0–4; `i16` is gain in tenths of dB (−80..+60).
     /// On the model's `eq_step_tenths()` grid.
     SetEqBandGain(usize, i16),
-    // ── MV6-first actions (also MVX2U Gen 2, MV6 Gen 2, MV7+) ─────────────────
+    // ── Named for the MV6, which had them first ───────────────────────────────
     SetMv6Denoiser(bool),
     SetMv6PopperStopper(bool),
     SetMv6MuteBtnDisable(bool),
@@ -2070,7 +2073,7 @@ mod tests {
     }
 
     /// Gen 2 Manual shows all five controls. The order must match the card order
-    /// in `draw_gen2_dynamics_tab()`.
+    /// in `draw_dynamics_tab()`.
     #[test]
     fn gen2_dynamics_tab_manual_focus_cycles_all_five_controls() {
         let mut app = App {
@@ -2132,7 +2135,7 @@ mod tests {
     }
 
     /// MV7+ shows all six controls. The order must match the card order in
-    /// `draw_mv7plus_dynamics_tab()`.
+    /// `draw_dynamics_tab()`.
     #[test]
     fn mv7plus_dynamics_tab_focus_cycles_all_six_controls() {
         let mut app = App {
@@ -2166,8 +2169,6 @@ mod tests {
             assert_eq!(app.focus, expected, "focus_prev: expected {expected:?}");
         }
     }
-
-    // ── preset focus / toggle ─────────────────────────────────────────────────
 
     // ── MV7 ───────────────────────────────────────────────────────────────────
 

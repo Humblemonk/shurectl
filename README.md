@@ -76,7 +76,7 @@ shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
 | `←` / `h` | Decrease value |
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
-| `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2, and MV6 Gen 2 in Advanced tone |
+| `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 in Manual, and MV6 Gen 2 in Advanced tone |
 | `r` | Refresh state from device (reconnects right away if it was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |

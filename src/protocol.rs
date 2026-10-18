@@ -25,7 +25,7 @@
 //!   [0x70]              Data start marker
 //!   [data_len]          Length of data section (repeated)
 //!   [cmd0][cmd1][cmd2]  3-byte command
-//!   [payload...]        Feature address + value bytes
+//!   [payload...]        Prefix byte, feature address, value bytes
 //!   [crc_hi][crc_lo]    CRC-16/ANSI over all bytes from [0x11] onward (excl. CRC itself)
 //!   [0x00 ...]          Zero padding to reach 64 bytes total
 //!
@@ -65,7 +65,8 @@
 //!                                   both 1-byte and 4-byte responses defensively.
 //!   Monitor mix:    [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback
 //!   EQ master:      [0x02, 0x00]  — 1 byte: 0=bypass, 1=enabled
-//!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band)
+//!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band), per
+//!                                   shux (no Gen 1 probe output)
 //!   EQ band gain:   [0x02, 0xN4]  — Gen 1: 16-bit signed big-endian, units: gain_db * 10
 //!                                   Gen 2: 8-bit signed (i8), units: gain_db * 10
 //!                                   Same address; wire width distinguishes the model.
@@ -1496,7 +1497,7 @@ pub fn crc16_ansi(data: &[u8]) -> u16 {
 ///
 /// `seq` is the per-packet sequence number (0–255, wraps).
 /// `cmd` is the 3-byte command (e.g. [`CMD_GET_FEAT`], [`CMD_SET_FEAT`], [`CMD_CONFIRM`]).
-/// `payload` is the feature address + optional value bytes.
+/// `payload` is the prefix byte, the feature address and any value bytes.
 ///
 /// Layout produced (before CRC + padding):
 /// ```text
@@ -1923,8 +1924,10 @@ pub mod fake_wire {
 
 /// Like `build_packet` but uses HDR_CONSTANT=0x00 instead of 0x03.
 ///
-/// Required for ALL MV7+ SET commands. The MV7+ rejects SET packets with
-/// the standard HDR_CONSTANT=0x03. GET commands still use `build_packet`.
+/// Used for ALL MV7+ SET commands, as MOTIV sends them (capture, firmware 1.6),
+/// and for the commands other models share with it. That the MV7+ refuses a SET
+/// with the standard HDR_CONSTANT=0x03 is unconfirmed. GET commands still use
+/// `build_packet`.
 fn build_packet_hdr0(seq: u8, cmd: &[u8; 3], payload: &[u8]) -> Vec<u8> {
     build_packet_with_hdr(seq, 0x00, cmd, payload)
 }
@@ -3129,8 +3132,9 @@ pub mod mv7_text {
 
     // ── Preset loading ────────────────────────────────────────────────────────
     //
-    // The MV7 answers [Failed] to a SET that changes nothing, so a preset load
-    // only sends what differs from the mic's current state.
+    // The MV7 answers [Failed] to a SET that changes nothing (seen for gain and
+    // Monitor Mix, assumed for the rest), so a preset load only sends what
+    // differs from the mic's current state.
 
     /// The `dspMode` SET that takes the mic from `current` to `target`'s mode,
     /// mic position and tone, or `None` if they already match. Changing it has
@@ -4216,8 +4220,6 @@ mod tests {
         assert_eq!(&gain_pkt_g2[14..16], &[0x02u8, 0x14]);
     }
 
-    // ── parse_response ────────────────────────────────────────────────────────
-
     // ── Golden packets ────────────────────────────────────────────────────────
     //
     // Full literal byte sequences for four representative packets. Every other
@@ -4314,6 +4316,8 @@ mod tests {
         );
         assert_eq!(pkt.len(), PACKET_SIZE);
     }
+
+    // ── parse_response ────────────────────────────────────────────────────────
 
     /// Build a synthetic response from the device for testing parse_response.
     fn make_response(seq: u8, resp_cmd: &[u8; 3], feat_addr: &[u8; 2], value: &[u8]) -> Vec<u8> {

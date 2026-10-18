@@ -111,7 +111,7 @@ impl Default for PeakWindow {
 
 // ── MeterStatus ───────────────────────────────────────────────────────────────
 
-/// How the meter thread communicates failure back to the UI.
+/// What `start_meter()` returns: the running stream, or why it couldn't start.
 pub enum MeterStatus {
     /// Stream is running; reads come via the shared `PeakWindow`.
     Running(Stream),

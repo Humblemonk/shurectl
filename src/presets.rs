@@ -4,12 +4,13 @@
 //! directory (`~/.config` on Linux; the README lists the others).
 //! There are 4 fixed slots, numbered 0–3, stored as `preset_1.toml`–`preset_4.toml`.
 //!
-//! Each file is human-readable and hand-editable. The preset captures all
-//! configurable DSP settings from `DeviceState` — everything that can be sent
-//! to the device over HID. Hardware-identity fields `serial_number` are intentionally excluded.
+//! Each file is human-readable and hand-editable. The preset captures the
+//! configurable DSP settings from `DeviceState` that the saving model has.
+//! Identity fields (serial numbers, firmware version, device name) are left
+//! out, so a load keeps the device's own.
 //!
-//! This mirrors how MOTIV Desktop saves presets: the app sends a batch of SET
-//! commands when a preset is loaded, with no device-side preset bank involved.
+//! Presets live on the host only: loading one sends a SET for each saved
+//! setting, with no device-side preset bank involved.
 
 use std::path::PathBuf;
 
@@ -30,7 +31,7 @@ pub const PRESET_COUNT: usize = 4;
 /// `Option`, saved only by a model that has it (see `from_device_state()`).
 /// `None` keeps the device's current value on load, so a preset saved on
 /// another model can't reset a setting that model doesn't have. Presets saved
-/// before this held every field, and still apply them all.
+/// before 2.13.1 held every field, and still apply them all.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PresetSlot {
     /// Human-readable name shown in the TUI (editable in-app or by hand in TOML).

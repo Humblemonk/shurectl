@@ -2381,7 +2381,7 @@ fn draw_reverb_tab(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LED Tab (MV7+ only)
+// LED Tab (MV7 and MV7+)
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn draw_led_color_gauge(
@@ -3770,8 +3770,8 @@ mod tests {
     // ── enum_options ──────────────────────────────────────────────────────────
     //
     // Single source of truth for the ▶ marker on every Enter-cycled control
-    // (HPF, Compressor, Reverb Type) across all four models, so a bug here is a
-    // bug on every Dynamics and Reverb tab at once.
+    // (HPF, Compressor, Reverb Type, the MV7 EQ preset) on every model, so a bug
+    // here is a bug on every Dynamics and Reverb tab at once.
 
     #[test]
     fn enum_options_preserves_declaration_order_and_labels() {

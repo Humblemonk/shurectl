@@ -118,7 +118,8 @@ Intended differences (hardware, not divergence; don't flag them):
 - EQ band steps: 0.5 dB on the MVX2U Gen 2, 2 dB on the Gen 1 and MV6 Gen 2
 - "Monitor Mix" (a balance) on the MVX2U Gen 1 and MV7; "Mic Level" on models with Playback Level
 - "Auto Gain" (MVX2U Gen 1) and "Target Level" (MV6 Gen 2): one setting at FEAT_AUTO_GAIN,
-  labelled per model as MOTIV does (MOTIV screenshots; Gen 1 values per shux)
+  labelled per model, as MOTIV labels it Gain (Quieter / Normal / Louder) on the Gen 1 and
+  Target Level on the MV6 Gen 2 (MOTIV screenshots; Gen 1 values per shux)
 - EQ and Dynamics locked in Auto only on the MVX2U Gen 1 and MV7 (`is_tab_locked()`)
 - Tabs and controls hidden per model, as the readme's Device support table lists
 
