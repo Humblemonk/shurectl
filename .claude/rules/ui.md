@@ -51,8 +51,8 @@ Only these may be left out: focus hints, which go through `with_hint()` so they 
 status bar's full hint (it falls back to `[?] Help  [q] Quit`); the Info tab's Capabilities
 list; and text whose length the user sets, a saved preset's summary line and a long device name
 in the header. `every_screen_fits_the_min_size` checks the demo states with empty presets, and
-compares sets of words, so a word cut in one place passes if it shows elsewhere. Dynamics cards go through
-`draw_card_grid()`, which wraps them onto more rows rather than clip a title.
+compares sets of words, so a word cut in one place passes if it shows elsewhere. Dynamics
+cards go through `draw_card_grid()`, which wraps them onto more rows rather than clip a title.
 
 **Shared drawing helpers.** A control that exists on more than one model is drawn through
 one of these; extend it with a parameter rather than forking a near-copy:

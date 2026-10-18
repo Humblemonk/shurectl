@@ -10,12 +10,12 @@
 //!
 //! Binary models: a SET is stored when its CONFIRM arrives, a GET is answered from
 //! the store, and each CONFIRM queues the acks `fake_wire::acks_after_confirm()`
-//! lists for the model, one of which parses as a reply on the MV7+. A packet with
-//! the wrong header byte for its command, or a sequence byte that doesn't follow
-//! the previous one on its handle, is refused. The MV7 runs
-//! `mv7_text::shell` instead. Faults (dropped or extra acks, failed I/O, refused
-//! commands, unplugging) give disconnect and readback-order tests something to
-//! bite on. Every packet received is logged, decoded by name.
+//! lists for the model, one of which parses as a reply on every binary model but
+//! the MVX2U Gen 2. A packet with the wrong header byte for its command, or a
+//! sequence byte that doesn't follow the previous one on its handle, is refused.
+//! The MV7 runs `mv7_text::shell` instead. Faults (dropped or extra acks, failed
+//! I/O, refused commands, unplugging) give disconnect and readback-order tests
+//! something to bite on. Every packet received is logged, decoded by name.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -686,7 +686,8 @@ impl FakeState {
         }
     }
 
-    /// A gain-locked device ignores gain writes (checked on hardware).
+    /// A gain-locked device ignores gain writes (tested on the MV6, MV6 Gen 2
+    /// and MVX2U Gen 2, 2026-10-10).
     fn gain_locked_write(&self, key: Key) -> bool {
         let (Some(gain), Some(lock)) = (self.key_of("GAIN"), self.key_of("GAIN_LOCK")) else {
             return false;

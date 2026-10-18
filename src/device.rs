@@ -12,7 +12,7 @@
 //! audio interface. hidapi opens it via /dev/hidrawN on Linux, IOKit on macOS,
 //! and \\.\HID#VID_... paths on Windows, bypassing the audio driver entirely.
 //!
-//! # Transport
+//! # Reports
 //!
 //! Configuration uses plain HID Output/Input reports:
 //!   - `hid_write()` sends a command to the device (Output report).
@@ -28,9 +28,8 @@
 //!
 //! # Sequence numbers
 //!
-//! Each packet carries an incrementing sequence number (0–255, wrapping). The
-//! device echoes this number in its response. We track it in `ShureDevice` and
-//! increment after every `write()`.
+//! Each binary packet carries an incrementing sequence number (0–255, wrapping).
+//! `ShureDevice::next_seq()` hands out one per packet built, CONFIRMs included.
 //!
 //! # Transport
 //!
@@ -99,8 +98,9 @@ const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 const MV7_DRAIN_MAX_REPORTS: usize = 256;
 
 /// A HID read or write failed, or `reopen()` could not find the device: it was
-/// unplugged or its handle went stale. Kept as its own type so `main.rs` can tell it apart from a device
-/// that is present but refused a command, and show the device as disconnected.
+/// unplugged or its handle went stale. Kept as its own type so `main.rs` can
+/// tell it apart from a device that is present but refused a command, and show
+/// the device as disconnected.
 #[derive(Debug)]
 pub struct Disconnected(pub String);
 
@@ -810,7 +810,7 @@ impl ShureDevice {
         self.send_set(&pkt)
     }
 
-    // ── MVX2U-first SET commands (Auto Level, mix, dynamics, EQ, lock) ──────
+    // ── MVX2U-first SET commands (Auto Level, dynamics, EQ, lock) ───────────
 
     /// Set the Auto Level mic position. `tone` is only used by the MV7, which
     /// stores both in one setting.
@@ -911,7 +911,7 @@ impl ShureDevice {
         }
     }
 
-    // ── MV6-first SET commands (also MVX2U Gen 2, MV6 Gen 2, MV7+) ──────────
+    // ── MV6-first and MV6 Gen 2 SET commands, device name, Monitor Mix ──────
 
     pub fn set_mv6_denoiser(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
@@ -1285,9 +1285,12 @@ fn supported_model(info: &hidapi::DeviceInfo) -> Option<DeviceModel> {
     DeviceModel::from_pid(info.product_id())
 }
 
+/// The lowest vendor-defined HID usage page.
+const VENDOR_USAGE_PAGE_MIN: u16 = 0xFF00;
+
 /// Enumerate supported Shure devices, one entry per physical device.
 ///
-/// Two-pass approach:
+/// Three steps:
 /// 1. Filter to VID/PID candidates.
 /// 2. If any candidate advertises a vendor-defined HID usage page (0xFF00–0xFFFF),
 ///    restrict to those — this drops the Windows telephony/mute-button collection
@@ -1296,8 +1299,6 @@ fn supported_model(info: &hidapi::DeviceInfo) -> Option<DeviceModel> {
 ///    that case no candidate looks vendor-defined, so all are kept and step 3
 ///    handles deduplication.
 /// 3. Deduplicate by path — on Linux all collections share one /dev/hidrawN path.
-const VENDOR_USAGE_PAGE_MIN: u16 = 0xFF00;
-
 fn shure_devices(api: &HidApi) -> Vec<(&hidapi::DeviceInfo, DeviceModel)> {
     let candidates: Vec<(&hidapi::DeviceInfo, DeviceModel)> = api
         .device_list()

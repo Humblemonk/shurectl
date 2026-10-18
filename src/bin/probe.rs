@@ -104,9 +104,9 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
     ([0x01, 0x02], "GAIN"),
     ([0x01, 0x04], "MUTE"),
     ([0x01, 0x06], "HPF"),
-    ([0x01, 0x51], "LIMITER (Gen1/Gen2)"),
-    ([0x01, 0x58], "DENOISER (MV6/Gen2)"),
-    ([0x01, 0x5C], "COMPRESSOR (Gen1/Gen2)"),
+    ([0x01, 0x51], "LIMITER (Gen1/Gen2/MV7+)"),
+    ([0x01, 0x58], "DENOISER (MV6/MV6 Gen 2/Gen2/MV7+)"),
+    ([0x01, 0x5C], "COMPRESSOR (Gen1/Gen2/MV7+)"),
     ([0x01, 0x66], "PHANTOM (Gen1/Gen2)"),
     ([0x01, 0x82], "AUTO_POSITION (Gen1 only)"),
     ([0x01, 0x83], "AUTO_TONE (Gen1 only)"),
@@ -125,17 +125,17 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
     ),
     ([0x01, 0x88], "MV6G2_ADAPTATION_RATE (0=Slow, 1=Fast)"),
     ([0x01, 0xD1], "MV6G2_DENOISER_LEVEL (1–100%)"),
-    ([0x01, 0xF3], "GAIN_LOCK (MV6/Gen2)"),
+    ([0x01, 0xF3], "GAIN_LOCK (MV6/MV6 Gen 2/Gen2)"),
     (
         [0x01, 0xF4],
         "UNKNOWN_F4 (GET always returns 0x00 on MV6; not mute btn disable)",
     ),
     (
         [0x0C, 0x00],
-        "MV6_MUTE_BTN_DISABLE (MV6 only — GET: CMD_GET_LOCK, payload=[0x0C,0x00,0x60], resp feat=[0x00,0x60]; SET: CMD_SET_LOCK, HDR_CONSTANT=0x00; inverted: 0x00=disabled, 0x01=active)",
+        "MV6_MUTE_BTN_DISABLE (MV6/MV6 Gen 2/MV7+ — GET: CMD_GET_LOCK, payload=[0x0C,0x00,0x60], resp feat=[0x00,0x60]; SET: CMD_SET_LOCK, HDR_CONSTANT=0x00; inverted: 0x00=disabled, 0x01=active)",
     ),
     ([0x02, 0x00], "EQ_MASTER (Gen1 only — not present on Gen2)"),
-    ([0x02, 0x04], "TONE_SLIDER (MV6/Gen2)"),
+    ([0x02, 0x04], "TONE_SLIDER (MV6/MV6 Gen 2/Gen2/MV7+)"),
     ([0x02, 0x05], "MV6G2_TONE_MODE (0=Simple, 1=Advanced)"),
     (
         [0x02, 0x10],
@@ -176,7 +176,7 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
         "EQ_10KHZ_FREQ_RO (Gen2 only — read-only, always 10000)",
     ),
     ([0x02, 0x54], "EQ_10KHZ_GAIN (Gen1/Gen2)"),
-    ([0x03, 0x81], "POPPER_STOPPER (MV6/Gen2/MV7+)"),
+    ([0x03, 0x81], "POPPER_STOPPER (MV6/MV6 Gen 2/Gen2/MV7+)"),
     ([0x03, 0x82], "MV7+_REVERB_OUTPUT (MV7+ only — 0=off, 1=on)"),
     (
         [0x03, 0x83],
@@ -191,32 +191,53 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
 
 /// Known addresses for the MV7+ lock command class (cmd=[01,02,01]).
 /// These use payload [page, 0x00, sub_addr] — a 3-level address scheme not
-/// covered by the standard 2-level sweep. Discovered via Wireshark captures.
+/// covered by the standard 2-level sweep. Discovered via Wireshark captures;
+/// the meanings match the `MV7_LED_SUB_*` constants in `protocol.rs`.
 /// Keys: [page, sub_addr] (the 3rd byte is the discriminator within the page).
 const KNOWN_MV7_LOCK_ADDRS: &[([u8; 2], &str)] = &[
     (
+        [0x0C, 0x42],
+        "MV7+_LED_BRIGHTNESS (0x03=Low, 0x04=Med, 0x05=High, 0x06=Max)",
+    ),
+    (
         [0x0C, 0x60],
-        "MV6/MV7+_MUTE_BTN_DISABLE (0x00=disabled, 0x01=active)",
+        "MV6/MV6 Gen 2/MV7+_MUTE_BTN_DISABLE (0x00=disabled, 0x01=active)",
+    ),
+    (
+        [0x0C, 0x96],
+        "MV7+_LED_LIVE_THEME (0=Default, 1=Seaside, 2=Space, 3=Fruity, 4=Custom)",
+    ),
+    (
+        [0x0C, 0x98],
+        "MV7+_LED_LIVE_EDGE (4 bytes: [0x00, R, G, B])",
+    ),
+    (
+        [0x0C, 0x99],
+        "MV7+_LED_LIVE_MIDDLE (4 bytes: [0x00, R, G, B])",
+    ),
+    (
+        [0x0C, 0xA0],
+        "MV7+_LED_LIVE_INTERIOR (4 bytes: [0x00, R, G, B])",
     ),
     (
         [0x0C, 0xA2],
-        "MV7+_LED_COLOR_ACTIVE (4 bytes: [0x00, R, G, B] — color when unmuted)",
+        "MV7+_LED_SOLID_COLOR (4 bytes: [0x00, R, G, B])",
     ),
     (
         [0x0C, 0xA3],
-        "MV7+_LED_COLOR_MUTED (4 bytes: [0x00, R, G, B] — color when muted)",
+        "MV7+_LED_PULSING_COLOR (4 bytes: [0x00, R, G, B])",
     ),
     (
         [0x0C, 0xA4],
-        "MV7+_LED_MODE (1 byte: 0x01=solid, 0x02=breathing)",
+        "MV7+_LED_BEHAVIOR (0x00=Live, 0x01=Pulsing, 0x02=Solid)",
     ),
     (
         [0x0C, 0xA5],
-        "MV7+_LED_FLAG_A5 (1 byte: always 0x01 — write-only flag)",
+        "MV7+_LED_SOLID_THEME (0x00=Shure, 0x01=Custom)",
     ),
     (
         [0x0C, 0xA6],
-        "MV7+_LED_FLAG_A6 (1 byte: always 0x01 — write-only flag; aliases FEAT_LOCK on MVX2U)",
+        "MV7+_LED_PULSING_THEME (0x00=Shure, 0x01=Custom; reply address aliases FEAT_LOCK)",
     ),
 ];
 
@@ -249,17 +270,15 @@ struct Cli {
     also_lock_class: bool,
 
     /// Also sweep every address with is_mix=0x01 prefix (hunts for mix-class features
-    /// like the MVX2U monitor mix which requires this prefix byte).
-    /// NOTE: MV6 monitor mix at [0x01, 0x86] is NOT findable this way — its SET packet
-    /// uses HDR_CONSTANT=0x00 rather than a mix-class prefix. Confirmed by Wireshark
-    /// capture of MOTIV app; a full sweep of all pages returned no response for this
-    /// address on MV6 regardless of prefix.
+    /// like the MVX2U Gen 1 monitor mix, which requires this prefix byte).
+    /// The MV6 family's monitor levels at [0x01, 0x86] answer at prefixes 0x00 and
+    /// 0x03, which the standard sweep already reads (see the module docs).
     #[arg(long)]
     also_mix_class: bool,
 
     /// Also sweep each page using the MV7+ lock-class 3-level addressing:
     /// payload=[page, 0x00, sub_addr] with CMD_GET_LOCK. This discovers features
-    /// like LED colors (page 0x0C, sub_addrs A2–A6) and mute_btn_disable (0x60)
+    /// like the LED settings (page 0x0C, sub_addrs 0x42–0xA6) and mute_btn_disable (0x60)
     /// that the standard 2-level sweep cannot find. Use with --page 0x0C for MV7+.
     #[arg(long)]
     also_mv7_lock_class: bool,
@@ -276,7 +295,7 @@ fn build_get_packet(seq: u8, cmd: &[u8; 3], feat_addr: [u8; 2], is_mix_or_lock: 
 }
 
 /// Build a MV7+ lock-class GET packet using 3-level addressing: [page, 0x00, sub_addr].
-/// Used for LED color features on page 0x0C and mute_btn_disable (sub_addr 0x60).
+/// Used for the LED settings on page 0x0C and mute_btn_disable (sub_addr 0x60).
 fn build_get_packet_mv7_lock(seq: u8, page: u8, sub_addr: u8) -> Vec<u8> {
     let payload = [page, 0x00u8, sub_addr];
     build_get_packet_raw(seq, &CMD_GET_LOCK, &payload)
@@ -469,7 +488,7 @@ impl Probe {
 
     /// Sweep all 256 addresses on a page using CMD_GET_FEAT with is_mix=0x01.
     /// This catches mix-class features that require the 0x01 prefix byte,
-    /// like the MVX2U monitor mix and potentially the MV6 monitor level sliders.
+    /// like the MVX2U Gen 1 monitor mix.
     fn sweep_page_mix_class(&mut self, page: u8) -> Result<()> {
         self.log(&format!(
             "\n── Page 0x{page:02X} sweep (CMD_GET_FEAT, prefix=0x01 / mix class) ─────"
@@ -499,7 +518,7 @@ impl Probe {
     /// Sweep all 256 sub-addresses on a page using MV7+ 3-level addressing:
     /// payload=[page, 0x00, sub_addr] with CMD_GET_LOCK.
     ///
-    /// This discovers features like LED colors ([0x0C, 0x00, 0xA2..0xA6]) and
+    /// This discovers features like the LED settings ([0x0C, 0x00, 0x42..0xA6]) and
     /// mute_btn_disable ([0x0C, 0x00, 0x60]) that the standard 2-level sweep
     /// cannot find because they use a different payload structure.
     ///
@@ -719,7 +738,7 @@ fn main() -> Result<()> {
     let device = api.open(VID, pid).map_err(|e| {
         anyhow!(
             "Cannot open device (VID={:#06x} PID={:#06x} / {}): {e}\n\
-            Hint: check udev rules and group membership, or run with sudo.",
+            Hint: check that the udev rules are installed, or run with sudo.",
             VID,
             pid,
             device_label,
@@ -749,7 +768,7 @@ fn main() -> Result<()> {
         let _ = protocol::apply_response(resp.reply.feat, &resp.reply.value, &mut identity);
     }
 
-    let start_time = chrono_now();
+    let start_time = utc_timestamp();
     probe.log("══════════════════════════════════════════════════════════════════════");
     probe.log(&format!("Shure HID Feature Address Probe  —  {start_time}"));
     probe.log("══════════════════════════════════════════════════════════════════════");
@@ -827,7 +846,9 @@ fn detect_pid(api: &HidApi) -> Result<u16> {
     }
 }
 
-fn chrono_now() -> String {
+/// The current time as `YYYY-MM-DD HH:MM:SS UTC`, for the results header. Probe
+/// dates end up quoted as evidence, so the calendar is the real Gregorian one.
+fn utc_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -836,10 +857,27 @@ fn chrono_now() -> String {
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-    let year = 1970 + days / 365;
-    let day_of_year = days % 365;
-    let month = day_of_year / 30 + 1;
-    let day = day_of_year % 30 + 1;
+    let (year, month, day) = civil_date(secs / 86400);
     format!("{year:04}-{month:02}-{day:02} {h:02}:{m:02}:{s:02} UTC")
+}
+
+/// The Gregorian (year, month, day) of a count of days since 1970-01-01, by
+/// Howard Hinnant's `civil_from_days` algorithm, counted in 400-year eras that
+/// start on 1 March so the leap day falls at the end of each year.
+fn civil_date(days_since_epoch: u64) -> (u64, u64, u64) {
+    let days = days_since_epoch + 719_468; // days from 0000-03-01 to 1970-01-01
+    let era = days / 146_097;
+    let day_of_era = days % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = if month_from_march < 10 {
+        month_from_march + 3
+    } else {
+        month_from_march - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    (year, month, day)
 }
