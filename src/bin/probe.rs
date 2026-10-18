@@ -768,7 +768,7 @@ fn main() -> Result<()> {
         let _ = protocol::apply_response(resp.reply.feat, &resp.reply.value, &mut identity);
     }
 
-    let start_time = chrono_now();
+    let start_time = utc_timestamp();
     probe.log("══════════════════════════════════════════════════════════════════════");
     probe.log(&format!("Shure HID Feature Address Probe  —  {start_time}"));
     probe.log("══════════════════════════════════════════════════════════════════════");
@@ -846,7 +846,9 @@ fn detect_pid(api: &HidApi) -> Result<u16> {
     }
 }
 
-fn chrono_now() -> String {
+/// The current time as `YYYY-MM-DD HH:MM:SS UTC`, for the results header. Probe
+/// dates end up quoted as evidence, so the calendar is the real Gregorian one.
+fn utc_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -855,10 +857,27 @@ fn chrono_now() -> String {
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-    let year = 1970 + days / 365;
-    let day_of_year = days % 365;
-    let month = day_of_year / 30 + 1;
-    let day = day_of_year % 30 + 1;
+    let (year, month, day) = civil_date(secs / 86400);
     format!("{year:04}-{month:02}-{day:02} {h:02}:{m:02}:{s:02} UTC")
+}
+
+/// The Gregorian (year, month, day) of a count of days since 1970-01-01, by
+/// Howard Hinnant's `civil_from_days` algorithm, counted in 400-year eras that
+/// start on 1 March so the leap day falls at the end of each year.
+fn civil_date(days_since_epoch: u64) -> (u64, u64, u64) {
+    let days = days_since_epoch + 719_468; // days from 0000-03-01 to 1970-01-01
+    let era = days / 146_097;
+    let day_of_era = days % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = if month_from_march < 10 {
+        month_from_march + 3
+    } else {
+        month_from_march - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    (year, month, day)
 }
