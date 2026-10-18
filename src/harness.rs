@@ -431,6 +431,11 @@ impl Harness {
                         "drop_acks" => fake.faults_mut(|f| f.drop_acks = count),
                         "extra_acks" => fake.faults_mut(|f| f.extra_acks = count),
                         "refuse" => fake.faults_mut(|f| f.refuse = count),
+                        "unanswered_get" => {
+                            fake.faults_mut(|f| {
+                                f.unanswered_get = amount.as_str().map(str::to_owned);
+                            });
+                        }
                         "fail_io" => {
                             fake.faults_mut(|f| f.fail_io = amount.as_bool().unwrap_or(false))
                         }
@@ -1057,6 +1062,7 @@ pub fn state_json(state: &DeviceState) -> Value {
         denoiser_enabled,
         popper_stopper_enabled,
         mute_btn_disabled,
+        mute_btn_available,
         tone,
         mv6_gain_locked,
         adaptation_rate_fast,
@@ -1111,6 +1117,7 @@ pub fn state_json(state: &DeviceState) -> Value {
         ("denoiser_enabled", json!(denoiser_enabled)),
         ("popper_stopper_enabled", json!(popper_stopper_enabled)),
         ("mute_btn_disabled", json!(mute_btn_disabled)),
+        ("mute_btn_available", json!(mute_btn_available)),
         ("tone", json!(tone)),
         ("mv6_gain_locked", json!(mv6_gain_locked)),
         ("adaptation_rate_fast", json!(adaptation_rate_fast)),

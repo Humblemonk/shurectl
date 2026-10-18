@@ -673,6 +673,9 @@ pub struct DeviceState {
     /// Mute button disable. MV6, MV6 Gen 2, MV7+. Address [0x0C, 0x00] confirmed
     /// by Wireshark capture. GET uses CMD_GET_LOCK with inverted encoding.
     pub mute_btn_disabled: bool,
+    /// Whether Mute Button was read successfully. False means its value is
+    /// unknown and must not be displayed, changed or saved in a preset.
+    pub mute_btn_available: bool,
     /// Tone character. MV6, MV6 Gen 2, MVX2U Gen 2, MV7+. Range: -10 to +10
     /// (displayed as × 10%). -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
     pub tone: i8,
@@ -763,6 +766,8 @@ impl Default for DeviceState {
             denoiser_enabled: false,
             popper_stopper_enabled: true,
             mute_btn_disabled: false,
+            // Demo state is editable; hardware readback clears this before GETs.
+            mute_btn_available: true,
             tone: 0, // Natural
             mv6_gain_locked: false,
             // MV6 Gen 2 factory defaults, read back after a MOTIV reset.
@@ -2701,6 +2706,7 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             }
             // Inverted encoding: 0x00=button disabled, 0x01=button active.
             state.mute_btn_disabled = value[0] == 0x00;
+            state.mute_btn_available = true;
             true
         }
         f if f == MV6_GEN2_FEAT_ADAPTATION_RATE => {

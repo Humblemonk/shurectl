@@ -99,6 +99,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `dynamics-denoiser-popper` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | Clicking focuses without sending; Denoiser and Popper Stopper toggle and send |
 | `dynamics-hpf-cycle` | all but MV7 | fake | HPF cycles Off → 75 Hz → 150 Hz → Off and sends HPF |
 | `mute-button-setting` | MV6, MV6 Gen 2, MV7+ | fake, demo | Mute Button toggles between Works and Ignored and sends MUTE_BUTTON |
+| `mv7plus-unanswered-mute-button` | MV7+ | fake | An unanswered Mute Button GET leaves other settings usable, shows Unknown at 120x40 and 80x24, refuses button writes, and recovers when the GET answers again |
 | `reverb-controls` | MV7+ | fake, demo | Reverb output, monitoring, type and intensity (clamped 0–100%) each send their feature |
 | `led-brightness` | MV7+ | fake, demo | Enter cycles LED brightness and sends LED_BRIGHTNESS |
 | `led-custom-rgb` | MV7+ | fake, demo | Pulsing with a Custom theme reveals R/G/B sliders that send LED_PULSING_COLOR; choosing Shure hides them |
@@ -134,3 +135,5 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `readback-unanswered-get-keeps-state` | all | fake | A GET left without a usable reply during `r` keeps that setting, not resetting gain to 36 dB |
 | `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
 | `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |
+
+The fake fault `{"device":{"unanswered_get":"MUTE_BUTTON"}}` drops replies to that feature's GETs until cleared with `{"device":{"unanswered_get":null}}`.

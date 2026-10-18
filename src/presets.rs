@@ -196,11 +196,13 @@ impl PresetSlot {
             }
             DeviceModel::Mv6 => {
                 slot.save_voice_settings(state);
-                slot.mute_btn_disabled = Some(state.mute_btn_disabled);
+                slot.mute_btn_disabled =
+                    state.mute_btn_available.then_some(state.mute_btn_disabled);
             }
             DeviceModel::Mv6Gen2 => {
                 slot.save_voice_settings(state);
-                slot.mute_btn_disabled = Some(state.mute_btn_disabled);
+                slot.mute_btn_disabled =
+                    state.mute_btn_available.then_some(state.mute_btn_disabled);
                 slot.auto_gain = Some(SerAutoGain::from(state.auto_gain));
                 slot.adaptation_rate_fast = Some(state.adaptation_rate_fast);
                 slot.eq_bands = Some(state.eq_bands.map(SerEqBand::gain_only));
@@ -216,7 +218,8 @@ impl PresetSlot {
             DeviceModel::Mv7Plus => {
                 slot.save_limiter_and_compressor(state);
                 slot.save_voice_settings(state);
-                slot.mute_btn_disabled = Some(state.mute_btn_disabled);
+                slot.mute_btn_disabled =
+                    state.mute_btn_available.then_some(state.mute_btn_disabled);
                 slot.reverb_on_output = Some(state.reverb_on_output);
                 slot.reverb_monitoring = Some(state.reverb_monitoring);
                 slot.reverb_type = Some(SerReverbType::from(state.reverb_type));
@@ -295,7 +298,9 @@ impl PresetSlot {
             &mut state.popper_stopper_enabled,
             self.popper_stopper_enabled,
         );
-        load_saved(&mut state.mute_btn_disabled, self.mute_btn_disabled);
+        if state.mute_btn_available {
+            load_saved(&mut state.mute_btn_disabled, self.mute_btn_disabled);
+        }
         load_saved(&mut state.tone, self.tone.map(|tone| tone.clamp(-10, 10)));
         load_saved(&mut state.mv6_gain_locked, self.mv6_gain_locked);
         load_saved(&mut state.adaptation_rate_fast, self.adaptation_rate_fast);

@@ -217,8 +217,8 @@ rather than promoting a lower one.
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
   byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
-  `get_state()` fails unless every GET got a usable reply, so no field is left at its default
-  (36 dB gain). `query_optional()` is only for a GET unchecked on that model's hardware.
+  `get_state()` fails unless every required GET got a usable reply, so no writable field is left at its default (36 dB gain).
+  `query_optional()` is for a GET unchecked on that model's hardware or unavailable on some firmware; an unread Mute Button stays unavailable.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must

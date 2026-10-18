@@ -516,8 +516,9 @@ impl ShureDevice {
         Ok(())
     }
 
-    /// [`Self::query`] for a GET not checked on this model's hardware: without
-    /// a usable reply, its setting is only noted in [`Readback::skipped`].
+    /// [`Self::query`] for a GET unchecked on this model's hardware or
+    /// unavailable on some firmware: without a usable reply, its setting is
+    /// noted in [`Readback::skipped`].
     fn query_optional(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
         let reply = self.send_get(pkt)?;
         readback.apply(self.model, pkt, reply.as_ref(), Need::Optional);
@@ -543,6 +544,7 @@ impl ShureDevice {
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<Readback> {
         let mut readback = Readback::default();
+        readback.state.mute_btn_available = false;
         match self.model {
             DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),
@@ -685,7 +687,12 @@ impl ShureDevice {
             cmd_get_mv6_denoiser,
             cmd_get_mv6_popper_stopper,
             cmd_get_mv6_tone,
-            cmd_get_mv6_mute_btn_disable,
+        ];
+        self.run_getters(getters, readback)?;
+        // MV7+ firmware 1.3.0.13 returns an unrecognised response to this GET
+        // (read-only hardware probe, 2026-10-19). Do not guess the button state.
+        self.query_optional(&cmd_get_mv6_mute_btn_disable(self.next_seq()), readback)?;
+        let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_mv6_mix, // Mic Level (prefix=0x00)
             cmd_get_mv7_playback_mix,
             cmd_get_mv7_reverb_output,
@@ -1221,7 +1228,7 @@ pub struct Readback {
 #[derive(Clone, Copy)]
 enum Need {
     Required,
-    /// Unconfirmed on the model's hardware, so it may never be answered.
+    /// Unconfirmed on the model's hardware, or unavailable on some firmware.
     Optional,
 }
 

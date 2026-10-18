@@ -12,9 +12,9 @@ use ratatui::{
 use crate::app::{App, Focus, Tab};
 use crate::mouse::{HitMap, Target};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
-    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, MicPreset,
-    ReverbType, format_gain,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EQ_BAND_FREQS, EqPreset,
+    HpfFrequency, InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
+    MicPosition, MicPreset, ReverbType, format_gain,
 };
 
 /// Keep hit regions beside the layout that draws them, not in a second layout.
@@ -1438,7 +1438,7 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
             }
         }
         SummaryRow::PopperStopper => on_off(ds.popper_stopper_enabled),
-        SummaryRow::MuteButton => mute_btn_span(ds.mute_btn_disabled),
+        SummaryRow::MuteButton => mute_btn_span(ds),
         SummaryRow::Hpf => text(ds.hpf.to_string()),
         SummaryRow::ReverbOutput => on_off(ds.reverb_on_output),
         SummaryRow::ReverbMonitor => on_off(ds.reverb_monitoring),
@@ -1937,17 +1937,27 @@ fn draw_mute_btn_card(f: &mut UiFrame, app: &App, area: Rect) {
         title: "Mute Button",
         status: vec![Line::from(vec![
             Span::styled("Pressing it: ", Style::default().fg(C_DIM)),
-            mute_btn_span(app.device_state.mute_btn_disabled),
+            mute_btn_span(&app.device_state),
         ])],
-        description: "Whether pressing the mic's mute button mutes it.",
-        hint: "[Enter] toggle",
+        description: if app.device_state.mute_btn_available {
+            "Whether pressing the mic's mute button mutes it."
+        } else {
+            "Unavailable: its state could not be read."
+        },
+        hint: if app.device_state.mute_btn_available {
+            "[Enter] toggle"
+        } else {
+            "🔒 Unavailable"
+        },
     };
     draw_status_card(f, app.focus == Focus::MuteBtnDisable, card, area);
 }
 
 /// The physical mute button's state for the card and the Summary.
-fn mute_btn_span(disabled: bool) -> Span<'static> {
-    if disabled {
+fn mute_btn_span(state: &DeviceState) -> Span<'static> {
+    if !state.mute_btn_available {
+        Span::styled("Unknown", Style::default().fg(C_WARN))
+    } else if state.mute_btn_disabled {
         Span::styled("Ignored", Style::default().fg(C_WARN))
     } else {
         Span::styled("Works", Style::default().fg(C_TEXT))

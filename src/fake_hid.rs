@@ -102,6 +102,8 @@ pub struct Faults {
     pub fail_io: bool,
     /// Commands to answer with an unknown address (binary) or `[Failed]` (MV7).
     pub refuse: usize,
+    /// Feature whose GETs receive no reply, until cleared.
+    pub unanswered_get: Option<String>,
 }
 
 type ValueOf = Box<dyn Fn(&DeviceState) -> Vec<u8>>;
@@ -615,10 +617,14 @@ impl FakeState {
         match request {
             Request::Get(key) => {
                 let feature = self.feature_name(key);
+                let unanswered = self.faults.unanswered_get.as_deref() == Some(feature.as_str());
                 self.log.push(Packet {
                     raw,
                     kind: PacketKind::Get { feature },
                 });
+                if unanswered {
+                    return;
+                }
                 if self.faults.refuse > 0 {
                     self.faults.refuse -= 1;
                     let unknown = Key {
@@ -999,6 +1005,20 @@ mod tests {
                 );
             }
             assert_eq!(readback.state.factory_serial, "FAKE0001", "{model:?}");
+        }
+    }
+
+    #[test]
+    fn unanswered_required_get_still_fails_readback() {
+        for (model, feature, label) in [
+            (DeviceModel::Mv7Plus, "GAIN", "Gain"),
+            (DeviceModel::Mv6, "MUTE_BUTTON", "Mute Button"),
+            (DeviceModel::Mv6Gen2, "MUTE_BUTTON", "Mute Button"),
+        ] {
+            let fake = FakeDevice::new(model);
+            fake.faults_mut(|faults| faults.unanswered_get = Some(feature.into()));
+            let error = fake.open().get_state().err().expect("readback must fail");
+            assert!(error.to_string().contains(label), "{model:?}: {error}");
         }
     }
 

@@ -828,6 +828,12 @@ fn apply_action(
         app.set_err(STATE_UNREAD_HINT);
         return;
     }
+    if matches!(action, DeviceAction::SetMv6MuteBtnDisable(_))
+        && !app.device_state.mute_btn_available
+    {
+        app.set_err("Mute Button unavailable: its state could not be read");
+        return;
+    }
     let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
@@ -1670,7 +1676,7 @@ fn apply_binary_preset(
         }
         DeviceModel::Mv7Plus => {
             write_voice_settings(d, slot, state)?;
-            if slot.mute_btn_disabled.is_some() {
+            if slot.mute_btn_disabled.is_some() && state.mute_btn_available {
                 d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
             }
             write_limiter_and_compressor(d, slot, state)?;
@@ -1710,7 +1716,7 @@ fn write_mv6_settings(
     state: &protocol::DeviceState,
 ) -> Result<()> {
     write_voice_settings(d, slot, state)?;
-    if slot.mute_btn_disabled.is_some() {
+    if slot.mute_btn_disabled.is_some() && state.mute_btn_available {
         d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
     }
     write_playback_level(d, slot, state)
@@ -2005,6 +2011,65 @@ mod tests {
         apply_preset_to_device(&device, slot, &state, model, write_monitor_mix).expect("load");
         let dev = device.as_ref().expect("device");
         dev.get_state().expect("readback").state
+    }
+
+    #[test]
+    fn unread_mute_button_is_never_saved_loaded_or_written() {
+        let model = DeviceModel::Mv7Plus;
+        let fake = FakeDevice::new(model);
+        fake.faults_mut(|faults| faults.unanswered_get = Some("MUTE_BUTTON".into()));
+        let mut device = Some(fake.open());
+        let readback = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback");
+        assert!(!readback.state.mute_btn_available);
+        assert_eq!(readback.state.gain_tenths, 240);
+        assert_eq!(readback.state.factory_serial, "FAKE0001");
+        assert_eq!(readback.skipped.len(), 1);
+        assert!(readback.skipped[0].contains("Mute Button"));
+
+        let saved = PresetSlot::from_device_state("Unknown button", &readback.state, model);
+        assert_eq!(saved.mute_btn_disabled, None);
+        let mut app = App {
+            device_model: model,
+            device_state: readback.state,
+            focus: app::Focus::MuteBtnDisable,
+            ..App::default()
+        };
+        let start = fake.log_len();
+        assert!(app.toggle_focused().is_none());
+        apply_action(
+            &mut app,
+            &mut device,
+            DeviceAction::SetMv6MuteBtnDisable(true),
+            None,
+        );
+        assert!(fake.log_since(start).is_empty());
+
+        let slot = PresetSlot {
+            mute_btn_disabled: Some(true),
+            ..saved
+        };
+        apply_preset_to_state(&slot, &mut app.device_state, model);
+        assert!(!app.device_state.mute_btn_disabled);
+        assert!(!app.device_state.mute_btn_available);
+        apply_preset_to_device(&device, &slot, &app.device_state, model, true)
+            .expect("load other settings");
+        assert!(!fake.log_since(start).iter().any(|packet| {
+            matches!(&packet.kind, fake_hid::PacketKind::Set { feature, .. }
+                if feature == "MUTE_BUTTON")
+        }));
+        fake.faults_mut(|faults| faults.unanswered_get = None);
+        let state = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        assert!(state.mute_btn_available);
+        assert!(!state.mute_btn_disabled);
     }
 
     #[test]

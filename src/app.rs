@@ -1275,6 +1275,10 @@ impl App {
                 ))
             }
             Focus::MuteBtnDisable => {
+                if !self.device_state.mute_btn_available {
+                    self.set_err("Mute Button unavailable: its state could not be read");
+                    return None;
+                }
                 self.device_state.mute_btn_disabled = !self.device_state.mute_btn_disabled;
                 Some(DeviceAction::SetMv6MuteBtnDisable(
                     self.device_state.mute_btn_disabled,
