@@ -59,8 +59,10 @@
 //!   Auto level:     [0x01, 0x85]  — 1 byte: 0=manual, 1=auto
 //!   Auto position:  [0x01, 0x82]  — 1 byte: 0=Near, 1=Far
 //!   Auto tone:      [0x01, 0x83]  — 1 byte: 0=Dark, 1=Natural, 2=Bright
-//!   Auto gain:      [0x01, 0x87]  — 4 bytes big-endian u32: 0=Quiet, 1=Normal, 2=Loud
-//!                                   Decoder accepts both 1-byte and 4-byte responses defensively.
+//!   Auto gain:      [0x01, 0x87]  — 4 bytes big-endian u32: 0=Quiet, 1=Normal, 2=Loud, per
+//!                                   shux (unchecked on our Gen 1). MOTIV calls it Gain:
+//!                                   Quieter / Normal / Louder (screenshot). Decoder accepts
+//!                                   both 1-byte and 4-byte responses defensively.
 //!   Monitor mix:    [0x01, 0x86]  — 1 byte: 0=full mic, 100=full playback
 //!   EQ master:      [0x02, 0x00]  — 1 byte: 0=bypass, 1=enabled
 //!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band)
@@ -129,10 +131,9 @@
 //!                                    of MOTIV app: HDR_CONSTANT=0x00 (not the usual 0x03),
 //!                                    CMD_SET_FEAT [02 02 02], prefix 0x00, value is 0–100.
 //!                                    GET uses standard framing (HDR_CONSTANT=0x03, prefix
-//!                                    0x00) — confirmed by Wireshark. The MV6 answered this
-//!                                    GET only after a SET (why the probe sweep missed it);
-//!                                    the MVX2U Gen 2 and MV6 Gen 2 answer after a factory
-//!                                    reset and a replug alike (probed 2026-10-12). See
+//!                                    0x00) — confirmed by Wireshark. The MVX2U Gen 2 and
+//!                                    MV6 Gen 2 answer after a factory reset and a replug
+//!                                    alike (probed 2026-10-12); the MV6 is unchecked. See
 //!                                    cmd_get_mv6_mix() / cmd_set_mv6_mix().
 //!   Gain lock:       [0x01, 0xF3]  — 1 byte: 0=unlocked, 1=locked (Manual mode only)
 //!                                    Confirmed by probe diff: value changed 0x00→0x01 when
@@ -910,14 +911,17 @@ impl std::fmt::Display for AutoTone {
     }
 }
 
-/// Gain sensitivity preset for Auto Level mode.
+/// Auto Level's three-way level setting at FEAT_AUTO_GAIN, the middle one the
+/// default. MOTIV shows it as Gain: Quieter / Normal / Louder on the MVX2U Gen 1
+/// and as Target Level: Low / Med / High on the MV6 Gen 2 (MOTIV screenshots);
+/// the values 0 / 1 / 2 in that order are per shux on the Gen 1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AutoGain {
-    /// For quiet environments or soft-spoken voices.
+    /// Quieter on the MVX2U Gen 1, Low on the MV6 Gen 2.
     Quiet,
-    /// Default setting for typical speech levels.
+    /// Normal on the MVX2U Gen 1, Med on the MV6 Gen 2.
     Normal,
-    /// For loud environments or strong voices.
+    /// Louder on the MVX2U Gen 1, High on the MV6 Gen 2.
     Loud,
 }
 
@@ -1621,13 +1625,95 @@ impl Reply {
     }
 }
 
-/// A GET packet's feature address and prefix, for a message about a query
-/// that got no usable reply. A GET carries them where a reply does.
-pub fn describe_get(packet: &[u8]) -> String {
-    match packet.get(PREFIX_OFFSET..PREFIX_OFFSET + 3) {
+/// The setting a binary GET on `model` reads and its address, for a message
+/// about a query that got no usable reply: "Mic Level at feature 0x01 0x86
+/// (prefix 0x00)". A GET carries the address where a reply does.
+pub fn describe_get(model: DeviceModel, packet: &[u8]) -> String {
+    let address = match packet.get(PREFIX_OFFSET..PREFIX_OFFSET + 3) {
         Some(&[prefix, hi, lo]) => describe_address(prefix, [hi, lo]),
-        _ => "a malformed query".to_string(),
+        _ => return "a malformed query".to_string(),
+    };
+    match setting_label(model, packet) {
+        Some(label) => format!("{label} at {address}"),
+        None => address,
     }
+}
+
+/// A `cmd_get_*` constructor, taking the sequence number.
+type GetCommand = fn(u8) -> Vec<u8>;
+
+/// The GETs of the state readback, each with its setting's name in the UI.
+/// The FEAT_AUTO_GAIN and EQ band GETs are named in `setting_label()`.
+const GET_LABELS: &[(GetCommand, &str)] = &[
+    (cmd_get_gain, "Gain"),
+    (cmd_get_mute, "Mute"),
+    (cmd_get_hpf, "HPF"),
+    (cmd_get_limiter, "Limiter"),
+    (cmd_get_compressor, "Compressor"),
+    (cmd_get_phantom, "Phantom Power"),
+    (cmd_get_mode, "Input Mode"),
+    (cmd_get_auto_position, "Mic Position"),
+    (cmd_get_auto_tone, "Tone"),
+    (cmd_get_mix, "Monitor Mix"),
+    (cmd_get_eq_enable, "EQ"),
+    (cmd_get_mv6_denoiser, "Denoiser"),
+    (cmd_get_mv6_popper_stopper, "Popper Stopper"),
+    (cmd_get_mv6_tone, "Tone"),
+    (cmd_get_mv6_gain_lock, "Gain Lock"),
+    (cmd_get_adaptation_rate, "Adaptation Rate"),
+    (cmd_get_denoiser_level, "Denoiser Level"),
+    (cmd_get_tone_mode, "Tone Mode"),
+    (cmd_get_mv6_mix, "Mic Level"),
+    (cmd_get_mv6_mute_btn_disable, "Mute Button"),
+    (cmd_get_mv7_playback_mix, "Playback Level"),
+    (cmd_get_mv7_reverb_output, "Reverb Output"),
+    (cmd_get_mv7_reverb_type, "Reverb Type"),
+    (cmd_get_mv7_reverb_intensity, "Reverb Intensity"),
+    (cmd_get_mv7_reverb_monitor, "Reverb Monitor"),
+    (cmd_get_mv7_led_behavior, "LED Behavior"),
+    (cmd_get_mv7_led_brightness, "LED Brightness"),
+    (cmd_get_mv7_led_live_theme, "LED Live Theme"),
+    (cmd_get_mv7_led_live_edge, "LED Live Edge Color"),
+    (cmd_get_mv7_led_live_middle, "LED Live Middle Color"),
+    (cmd_get_mv7_led_live_interior, "LED Live Interior Color"),
+    (cmd_get_mv7_led_solid_color, "LED Solid Color"),
+    (cmd_get_mv7_led_pulsing_color, "LED Pulsing Color"),
+    (cmd_get_mv7_led_solid_theme, "LED Solid Theme"),
+    (cmd_get_lock, "Config Lock"),
+    (cmd_get_device_name, "Device Name"),
+    (cmd_get_firmware_version, "Firmware"),
+    (cmd_get_serial, "Serial Number"),
+];
+
+/// The UI name of the setting the binary GET `packet` reads on `model`, or
+/// `None` for a GET no label covers. Packets match by command and address.
+fn setting_label(model: DeviceModel, packet: &[u8]) -> Option<String> {
+    let address = |get: &[u8]| get.get(10..PREFIX_OFFSET + 3).map(<[u8]>::to_vec);
+    let wanted = address(packet)?;
+    let reads = |get: &[u8]| address(get).as_ref() == Some(&wanted);
+    if let Some((_, label)) = GET_LABELS.iter().find(|(get, _)| reads(&get(0))) {
+        return Some((*label).to_string());
+    }
+    if reads(&cmd_get_auto_gain(0)) {
+        let label = match model {
+            DeviceModel::Mv6Gen2 => "Target Level",
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv7
+            | DeviceModel::Mv7Plus => "Auto Gain",
+        };
+        return Some(label.to_string());
+    }
+    (0..5).find_map(|band| {
+        if reads(&cmd_get_eq_band_gain(0, band)) {
+            Some(format!("EQ Band {}", band + 1))
+        } else if reads(&cmd_get_eq_band_enable(0, band)) {
+            Some(format!("EQ Band {} on/off", band + 1))
+        } else {
+            None
+        }
+    })
 }
 
 fn describe_address(prefix: u8, feat: [u8; 2]) -> String {
@@ -1935,10 +2021,13 @@ pub fn cmd_get_tone_mode(seq: u8) -> Vec<u8> {
 }
 /// GET for the Mic Level on models with `has_playback_mix()` (named for the MV6,
 /// where it was found). Uses standard framing (HDR_CONSTANT=0x03, prefix=0x00).
-/// Confirmed by Wireshark capture. The original MV6 answered only after a SET, which
-/// is why the probe sweep found nothing there before shurectl first wrote a value.
-/// The MVX2U Gen 2 and MV6 Gen 2 answer after a factory reset (100%) and after a
-/// replug (the saved level), probed 2026-10-12. An unanswered read leaves 0.
+/// Confirmed by Wireshark capture. The MVX2U Gen 2 and MV6 Gen 2 answer after a
+/// factory reset (100%) and after a replug (the saved level), probed 2026-10-12.
+/// The original MV6 is unchecked. It was once thought to answer only after a SET,
+/// but the probe sweep that found it silent asked at prefix 0x01, where the MV6
+/// family has no level (fixed in 046011a); the MV6 Gen 2 looked silent the same
+/// way. The read is required on every model, so an unanswered one fails the
+/// readback.
 pub fn cmd_get_mv6_mix(seq: u8) -> Vec<u8> {
     cmd_get(seq, &FEAT_MIX)
 }
@@ -3888,6 +3977,16 @@ pub mod mv7_text {
 mod tests {
     use super::*;
 
+    /// Two labels on one address would name one setting for the other.
+    #[test]
+    fn get_labels_name_distinct_queries() {
+        let mut seen = std::collections::HashSet::new();
+        for (get, label) in GET_LABELS {
+            let address = get(0)[10..PREFIX_OFFSET + 3].to_vec();
+            assert!(seen.insert(address), "{label} shares an address");
+        }
+    }
+
     // ── CRC ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -5196,7 +5295,7 @@ mod tests {
             assert!(apply_response(EQ_BAND_ADDRS[band].1, &[byte], &mut state));
             assert_eq!(state.eq_bands[band].gain_db, tenths);
         }
-        // Target Level is the Gen 1 Gain Environment address: 4 bytes, 2 = High.
+        // Target Level is the Gen 1 Auto Gain address: 4 bytes, 2 = High.
         assert!(apply_response(FEAT_AUTO_GAIN, &[0, 0, 0, 2], &mut state));
         assert_eq!(state.auto_gain, AutoGain::Loud);
 

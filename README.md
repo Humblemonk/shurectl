@@ -40,6 +40,9 @@ cargo install --git https://github.com/Humblemonk/shurectl.git
 On Linux this needs `libasound2-dev` and `libudev-dev` (Debian/Ubuntu names). On Windows it
 needs the [MSVC build tools](#building-from-source).
 
+Upgrading? [What changed in each release](doc/CHANGELOG.md) lists new features and fixes,
+and says when a release needs you to do something after upgrading.
+
 ### Linux: allow access without root
 
 Skip this if you installed from the AUR. Otherwise install the udev rules and replug the
@@ -52,9 +55,6 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 macOS and Windows need no setup.
-
-Upgrading? [What changed in each release](doc/CHANGELOG.md) lists new features and fixes,
-and notes the few releases that ask you to re-save presets.
 
 ## Usage
 
@@ -148,8 +148,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Config Lock | ✓ | — | — | — | ✓ | — |
 | Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
 | Auto Tone (Dark / Natural / Bright) | Auto | — | — | — | Auto | — |
-| Gain Environment (Quiet / Normal / Loud) | Auto | — | — | — | — | — |
-| Target Level (Low / Med / High) | — | — | — | Auto | — | — |
+| Target Level (Low / Med / High) | Auto | — | — | Auto | — | — |
 | Adaptation Rate (Slow / Fast) | — | — | — | Auto | — | — |
 | Mic Preset (Speech / Singing / Instrument) | — | — | — | ✓ | — | — |
 | **EQ tab** | | | | | | |

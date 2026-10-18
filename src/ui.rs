@@ -2237,26 +2237,22 @@ fn render_notice(f: &mut UiFrame, area: Rect, lines: Vec<Line>) {
 // EQ Tab
 // ─────────────────────────────────────────────────────────────────────────────
 fn draw_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    if app.device_model == DeviceModel::Mv6Gen2 {
-        draw_mv6_gen2_eq_tab(f, app, area);
-        return;
+    match app.device_model {
+        DeviceModel::Mv6Gen2 => draw_mv6_gen2_eq_tab(f, app, area),
+        DeviceModel::Mv6 | DeviceModel::Mv7Plus => draw_mv6_eq_tab(f, app, area),
+        DeviceModel::Mvx2uGen2 => draw_gen2_eq_tab(f, app, area),
+        // EQ is locked in Auto on these two (`is_tab_locked()`).
+        DeviceModel::Mvx2u | DeviceModel::Mv7 if app.device_state.mode == InputMode::Auto => {
+            draw_tab_locked_notice(f, area, "EQ");
+        }
+        DeviceModel::Mv7 => draw_mv7_eq_tab(f, app, area),
+        DeviceModel::Mvx2u => draw_gen1_eq_tab(f, app, area),
     }
-    if matches!(app.device_model, DeviceModel::Mv6 | DeviceModel::Mv7Plus) {
-        draw_mv6_eq_tab(f, app, area);
-        return;
-    }
-    if app.device_model == DeviceModel::Mvx2uGen2 {
-        draw_gen2_eq_tab(f, app, area);
-        return;
-    }
-    if app.device_state.mode == InputMode::Auto {
-        draw_tab_locked_notice(f, area, "EQ");
-        return;
-    }
-    if app.device_model == DeviceModel::Mv7 {
-        draw_mv7_eq_tab(f, app, area);
-        return;
-    }
+}
+
+/// The MVX2U Gen 1 EQ: master enable, band selector, and five bands with
+/// their own on/off switches.
+fn draw_gen1_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2434,10 +2430,15 @@ fn draw_led_cycle_row(
 }
 
 fn draw_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
-    if app.device_model == DeviceModel::Mv7 {
-        draw_mv7_led_tab(f, app, area);
-        return;
+    match app.device_model {
+        DeviceModel::Mv7 => draw_mv7_led_tab(f, app, area),
+        DeviceModel::Mv7Plus => draw_mv7plus_led_tab(f, app, area),
+        // These models have no LED settings, so the tab is hidden (`is_tab_hidden()`).
+        DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => {}
     }
+}
+
+fn draw_mv7plus_led_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let ds = &app.device_state;
 
     let custom_color_zones: usize = match ds.led_behavior {

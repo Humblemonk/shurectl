@@ -1,5 +1,7 @@
-# Saved on the MV6 Gen 2 by shurectl 2.13.1, which saves only the settings the model has
-# (no Limiter or Compressor). Loading it elsewhere must keep those.
+# Saved on the MV6 Gen 2 by a 2.13.1 development build (09e9569), which saved only the
+# settings the model has (no Limiter or Compressor) but still saved each EQ band's on/off
+# switch; released 2.13.1 saves band gains alone (e186f96). Loading it elsewhere must keep
+# the settings it lacks.
 name = "MV6 Gen 2 Voice"
 gain_db = 24.0
 mode = "manual"

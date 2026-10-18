@@ -43,9 +43,10 @@
 //! balance, and 0x03 the playback level (MVX2U Gen 2, MV6 Gen 2, MV7+; MV6 expected
 //! but unconfirmed). The standard sweep reads
 //! that address at all three, so whichever channels a model has show up. (It
-//! used to force 0x01 there, which hid the MV6 family's monitor levels.) The
-//! original MV6 is reported to answer only after a SET since power-on; the MVX2U
-//! Gen 2 and MV6 Gen 2 answer straight away, after a factory reset and a replug.
+//! used to force 0x01 there, which hid the MV6 family's monitor levels, and is
+//! likely why the original MV6 was once thought to answer only after a SET.) The
+//! MVX2U Gen 2 and MV6 Gen 2 answer straight away, after a factory reset and a
+//! replug; the original MV6 is unchecked at prefix 0x00.
 //!
 //! Use Wireshark (not this probe) to investigate SET framing, such as the
 //! HDR_CONSTANT=0x00 the MV6 family's mix SETs need.
