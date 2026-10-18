@@ -861,10 +861,13 @@ fn apply_action(
                 .and_then(|()| resync_mv7_state(app, device))
         }
         DeviceAction::SetAutoGain(gain) => {
-            app.set_ok(if app.device_model == DeviceModel::Mv6Gen2 {
-                format!("Target Level → {}", gain.target_level_label())
-            } else {
-                format!("Auto Gain → {gain}")
+            app.set_ok(match app.device_model {
+                DeviceModel::Mv6Gen2 => format!("Target Level → {}", gain.target_level_label()),
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv7
+                | DeviceModel::Mv7Plus => format!("Auto Gain → {gain}"),
             });
             send_if_connected(device, |d| d.set_auto_gain(gain))
         }
@@ -1471,13 +1474,20 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
 /// shows what the mic actually has. No-op for other models and in demo mode.
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
-        Some(dev) if dev.model == DeviceModel::Mv7 => {
-            let skipped = reload_state(app, dev)?;
-            // Keep the caller's message ("Mode → …") and add the note to it.
-            app.status_message.push_str(&skipped_note(&skipped));
-            Ok(())
-        }
-        Some(_) | None => Ok(()),
+        Some(dev) => match dev.model {
+            DeviceModel::Mv7 => {
+                let skipped = reload_state(app, dev)?;
+                // Keep the caller's message ("Mode → …") and add the note to it.
+                app.status_message.push_str(&skipped_note(&skipped));
+                Ok(())
+            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => Ok(()),
+        },
+        None => Ok(()),
     }
 }
 
@@ -1637,26 +1647,21 @@ fn apply_binary_preset(
             write_voice_settings(d, slot, state)?;
             write_eq_bands(d, slot, state, false)?;
         }
-        DeviceModel::Mv6 | DeviceModel::Mv6Gen2 => {
-            write_voice_settings(d, slot, state)?;
-            if slot.mute_btn_disabled.is_some() {
-                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+        DeviceModel::Mv6 => write_mv6_settings(d, slot, state)?,
+        DeviceModel::Mv6Gen2 => {
+            write_mv6_settings(d, slot, state)?;
+            if slot.auto_gain.is_some() {
+                d.set_auto_gain(&state.auto_gain)?;
             }
-            write_playback_level(d, slot, state)?;
-            if model == DeviceModel::Mv6Gen2 {
-                if slot.auto_gain.is_some() {
-                    d.set_auto_gain(&state.auto_gain)?;
-                }
-                if slot.adaptation_rate_fast.is_some() {
-                    d.set_adaptation_rate(state.adaptation_rate_fast)?;
-                }
-                if slot.denoiser_level.is_some() {
-                    d.set_denoiser_level(state.denoiser_level)?;
-                }
-                write_eq_bands(d, slot, state, false)?;
-                if slot.tone_advanced.is_some() {
-                    d.set_tone_mode(state.tone_advanced)?;
-                }
+            if slot.adaptation_rate_fast.is_some() {
+                d.set_adaptation_rate(state.adaptation_rate_fast)?;
+            }
+            if slot.denoiser_level.is_some() {
+                d.set_denoiser_level(state.denoiser_level)?;
+            }
+            write_eq_bands(d, slot, state, false)?;
+            if slot.tone_advanced.is_some() {
+                d.set_tone_mode(state.tone_advanced)?;
             }
         }
         DeviceModel::Mv7 => {
@@ -1694,6 +1699,20 @@ fn apply_binary_preset(
         d.set_monitor_mix(state.monitor_mix)?;
     }
     Ok(())
+}
+
+/// The MV6 settings the MV6 Gen 2 shares: Denoiser, Popper Stopper, Tone,
+/// Mute Button and Playback Level, where the preset saved them.
+fn write_mv6_settings(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+) -> Result<()> {
+    write_voice_settings(d, slot, state)?;
+    if slot.mute_btn_disabled.is_some() {
+        d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
+    }
+    write_playback_level(d, slot, state)
 }
 
 /// Limiter and Compressor, where the preset saved them.
@@ -2339,5 +2358,293 @@ mod tests {
         assert_eq!(app.device_state.mode, InputMode::Manual);
         assert_eq!(app.active_tab, app::Tab::Presets);
         assert_eq!(app.focus, app::Focus::PresetActions(0));
+    }
+
+    // ── Preset loads, every source on every model ─────────────────────────────
+
+    const PRESET_LOADS_GOLDEN: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/preset-loads.golden"
+    );
+
+    const ALL_MODELS: [DeviceModel; 6] = [
+        DeviceModel::Mvx2u,
+        DeviceModel::Mvx2uGen2,
+        DeviceModel::Mv6,
+        DeviceModel::Mv6Gen2,
+        DeviceModel::Mv7,
+        DeviceModel::Mv7Plus,
+    ];
+
+    /// Every setting away from both `DeviceState::default()` and the fake's
+    /// seed, so each one a preset saves shows up as a write when it loads.
+    fn distinct_state() -> DeviceState {
+        use protocol::{
+            AutoGain, AutoTone, CompressorPreset, HpfFrequency, LedBehavior, LedBrightness,
+            LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, ReverbType,
+        };
+        DeviceState {
+            gain_tenths: 300,
+            mode: InputMode::Manual,
+            auto_position: MicPosition::Far,
+            auto_tone: AutoTone::Bright,
+            auto_gain: AutoGain::Loud,
+            muted: true,
+            phantom_power: true,
+            monitor_mix: 40,
+            playback_mix: 60,
+            limiter_enabled: true,
+            compressor: CompressorPreset::Medium,
+            hpf: HpfFrequency::Hz75,
+            eq_enabled: true,
+            eq_bands: [-40, -20, 20, 40, 60].map(|gain_db| EqBand {
+                enabled: true,
+                gain_db,
+            }),
+            denoiser_enabled: true,
+            popper_stopper_enabled: false,
+            mute_btn_disabled: true,
+            tone: 3,
+            mv6_gain_locked: true,
+            adaptation_rate_fast: true,
+            denoiser_level: 80,
+            tone_advanced: true,
+            reverb_on_output: true,
+            reverb_monitoring: true,
+            reverb_type: ReverbType::Hall,
+            reverb_intensity: 70,
+            led_behavior: LedBehavior::Solid,
+            led_brightness: LedBrightness::Max,
+            led_live_theme: LedLiveTheme::Space,
+            led_solid_theme: LedSolidTheme::Custom,
+            led_pulsing_theme: LedPulsingTheme::Custom,
+            led_solid_rgb: [1, 2, 3],
+            led_pulsing_rgb: [4, 5, 6],
+            led_live_edge_rgb: [7, 8, 9],
+            led_live_middle_rgb: [10, 11, 12],
+            led_live_interior_rgb: [13, 14, 15],
+            eq_preset: EqPreset::HighPass,
+            led_live_meter: false,
+            led_night_mode: true,
+            ..DeviceState::default()
+        }
+    }
+
+    /// A preset saved now on each model, through a TOML round trip as `s`
+    /// writes and reads it, then the preset files older versions wrote. Each
+    /// model's preset comes from its own readback of `distinct_state()`, so a
+    /// setting it can't read holds the default, as on real hardware.
+    fn preset_sources() -> Vec<(String, PresetSlot)> {
+        let mut sources: Vec<(String, PresetSlot)> = ALL_MODELS
+            .iter()
+            .map(|&model| {
+                let fake = FakeDevice::with_state(model, distinct_state());
+                let state = fake.open().get_state().expect("readback").state;
+                let slot = PresetSlot::from_device_state("Distinct", &state, model);
+                let text = toml::to_string_pretty(&slot).expect("save");
+                (format!("{model:?}"), toml::from_str(&text).expect("load"))
+            })
+            .collect();
+        for dir in [
+            "presets-mvx2u-gen2",
+            "presets-mv6-gen2",
+            "presets-mv7plus",
+            "presets-v2.9",
+        ] {
+            let path = format!(
+                "{}/tests/fixtures/{dir}/preset_1.toml",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let text = std::fs::read_to_string(&path).expect("fixture");
+            sources.push((dir.to_string(), toml::from_str(&text).expect("parse")));
+        }
+        sources
+    }
+
+    /// One write a preset load sent: a binary SET's feature and value, or an
+    /// MV7 command line that carries a value.
+    struct PresetWrite {
+        /// What may be written only once: the feature, or the MV7 command
+        /// (with its block number for `setBlock`).
+        setting: String,
+        text: String,
+    }
+
+    /// The one setting a model writes but can't read back: the MV7+ LED
+    /// pulsing theme, whose GET address aliases Config Lock.
+    const WRITE_ONLY_SETTINGS: [&str; 1] = ["LED_PULSING_THEME"];
+
+    /// Load `source` on a fake `model` the way the Presets tab does, after
+    /// reading the fake's state as the TUI would. Returns the writes and any
+    /// problem: a refused or ignored packet, or a SET to a setting the model
+    /// doesn't read back. The fake answers every model's addresses, so its
+    /// own readback is what tells which settings a model has.
+    fn load_preset_writes(
+        source: &PresetSlot,
+        model: DeviceModel,
+    ) -> (Vec<PresetWrite>, Vec<String>) {
+        let fake = FakeDevice::new(model);
+        let device = Some(fake.open());
+        let mut state = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        let start = fake.log_len();
+        let read: std::collections::HashSet<String> = fake
+            .log_since(0)
+            .into_iter()
+            .filter_map(|packet| match packet.kind {
+                fake_hid::PacketKind::Get { feature } => Some(feature),
+                _ => None,
+            })
+            .collect();
+        let write_monitor_mix = apply_preset_to_state(source, &mut state, model);
+        apply_preset_to_device(&device, source, &state, model, write_monitor_mix).expect("load");
+        let mut writes = Vec::new();
+        let mut problems = Vec::new();
+        for packet in fake.log_since(start) {
+            match packet.kind {
+                fake_hid::PacketKind::Set {
+                    feature,
+                    value,
+                    applied,
+                } => {
+                    let value = match value {
+                        serde_json::Value::String(text) => text,
+                        other => other.to_string(),
+                    };
+                    if !read.contains(&feature) && !WRITE_ONLY_SETTINGS.contains(&feature.as_str())
+                    {
+                        problems.push(format!("a SET to {feature}, which it doesn't read back"));
+                    }
+                    if !applied {
+                        problems.push(format!("{feature} ignored by the device"));
+                    }
+                    writes.push(PresetWrite {
+                        text: format!("{feature}={value}"),
+                        setting: feature,
+                    });
+                }
+                fake_hid::PacketKind::Text { line, .. } if line.contains(' ') => {
+                    let mut words = line.split(' ');
+                    let command = words.next().unwrap_or_default();
+                    if command == "getBlock" {
+                        continue;
+                    }
+                    let setting = match command {
+                        "setBlock" => format!("{command} {}", words.next().unwrap_or_default()),
+                        _ => command.to_string(),
+                    };
+                    writes.push(PresetWrite {
+                        setting,
+                        text: line,
+                    });
+                }
+                fake_hid::PacketKind::Refused { reason } => {
+                    problems.push(format!("a refused packet: {reason}"));
+                }
+                fake_hid::PacketKind::Get { .. }
+                | fake_hid::PacketKind::Confirm
+                | fake_hid::PacketKind::Text { .. } => {}
+            }
+        }
+        (writes, problems)
+    }
+
+    /// Rules every preset load keeps, whatever the preset and model.
+    fn preset_load_rule_breaks(
+        source: &PresetSlot,
+        model: DeviceModel,
+        writes: &[PresetWrite],
+    ) -> Vec<String> {
+        let mut breaks = Vec::new();
+        let binary = model != DeviceModel::Mv7;
+        if binary && writes.first().is_some_and(|write| write.setting != "MODE") {
+            breaks.push("MODE is not written first".to_string());
+        }
+        let mut counts = std::collections::HashMap::<&str, usize>::new();
+        for write in writes {
+            *counts.entry(write.setting.as_str()).or_default() += 1;
+        }
+        for (setting, count) in counts {
+            // Gain Lock is unlocked for the gain write and locked again.
+            let allowed = if setting == "GAIN_LOCK" { 2 } else { 1 };
+            if count > allowed {
+                breaks.push(format!("{setting} written {count} times"));
+            }
+        }
+        let is_level = |write: &PresetWrite| {
+            matches!(
+                write.setting.as_str(),
+                "MONITOR_MIX" | "MIC_LEVEL" | "setBlock 22"
+            )
+        };
+        let other_kind = source
+            .monitor_mix_is_mic_level
+            .is_some_and(|mic_level| mic_level != model.has_playback_mix());
+        if let Some(position) = writes.iter().position(is_level) {
+            if other_kind {
+                breaks.push("Monitor Mix written from a preset of the other kind".to_string());
+            }
+            if position + 1 != writes.len() {
+                breaks.push("Monitor Mix is not written last".to_string());
+            }
+        }
+        breaks
+    }
+
+    /// Loads every preset source on every model: the rules above must hold,
+    /// and the writes must match `tests/fixtures/preset-loads.golden`. After an
+    /// intended change, regenerate with `UPDATE_GOLDEN=1` and read the diff.
+    #[test]
+    fn preset_loads_match_golden() {
+        let mut lines = Vec::new();
+        let mut breaks = Vec::new();
+        for (name, source) in preset_sources() {
+            for model in ALL_MODELS {
+                let (writes, problems) = load_preset_writes(&source, model);
+                for problem in problems
+                    .into_iter()
+                    .chain(preset_load_rule_breaks(&source, model, &writes))
+                {
+                    breaks.push(format!("{name} → {model:?}: {problem}"));
+                }
+                let texts: Vec<&str> = writes.iter().map(|write| write.text.as_str()).collect();
+                let sent = match texts.as_slice() {
+                    [] => "(no writes)".to_string(),
+                    _ => texts.join(", "),
+                };
+                lines.push(format!("{name} → {model:?}: {sent}"));
+            }
+        }
+        assert!(breaks.is_empty(), "{}", breaks.join("\n"));
+        let actual = lines.join("\n") + "\n";
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::write(PRESET_LOADS_GOLDEN, &actual).expect("write golden file");
+            return;
+        }
+        // As in `renders_match_golden`: a load that changed shows as a -/+ pair
+        // with the same "source → model" key, an added or removed one alone.
+        let golden = std::fs::read_to_string(PRESET_LOADS_GOLDEN).unwrap_or_default();
+        let golden_lines: std::collections::HashSet<&str> = golden.lines().collect();
+        let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
+        let mut diff: Vec<String> = golden
+            .lines()
+            .filter(|line| !actual_lines.contains(line))
+            .map(|line| format!("- {line}"))
+            .collect();
+        diff.extend(
+            actual
+                .lines()
+                .filter(|line| !golden_lines.contains(line))
+                .map(|line| format!("+ {line}")),
+        );
+        assert!(
+            diff.is_empty(),
+            "preset loads changed; rerun with UPDATE_GOLDEN=1 if intended:\n{}",
+            diff.join("\n")
+        );
     }
 }

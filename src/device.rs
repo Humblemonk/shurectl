@@ -327,8 +327,9 @@ impl ShureDevice {
     }
 
     /// Read one input report. `Ok(None)` means the read timed out, which is not
-    /// an error: some features never answer a GET (the MV6 mix before its first
-    /// SET). A failed read is, since it means the device is gone.
+    /// a HID failure: a feature may not answer a GET (the MV6's Playback Level is
+    /// unchecked), and `Readback` decides whether that fails the readback. A
+    /// failed read is an error, since it means the device is gone.
     fn read(&self) -> Result<Option<Vec<u8>>> {
         let mut buf = vec![0u8; PACKET_SIZE];
         match self.transport.read_timeout(&mut buf, READ_TIMEOUT_MS) {
@@ -511,7 +512,7 @@ impl ShureDevice {
     /// recorded in `readback`, and fails it when the readback finishes.
     fn query(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
         let reply = self.send_get(pkt)?;
-        readback.apply(pkt, reply.as_ref(), Need::Required);
+        readback.apply(self.model, pkt, reply.as_ref(), Need::Required);
         Ok(())
     }
 
@@ -519,7 +520,7 @@ impl ShureDevice {
     /// a usable reply, its setting is only noted in [`Readback::skipped`].
     fn query_optional(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
         let reply = self.send_get(pkt)?;
-        readback.apply(pkt, reply.as_ref(), Need::Optional);
+        readback.apply(self.model, pkt, reply.as_ref(), Need::Optional);
         Ok(())
     }
 
@@ -713,15 +714,22 @@ impl ShureDevice {
     /// can't be queried or doesn't report one. Used by `--list` to upgrade the
     /// displayed serial from the USB descriptor value to the printed serial.
     pub fn read_factory_serial(&self) -> Option<String> {
-        if self.model == DeviceModel::Mv7 {
-            let reply = self.send_text(&mv7_text::get_serial()).ok()?;
-            let mut state = DeviceState::default();
-            return mv7_text::apply_reply(&reply, &mut state).then_some(state.factory_serial);
-        }
-        let pkt = cmd_get_serial(self.next_seq());
-        let reply = self.send_get(&pkt).ok()??;
         let mut state = DeviceState::default();
-        apply_reply(&reply, &mut state).then_some(state.factory_serial)
+        let applied = match self.model {
+            DeviceModel::Mv7 => {
+                let reply = self.send_text(&mv7_text::get_serial()).ok()?;
+                mv7_text::apply_reply(&reply, &mut state)
+            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => {
+                let reply = self.send_get(&cmd_get_serial(self.next_seq())).ok()??;
+                apply_reply(&reply, &mut state)
+            }
+        };
+        applied.then_some(state.factory_serial)
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────
@@ -1218,16 +1226,19 @@ enum Need {
 }
 
 impl Readback {
-    /// Apply the reply, if any, to the binary GET `request`.
-    fn apply(&mut self, request: &[u8], reply: Option<&Reply>, need: Need) {
+    /// Apply the reply, if any, to the binary GET `request` sent to `model`.
+    fn apply(&mut self, model: DeviceModel, request: &[u8], reply: Option<&Reply>, need: Need) {
         let applied = reply.is_some_and(|reply| apply_reply(reply, &mut self.state));
         self.record(applied, need, || match reply {
             Some(reply) => format!(
                 "{} in reply to {}",
                 reply.describe(),
-                protocol::describe_get(request)
+                protocol::describe_get(model, request)
             ),
-            None => format!("no usable reply to {}", protocol::describe_get(request)),
+            None => format!(
+                "no usable reply to {}",
+                protocol::describe_get(model, request)
+            ),
         });
     }
 
@@ -1348,8 +1359,13 @@ mod tests {
     #[test]
     fn readback_names_the_query_an_unrecognised_reply_answered() {
         let mut readback = Readback::default();
-        readback.apply(&cmd_get_gain(0), Some(&unknown_reply()), Need::Optional);
-        let gain = protocol::describe_get(&cmd_get_gain(0));
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_gain(0),
+            Some(&unknown_reply()),
+            Need::Optional,
+        );
+        let gain = protocol::describe_get(DeviceModel::Mv6Gen2, &cmd_get_gain(0));
         assert_eq!(
             readback.skipped,
             vec![format!(
@@ -1378,7 +1394,12 @@ mod tests {
     #[test]
     fn readback_with_no_applied_reply_is_an_error() {
         let mut readback = Readback::default();
-        readback.apply(&cmd_get_gain(0), Some(&unknown_reply()), Need::Optional);
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_gain(0),
+            Some(&unknown_reply()),
+            Need::Optional,
+        );
         let err = readback.finish().err().expect("nothing applied");
         assert!(err.to_string().contains("No response"), "{err}");
     }
@@ -1387,21 +1408,36 @@ mod tests {
     #[test]
     fn readback_fails_unless_every_required_query_is_answered() {
         let mut readback = Readback::default();
-        readback.apply(&cmd_get_gain(0), Some(&gain_reply()), Need::Required);
-        readback.apply(&cmd_get_mute(1), None, Need::Required);
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_gain(0),
+            Some(&gain_reply()),
+            Need::Required,
+        );
+        readback.apply(DeviceModel::Mv6Gen2, &cmd_get_mute(1), None, Need::Required);
         let err = readback.finish().err().expect("mute unanswered");
         assert_eq!(
             err.to_string(),
             format!(
                 "Couldn't read a setting: no usable reply to {}",
-                protocol::describe_get(&cmd_get_mute(1))
+                protocol::describe_get(DeviceModel::Mv6Gen2, &cmd_get_mute(1))
             )
         );
 
         let mut readback = Readback::default();
-        readback.apply(&cmd_get_gain(0), Some(&gain_reply()), Need::Required);
-        readback.apply(&cmd_get_mute(1), Some(&unknown_reply()), Need::Required);
-        readback.apply(&cmd_get_hpf(2), None, Need::Required);
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_gain(0),
+            Some(&gain_reply()),
+            Need::Required,
+        );
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_mute(1),
+            Some(&unknown_reply()),
+            Need::Required,
+        );
+        readback.apply(DeviceModel::Mv6Gen2, &cmd_get_hpf(2), None, Need::Required);
         let err = readback.finish().err().expect("two unanswered");
         assert!(
             err.to_string()
@@ -1412,12 +1448,55 @@ mod tests {
     #[test]
     fn readback_only_notes_an_unanswered_optional_query() {
         let mut readback = Readback::default();
-        readback.apply(&cmd_get_gain(0), Some(&gain_reply()), Need::Required);
-        readback.apply(&cmd_get_mv7_playback_mix(1), None, Need::Optional);
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_gain(0),
+            Some(&gain_reply()),
+            Need::Required,
+        );
+        readback.apply(
+            DeviceModel::Mv6Gen2,
+            &cmd_get_mv7_playback_mix(1),
+            None,
+            Need::Optional,
+        );
         let readback = readback
             .finish()
             .expect("only an optional query unanswered");
         assert_eq!(readback.state.gain_tenths, 240);
         assert_eq!(readback.skipped.len(), 1);
+    }
+
+    /// A readback that fails names the setting, so a user's report says which.
+    /// Every GET a binary model reads its state with needs a label in
+    /// `protocol::setting_label()`.
+    #[test]
+    fn every_readback_query_names_its_setting() {
+        use crate::fake_hid::{FakeDevice, PacketKind};
+
+        let binary_models = [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7Plus,
+        ];
+        for model in binary_models {
+            let fake = FakeDevice::new(model);
+            fake.open().get_state().expect("readback");
+            for packet in fake.log_since(0) {
+                if let PacketKind::Get { feature } = packet.kind {
+                    let described = protocol::describe_get(model, &packet.raw);
+                    assert!(
+                        described.contains(" at feature"),
+                        "{model:?} {feature}: {described}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            protocol::describe_get(DeviceModel::Mv6Gen2, &cmd_get_auto_gain(0)),
+            "Target Level at feature 0x01 0x87 (prefix 0x00)"
+        );
     }
 }

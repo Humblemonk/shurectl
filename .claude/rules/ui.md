@@ -53,3 +53,12 @@ list; and text whose length the user sets, a saved preset's summary line and a l
 in the header. `every_screen_fits_the_min_size` checks the demo states with empty presets, and
 compares sets of words, so a word cut in one place passes if it shows elsewhere. Dynamics cards go through
 `draw_card_grid()`, which wraps them onto more rows rather than clip a title.
+
+**Shared drawing helpers.** A control that exists on more than one model is drawn through
+one of these; extend it with a parameter rather than forking a near-copy:
+`draw_mode_mute_row()` (`draw_mode_block()`, `draw_mute_block()`), `draw_gain_gauge()`,
+`draw_monitor_mix_gauge()`, `draw_gain_lock_block()`, `draw_config_lock_block()`,
+`draw_phantom_block()`, `draw_auto_controls()`, `segmented_span()`, `draw_main_shared()`;
+block styles `focus_border()`, `focus_block()`, `alert_block()`, `card_block()`; sliders
+`slider_gauge()`; Dynamics cards `draw_card_grid()`; focus hints `with_hint()`; EQ
+`eq_band_column()`; click targets `control_rows()`.

@@ -4,8 +4,18 @@ What changed in each shurectl release, newest first. Only changes you can see or
 listed; internal refactors, test work and CI changes are left out. To check which version you
 have, run `shurectl -V` or open the Info tab.
 
-Releases that changed how presets load, or that need you to do something after upgrading,
-have an **Upgrading** note.
+Releases that need you to do something after upgrading have an **Upgrading** note.
+
+## 2.13.2 — 2026-10-17
+
+Clearer errors when shurectl can't read a setting.
+
+### Changed
+
+- When shurectl can't read every setting from the device, the status bar now names the
+  setting, such as "Couldn't read a setting: no usable reply to Mic Level at feature 0x01
+  0x86 (prefix 0x00)", instead of showing only the address. Please include that message
+  in a bug report.
 
 ## 2.13.1 — 2026-10-16
 
@@ -59,6 +69,13 @@ Safety fixes: what's on screen now always matches what the device has.
   a condenser mic. Presets saved before 2.12.0 still apply the value they contain.
 - If reading the device's settings failed at startup or on reconnect, changes and preset
   saves are refused until you press `r`, so nothing is written based on guessed values.
+
+### Upgrading
+
+- Presets saved before 2.12.0 on an MV6, MV6 Gen 2, MV7 or MV7+ still switch 48V off when
+  loaded on an MVX2U Gen 1 or Gen 2. If you load them there with a condenser mic, load each
+  one on the mic it was made for and save it again, so it no longer holds 48V. Without that
+  mic, delete the `phantom_power` line from the preset file instead.
 
 ## 2.11.1 — 2026-10-12
 
@@ -257,7 +274,7 @@ A new look based on Shure's MOTIV Mix app, and more MVX2U Gen 2 controls.
 
 ## 2.5.4 — 2026-09-06
 
-Performance and stability improvements.
+No user-facing changes.
 
 ## 2.5.3 — 2026-09-03
 
@@ -268,7 +285,7 @@ Performance and stability improvements.
 
 ## 2.5.2 — 2026-08-28
 
-Performance and stability improvements.
+Dependency updates. No user-facing changes.
 
 ## 2.5.1 — 2026-08-03
 
