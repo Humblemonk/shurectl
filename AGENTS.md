@@ -1,7 +1,7 @@
 # shurectl
 
 Terminal UI configurator for Shure USB audio interfaces (MVX2U Gen 1/Gen 2, MV6, MV6 Gen 2,
-MV7, MV7+) on Linux, macOS and Windows (CI covers Linux and macOS). Talks to the device
+MV7, MV7+) on Linux, macOS and Windows, all three covered by CI. Talks to the device
 directly over USB HID, replacing the Windows/Mac-only ShurePlus MOTIV Desktop app.
 Single-crate Rust binary. Prefer the simple, obvious solution over clever abstractions.
 
