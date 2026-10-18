@@ -14,7 +14,7 @@ cargo run -- --demo mv7plus
 
 ## Quality gate
 
-Run this before every commit. CI runs the same script on Linux and macOS:
+Run this before every commit. CI runs the same script on Linux, macOS and Windows:
 
 ```bash
 scripts/check.sh
