@@ -99,8 +99,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `dynamics-denoiser-popper` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | Clicking focuses without sending; Denoiser and Popper Stopper toggle and send |
 | `dynamics-hpf-cycle` | all but MV7 | fake | HPF cycles Off → 75 Hz → 150 Hz → Off and sends HPF |
 | `mute-button-setting` | MV6, MV6 Gen 2, MV7+ | fake, demo | Mute Button toggles between Works and Ignored and sends MUTE_BUTTON |
-| `mv7plus-unanswered-mute-button` | MV7+ | fake | An unanswered Mute Button GET leaves other settings usable, shows Unknown at 120x40 and 80x24, refuses button writes, and recovers when the GET answers again |
-| `mv7plus-mute-button-firmware` | MV7+ | fake | Unread Mute Button on firmware 1.3.0.13 shows the 1.4.0 requirement without a read-error notice at 120x40 and 80x24; newer/unknown firmware retains the warning, unread controls send nothing, and successful GETs remain authoritative |
+| `mv7plus-refused-mute-button` | MV7+ | fake | A Mute Button GET answered with an unknown address leaves other settings usable, shows Unknown at 120x40 and 80x24, refuses button writes, says a preset load left it out, and recovers when the GET answers again |
+| `mv7plus-mute-button-firmware` | MV7+ | fake | An unread Mute Button on firmware 1.3.0.13 shows the 1.4.0 requirement without a read-error notice at 120x40 and 80x24; newer and unknown firmware keep the notice, unread controls send nothing, and a successful GET stays authoritative |
 | `reverb-controls` | MV7+ | fake, demo | Reverb output, monitoring, type and intensity (clamped 0–100%) each send their feature |
 | `led-brightness` | MV7+ | fake, demo | Enter cycles LED brightness and sends LED_BRIGHTNESS |
 | `led-custom-rgb` | MV7+ | fake, demo | Pulsing with a Custom theme reveals R/G/B sliders that send LED_PULSING_COLOR; choosing Shure hides them |
@@ -137,5 +137,5 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
 | `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |
 
-The fake fault `{"device":{"unanswered_get":"MUTE_BUTTON"}}` drops replies to that feature's GETs until cleared with `{"device":{"unanswered_get":null}}`.
-The fake fault `{"device":{"firmware":"1.3.0.13"}}` overrides the firmware GET reply until cleared with `{"device":{"firmware":null}}`, allowing old-firmware behavior to be exercised without downgrading hardware.
+The fake fault `{"device":{"refused_get":"MUTE_BUTTON"}}` answers that feature's GETs with an unknown address, as `refuse` does, until cleared with `{"device":{"refused_get":null}}`.
+The fake fault `{"device":{"firmware":"1.3.0.13"}}` overrides the firmware GET reply until cleared with `{"device":{"firmware":null}}`, so older firmware can be checked without downgrading hardware.

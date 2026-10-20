@@ -196,13 +196,11 @@ impl PresetSlot {
             }
             DeviceModel::Mv6 => {
                 slot.save_voice_settings(state);
-                slot.mute_btn_disabled =
-                    state.mute_btn_available.then_some(state.mute_btn_disabled);
+                slot.mute_btn_disabled = state.mute_btn_disabled;
             }
             DeviceModel::Mv6Gen2 => {
                 slot.save_voice_settings(state);
-                slot.mute_btn_disabled =
-                    state.mute_btn_available.then_some(state.mute_btn_disabled);
+                slot.mute_btn_disabled = state.mute_btn_disabled;
                 slot.auto_gain = Some(SerAutoGain::from(state.auto_gain));
                 slot.adaptation_rate_fast = Some(state.adaptation_rate_fast);
                 slot.eq_bands = Some(state.eq_bands.map(SerEqBand::gain_only));
@@ -218,8 +216,7 @@ impl PresetSlot {
             DeviceModel::Mv7Plus => {
                 slot.save_limiter_and_compressor(state);
                 slot.save_voice_settings(state);
-                slot.mute_btn_disabled =
-                    state.mute_btn_available.then_some(state.mute_btn_disabled);
+                slot.mute_btn_disabled = state.mute_btn_disabled;
                 slot.reverb_on_output = Some(state.reverb_on_output);
                 slot.reverb_monitoring = Some(state.reverb_monitoring);
                 slot.reverb_type = Some(SerReverbType::from(state.reverb_type));
@@ -298,8 +295,9 @@ impl PresetSlot {
             &mut state.popper_stopper_enabled,
             self.popper_stopper_enabled,
         );
-        if state.mute_btn_available {
-            load_saved(&mut state.mute_btn_disabled, self.mute_btn_disabled);
+        // An unread Mute Button stays unread: the device's own value is unknown.
+        if let Some(disabled) = state.mute_btn_disabled.as_mut() {
+            load_saved(disabled, self.mute_btn_disabled);
         }
         load_saved(&mut state.tone, self.tone.map(|tone| tone.clamp(-10, 10)));
         load_saved(&mut state.mv6_gain_locked, self.mv6_gain_locked);
@@ -1060,7 +1058,7 @@ mod tests {
             ],
             denoiser_enabled: true,
             popper_stopper_enabled: false,
-            mute_btn_disabled: true,
+            mute_btn_disabled: Some(true),
             tone: -5,
             serial_number: String::from("TEST001"),
             ..DeviceState::default()
@@ -1131,12 +1129,12 @@ mod tests {
         assert!(!text.contains("mute_btn_disabled"), "{text}");
         assert!(!text.contains("denoiser_level"), "{text}");
         let mut mv6_gen2 = DeviceState {
-            mute_btn_disabled: true,
+            mute_btn_disabled: Some(true),
             denoiser_level: 80,
             ..DeviceState::default()
         };
         toml_roundtrip(&gen2).apply_to_device_state(&mut mv6_gen2);
-        assert!(mv6_gen2.mute_btn_disabled);
+        assert_eq!(mv6_gen2.mute_btn_disabled, Some(true));
         assert_eq!(mv6_gen2.denoiser_level, 80);
 
         // The MV6 Gen 2 has no Limiter or Compressor.
@@ -1269,7 +1267,7 @@ mod tests {
             monitor_mix: 62,
             hpf: HpfFrequency::Hz75,
             denoiser_enabled: true,
-            mute_btn_disabled: true,
+            mute_btn_disabled: Some(true),
             tone: 5,
             serial_number: String::from("MV6TEST"),
             ..DeviceState::default()
@@ -1312,7 +1310,7 @@ mod tests {
         assert_eq!(target.gain_tenths, 240);
         assert!(target.denoiser_enabled);
         assert!(target.popper_stopper_enabled);
-        assert!(target.mute_btn_disabled);
+        assert_eq!(target.mute_btn_disabled, Some(true));
         assert_eq!(target.tone, 5);
         assert_eq!(target.hpf, HpfFrequency::Hz75);
         // Identity fields must be untouched.

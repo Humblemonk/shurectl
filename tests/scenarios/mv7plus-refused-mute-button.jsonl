@@ -1,0 +1,28 @@
+{"models":["mv7plus"],"modes":["fake"],"scenario":"mv7plus-refused-mute-button","size":[120,40]}
+{"device": {"refused_get": "MUTE_BUTTON"}}
+{"key": "r"}
+{"expect": {"state": {"mute_btn_disabled": null, "gain_tenths": 240}, "screen_contains": ["Mute Button", "Unknown"], "status": "optional setting", "connected": true}}
+{"key": "Tab", "repeat": 2}
+{"click_on": "Mute Button"}
+{"key": "Enter"}
+{"key": "Space"}
+{"expect": {"no_packets": true, "status": "Mute Button unavailable", "status_is_error": true, "screen_contains": ["Pressing it: Unknown", "Unavailable"]}}
+{"resize": [80, 24]}
+{"expect": {"screen_contains": ["Pressing it: Unknown", "Unavailable"], "fits": true}}
+{"click_on": "Denoiser"}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "DENOISER", "value": true}, "state": {"denoiser_enabled": true}}}
+{"key": "r"}
+{"expect": {"state": {"denoiser_enabled": true, "mute_btn_disabled": null}, "status": "optional setting"}}
+{"preset_dir": "fixtures/presets-mv7plus"}
+{"click_on": "Presets"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"status": "Loaded \"MV7+ Voice\". Mute Button not loaded: its state could not be read.", "state": {"mute_btn_disabled": null, "denoiser_enabled": false}}}
+{"click_on": "Dynamics"}
+{"device": {"refused_get": null}}
+{"key": "r"}
+{"expect": {"state": {"mute_btn_disabled": false}, "screen_contains": "Pressing it: Works"}}
+{"click_on": "Mute Button"}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "MUTE_BUTTON", "value": true}, "state": {"mute_btn_disabled": true}}}

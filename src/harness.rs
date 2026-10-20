@@ -431,15 +431,23 @@ impl Harness {
                         "drop_acks" => fake.faults_mut(|f| f.drop_acks = count),
                         "extra_acks" => fake.faults_mut(|f| f.extra_acks = count),
                         "refuse" => fake.faults_mut(|f| f.refuse = count),
-                        "unanswered_get" => {
-                            fake.faults_mut(|f| {
-                                f.unanswered_get = amount.as_str().map(str::to_owned);
-                            });
+                        "refused_get" => {
+                            let feature = match amount {
+                                Value::Null => None,
+                                Value::String(name) if fake.feature_names().contains(name) => {
+                                    Some(name.clone())
+                                }
+                                _ => bail!("\"refused_get\" takes a feature name or null"),
+                            };
+                            fake.faults_mut(|f| f.refused_get = feature);
                         }
                         "firmware" => {
-                            fake.faults_mut(|f| {
-                                f.firmware_version = amount.as_str().map(str::to_owned);
-                            });
+                            let version = match amount {
+                                Value::Null => None,
+                                Value::String(version) => Some(version.clone()),
+                                _ => bail!("\"firmware\" takes a version string or null"),
+                            };
+                            fake.faults_mut(|f| f.firmware_version = version);
                         }
                         "fail_io" => {
                             fake.faults_mut(|f| f.fail_io = amount.as_bool().unwrap_or(false))
@@ -1067,7 +1075,6 @@ pub fn state_json(state: &DeviceState) -> Value {
         denoiser_enabled,
         popper_stopper_enabled,
         mute_btn_disabled,
-        mute_btn_available,
         tone,
         mv6_gain_locked,
         adaptation_rate_fast,
@@ -1122,7 +1129,6 @@ pub fn state_json(state: &DeviceState) -> Value {
         ("denoiser_enabled", json!(denoiser_enabled)),
         ("popper_stopper_enabled", json!(popper_stopper_enabled)),
         ("mute_btn_disabled", json!(mute_btn_disabled)),
-        ("mute_btn_available", json!(mute_btn_available)),
         ("tone", json!(tone)),
         ("mv6_gain_locked", json!(mv6_gain_locked)),
         ("adaptation_rate_fast", json!(adaptation_rate_fast)),

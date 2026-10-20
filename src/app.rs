@@ -239,14 +239,14 @@ impl App {
         self.set_status(msg, true);
     }
 
+    /// Refuse a Mute Button change while its state is unread, and say why.
     pub fn report_unavailable_mute_button(&mut self) {
-        if self
+        match self
             .device_state
             .mute_button_needs_firmware(self.device_model)
         {
-            self.set_ok("Mute Button needs firmware 1.4.0+");
-        } else {
-            self.set_err("Mute Button unavailable: its state could not be read");
+            Some(firmware) => self.set_err(format!("Mute Button needs firmware {firmware}+")),
+            None => self.set_err(MUTE_BTN_UNREAD),
         }
     }
 
@@ -1286,14 +1286,12 @@ impl App {
                 ))
             }
             Focus::MuteBtnDisable => {
-                if !self.device_state.mute_btn_available {
+                let Some(disabled) = self.device_state.mute_btn_disabled else {
                     self.report_unavailable_mute_button();
                     return None;
-                }
-                self.device_state.mute_btn_disabled = !self.device_state.mute_btn_disabled;
-                Some(DeviceAction::SetMv6MuteBtnDisable(
-                    self.device_state.mute_btn_disabled,
-                ))
+                };
+                self.device_state.mute_btn_disabled = Some(!disabled);
+                Some(DeviceAction::SetMv6MuteBtnDisable(!disabled))
             }
             Focus::ReverbOutput => {
                 self.device_state.reverb_on_output = !self.device_state.reverb_on_output;
@@ -1382,6 +1380,9 @@ impl App {
         }
     }
 }
+
+/// Status for a Mute Button change refused because its state wasn't read.
+const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";
 
 /// Commands to send to the device, produced by App but executed by main.
 #[derive(Debug)]

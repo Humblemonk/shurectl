@@ -270,6 +270,19 @@ impl DeviceModel {
         }
     }
 
+    /// The first firmware with the Mute Button setting, on a model that got it
+    /// in an update. `None` where every firmware has it, or the model lacks it.
+    pub fn mute_button_firmware(&self) -> Option<&'static str> {
+        match self {
+            DeviceModel::Mv7Plus => Some(MV7_PLUS_MUTE_BUTTON_FIRMWARE),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => None,
+        }
+    }
+
     /// Whether the model has 48V phantom power (the XLR interfaces).
     pub fn has_phantom_power(&self) -> bool {
         match self {
@@ -671,11 +684,11 @@ pub struct DeviceState {
     /// confirmed by MOTIV app probe diff.
     pub popper_stopper_enabled: bool,
     /// Mute button disable. MV6, MV6 Gen 2, MV7+. Address [0x0C, 0x00] confirmed
-    /// by Wireshark capture. GET uses CMD_GET_LOCK with inverted encoding.
-    pub mute_btn_disabled: bool,
-    /// Whether Mute Button was read successfully. False means its value is
-    /// unknown and must not be displayed, changed or saved in a preset.
-    pub mute_btn_available: bool,
+    /// by Wireshark capture on the MV6; the MV7+ has it from firmware 1.4.0 (see
+    /// `cmd_get_mv6_mute_btn_disable()`). GET uses CMD_GET_LOCK with inverted
+    /// encoding. `None` until a readback reads it: unknown, so it must not be
+    /// shown, changed or saved in a preset.
+    pub mute_btn_disabled: Option<bool>,
     /// Tone character. MV6, MV6 Gen 2, MVX2U Gen 2, MV7+. Range: -10 to +10
     /// (displayed as × 10%). -10 = 100% Dark, 0 = Natural, +10 = 100% Bright.
     pub tone: i8,
@@ -765,9 +778,8 @@ impl Default for DeviceState {
             // MV6 defaults match factory reset state observed in MOTIV app.
             denoiser_enabled: false,
             popper_stopper_enabled: true,
-            mute_btn_disabled: false,
-            // Demo state is editable; hardware readback clears this before GETs.
-            mute_btn_available: true,
+            // Demo state is editable; a hardware readback starts it at None.
+            mute_btn_disabled: Some(false),
             tone: 0, // Natural
             mv6_gain_locked: false,
             // MV6 Gen 2 factory defaults, read back after a MOTIV reset.
@@ -804,30 +816,38 @@ impl Default for DeviceState {
     }
 }
 
+/// Shure's MV7+ release notes list "Disable hardware mute feature" as new in
+/// firmware 1.4.0 (2025-09-12). Firmware 1.3.0.13 doesn't answer its GET
+/// (read-only probe, 2026-10-19); 1.6.0.1 reads and writes it (tested
+/// 2026-10-20).
+const MV7_PLUS_MUTE_BUTTON_FIRMWARE: &str = "1.4.0";
+
+/// A firmware version of three or four dot-separated numbers, padded to four,
+/// so versions compare in order. `None` for anything else ("Unknown").
+fn parse_firmware(version: &str) -> Option<[u32; 4]> {
+    let mut parts = [0_u32; 4];
+    let mut count = 0;
+    for part in version.split('.') {
+        if count == parts.len() || part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        parts[count] = part.parse().ok()?;
+        count += 1;
+    }
+    (count >= 3).then_some(parts)
+}
+
 impl DeviceState {
-    /// Shure's MV7+ release notes introduced Disable hardware mute in 1.4.0
-    /// (2025-09-12). Only explain an unread setting this way for a known older
-    /// firmware; a successful GET remains authoritative.
-    pub fn mute_button_needs_firmware(&self, model: DeviceModel) -> bool {
-        if model != DeviceModel::Mv7Plus || self.mute_btn_available {
-            return false;
+    /// The firmware the Mute Button needs, when it is unread and the installed
+    /// firmware is known to predate it. A successful GET stays authoritative,
+    /// and an unread setting on newer or unknown firmware is a read failure.
+    pub fn mute_button_needs_firmware(&self, model: DeviceModel) -> Option<&'static str> {
+        let required = model.mute_button_firmware()?;
+        if self.mute_btn_disabled.is_some() {
+            return None;
         }
-        let mut version = [0_u32; 4];
-        let mut count = 0;
-        for (index, part) in self.firmware_version.split('.').enumerate() {
-            if index >= version.len()
-                || part.is_empty()
-                || !part.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                return false;
-            }
-            let Ok(number) = part.parse() else {
-                return false;
-            };
-            version[index] = number;
-            count += 1;
-        }
-        count >= 3 && version < [1, 4, 0, 0]
+        let installed = parse_firmware(&self.firmware_version)?;
+        (installed < parse_firmware(required)?).then_some(required)
     }
 
     /// The serial number to show the user: the factory serial (printed on the
@@ -2069,8 +2089,11 @@ pub fn cmd_get_mv6_mix(seq: u8) -> Vec<u8> {
 /// Uses CMD_GET_LOCK class with payload [addr_hi=0x0C, addr_lo=0x00, mix_byte=0x60].
 /// parse_response will return feat_addr=[0x00, 0x60] (MV6_FEAT_MUTE_BTN_DISABLE_RESP)
 /// with value[0]: 0x00=button disabled, 0x01=button active (inverted encoding).
-/// Confirmed reliable by Wireshark — device correctly reflects current state.
-/// Also used for the MV6 Gen 2 and MV7+ — the framing is identical.
+/// Confirmed reliable by Wireshark on the MV6, where the device reflected the
+/// current state; the MV6 Gen 2 probe in 2.9.0 matched the address. The MV7+
+/// has the setting from firmware 1.4.0 (`MV7_PLUS_MUTE_BUTTON_FIRMWARE`): this
+/// GET read it on 1.6.0.1, and 1.3.0.13 answered it with an unrecognised
+/// 09 02 01 reply, so its readback is optional there.
 pub fn cmd_get_mv6_mute_btn_disable(seq: u8) -> Vec<u8> {
     let payload = [
         MV6_FEAT_MUTE_BTN_DISABLE[0],
@@ -2730,8 +2753,7 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                 return false;
             }
             // Inverted encoding: 0x00=button disabled, 0x01=button active.
-            state.mute_btn_disabled = value[0] == 0x00;
-            state.mute_btn_available = true;
+            state.mute_btn_disabled = Some(value[0] == 0x00);
             true
         }
         f if f == MV6_GEN2_FEAT_ADAPTATION_RATE => {
@@ -4031,20 +4053,20 @@ mod tests {
         ] {
             let state = DeviceState {
                 firmware_version: firmware.into(),
-                mute_btn_available: false,
+                mute_btn_disabled: None,
                 ..DeviceState::default()
             };
             assert_eq!(
                 state.mute_button_needs_firmware(DeviceModel::Mv7Plus),
-                needs_firmware,
+                needs_firmware.then_some("1.4.0"),
                 "{firmware}"
             );
-            assert!(!state.mute_button_needs_firmware(DeviceModel::Mv6));
+            assert_eq!(state.mute_button_needs_firmware(DeviceModel::Mv6), None);
             let state = DeviceState {
-                mute_btn_available: true,
+                mute_btn_disabled: Some(false),
                 ..state
             };
-            assert!(!state.mute_button_needs_firmware(DeviceModel::Mv7Plus));
+            assert_eq!(state.mute_button_needs_firmware(DeviceModel::Mv7Plus), None);
         }
     }
 
@@ -5144,7 +5166,7 @@ mod tests {
                 bytes,
                 &mut state
             ));
-            assert_eq!(state.mute_btn_disabled, expected_disabled);
+            assert_eq!(state.mute_btn_disabled, Some(expected_disabled));
         }
     }
 

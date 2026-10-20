@@ -12,9 +12,9 @@ use ratatui::{
 use crate::app::{App, Focus, Tab};
 use crate::mouse::{HitMap, Target};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EQ_BAND_FREQS, EqPreset,
-    HpfFrequency, InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
-    MicPosition, MicPreset, ReverbType, format_gain,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
+    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, MicPreset,
+    ReverbType, format_gain,
 };
 
 /// Keep hit regions beside the layout that draws them, not in a second layout.
@@ -1438,7 +1438,7 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
             }
         }
         SummaryRow::PopperStopper => on_off(ds.popper_stopper_enabled),
-        SummaryRow::MuteButton => mute_btn_span(ds),
+        SummaryRow::MuteButton => mute_btn_span(ds.mute_btn_disabled),
         SummaryRow::Hpf => text(ds.hpf.to_string()),
         SummaryRow::ReverbOutput => on_off(ds.reverb_on_output),
         SummaryRow::ReverbMonitor => on_off(ds.reverb_monitoring),
@@ -1933,33 +1933,34 @@ fn draw_popper_stopper_card(f: &mut UiFrame, app: &App, area: Rect) {
 /// "Mute Button: ON" reads as the mic being muted.
 fn draw_mute_btn_card(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::MuteBtnDisable);
+    let read = app.device_state.mute_btn_disabled.is_some();
     let needs_firmware = app
         .device_state
-        .mute_button_needs_firmware(app.device_model);
+        .mute_button_needs_firmware(app.device_model)
+        .map(|firmware| format!("Needs firmware {firmware}+."));
     let card = StatusCard {
         title: "Mute Button",
-        status: if needs_firmware {
-            vec![Line::from(vec![
+        status: vec![Line::from(match &needs_firmware {
+            Some(_) => vec![
                 Span::styled("Firmware: ", Style::default().fg(C_DIM)),
                 Span::styled(
                     &app.device_state.firmware_version,
                     Style::default().fg(C_TEXT),
                 ),
-            ])]
-        } else {
-            vec![Line::from(vec![
+            ],
+            None => vec![
                 Span::styled("Pressing it: ", Style::default().fg(C_DIM)),
-                mute_btn_span(&app.device_state),
-            ])]
-        },
-        description: if app.device_state.mute_btn_available {
+                mute_btn_span(app.device_state.mute_btn_disabled),
+            ],
+        })],
+        description: if read {
             "Whether pressing the mic's mute button mutes it."
-        } else if needs_firmware {
-            "Needs firmware 1.4.0+."
+        } else if let Some(needs_firmware) = &needs_firmware {
+            needs_firmware
         } else {
             "Unavailable: its state could not be read."
         },
-        hint: if app.device_state.mute_btn_available {
+        hint: if read {
             "[Enter] toggle"
         } else {
             "🔒 Unavailable"
@@ -1969,13 +1970,11 @@ fn draw_mute_btn_card(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 /// The physical mute button's state for the card and the Summary.
-fn mute_btn_span(state: &DeviceState) -> Span<'static> {
-    if !state.mute_btn_available {
-        Span::styled("Unknown", Style::default().fg(C_WARN))
-    } else if state.mute_btn_disabled {
-        Span::styled("Ignored", Style::default().fg(C_WARN))
-    } else {
-        Span::styled("Works", Style::default().fg(C_TEXT))
+fn mute_btn_span(disabled: Option<bool>) -> Span<'static> {
+    match disabled {
+        None => Span::styled("Unknown", Style::default().fg(C_WARN)),
+        Some(true) => Span::styled("Ignored", Style::default().fg(C_WARN)),
+        Some(false) => Span::styled("Works", Style::default().fg(C_TEXT)),
     }
 }
 
@@ -3230,7 +3229,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
-            ("  Mute Button  : ", "Works / Ignored"),
+            ("  Mute Button  : ", "Works / Ignored (firmware 1.4.0+)"),
             ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             (
                 "  Reverb       : ",

@@ -560,8 +560,8 @@ Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetName(2) 2
 Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetActions(2) d5ec12b0f0baa042
 Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetName(3) afdf32238edbc53b
 Mv7Plus Manual adv=false muted=false locked=false Presets band=0 PresetActions(3) db764db731574322
-Mv7Plus Manual adv=false muted=false locked=false Info band=0 DeviceName c140d47280fe61df
-Mv7Plus Manual adv=false muted=false locked=false Info band=0 FactoryReset 15db13863b02219b
+Mv7Plus Manual adv=false muted=false locked=false Info band=0 DeviceName a1eb9d56a1d096dd
+Mv7Plus Manual adv=false muted=false locked=false Info band=0 FactoryReset 30e1e4e32ba58aa1
 Mv7Plus Manual adv=false muted=false locked=false Led led=custom band=0 LedBehavior 34be8407395cae1f
 Mv7Plus Manual adv=false muted=false locked=false Led led=custom band=0 LedBrightness a238b16724e2a27b
 Mv7Plus Manual adv=false muted=false locked=false Led led=custom band=0 LedTheme e70341d798e97303
@@ -601,8 +601,8 @@ Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetName(2) 20c
 Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetActions(2) d5ec12b0f0baa042
 Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetName(3) afdf32238edbc53b
 Mv7Plus Manual adv=false muted=true locked=true Presets band=0 PresetActions(3) db764db731574322
-Mv7Plus Manual adv=false muted=true locked=true Info band=0 DeviceName c140d47280fe61df
-Mv7Plus Manual adv=false muted=true locked=true Info band=0 FactoryReset 15db13863b02219b
+Mv7Plus Manual adv=false muted=true locked=true Info band=0 DeviceName a1eb9d56a1d096dd
+Mv7Plus Manual adv=false muted=true locked=true Info band=0 FactoryReset 30e1e4e32ba58aa1
 Mv7Plus Manual adv=false muted=true locked=true Led led=custom band=0 LedBehavior 34be8407395cae1f
 Mv7Plus Manual adv=false muted=true locked=true Led led=custom band=0 LedBrightness a238b16724e2a27b
 Mv7Plus Manual adv=false muted=true locked=true Led led=custom band=0 LedTheme e70341d798e97303
@@ -641,8 +641,8 @@ Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetName(2) 20c
 Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetActions(2) d5ec12b0f0baa042
 Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetName(3) afdf32238edbc53b
 Mv7Plus Auto adv=false muted=false locked=false Presets band=0 PresetActions(3) db764db731574322
-Mv7Plus Auto adv=false muted=false locked=false Info band=0 DeviceName c140d47280fe61df
-Mv7Plus Auto adv=false muted=false locked=false Info band=0 FactoryReset 15db13863b02219b
+Mv7Plus Auto adv=false muted=false locked=false Info band=0 DeviceName a1eb9d56a1d096dd
+Mv7Plus Auto adv=false muted=false locked=false Info band=0 FactoryReset 30e1e4e32ba58aa1
 Mv7Plus Auto adv=false muted=false locked=false Led led=custom band=0 LedBehavior 34be8407395cae1f
 Mv7Plus Auto adv=false muted=false locked=false Led led=custom band=0 LedBrightness a238b16724e2a27b
 Mv7Plus Auto adv=false muted=false locked=false Led led=custom band=0 LedTheme e70341d798e97303
@@ -681,8 +681,8 @@ Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetName(2) 20ca0
 Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) d5ec12b0f0baa042
 Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetName(3) afdf32238edbc53b
 Mv7Plus Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) db764db731574322
-Mv7Plus Auto adv=false muted=true locked=true Info band=0 DeviceName c140d47280fe61df
-Mv7Plus Auto adv=false muted=true locked=true Info band=0 FactoryReset 15db13863b02219b
+Mv7Plus Auto adv=false muted=true locked=true Info band=0 DeviceName a1eb9d56a1d096dd
+Mv7Plus Auto adv=false muted=true locked=true Info band=0 FactoryReset 30e1e4e32ba58aa1
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedBehavior 34be8407395cae1f
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedBrightness a238b16724e2a27b
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedTheme e70341d798e97303

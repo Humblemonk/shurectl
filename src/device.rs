@@ -511,17 +511,13 @@ impl ShureDevice {
     /// an error (the device is gone). A timeout or an unrecognised reply is
     /// recorded in `readback`, and fails it when the readback finishes.
     fn query(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
-        let reply = self.send_get(pkt)?;
-        readback.apply(self.model, pkt, reply.as_ref(), Need::Required);
-        Ok(())
+        self.query_as(pkt, Need::Required, readback)
     }
 
-    /// [`Self::query`] for a GET unchecked on this model's hardware or
-    /// unavailable on some firmware: without a usable reply, its setting is
-    /// noted in [`Readback::skipped`].
-    fn query_optional(&self, pkt: &[u8], readback: &mut Readback) -> Result<()> {
+    /// [`Self::query`] for a GET that may go unanswered, as `need` says.
+    fn query_as(&self, pkt: &[u8], need: Need, readback: &mut Readback) -> Result<()> {
         let reply = self.send_get(pkt)?;
-        readback.apply(self.model, pkt, reply.as_ref(), Need::Optional);
+        readback.apply(self.model, pkt, reply.as_ref(), need);
         Ok(())
     }
 
@@ -544,7 +540,7 @@ impl ShureDevice {
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<Readback> {
         let mut readback = Readback::default();
-        readback.state.mute_btn_available = false;
+        readback.state.mute_btn_disabled = None;
         match self.model {
             DeviceModel::Mvx2u => self.get_state_mvx2u(&mut readback),
             DeviceModel::Mvx2uGen2 => self.get_state_mvx2u_gen2(&mut readback),
@@ -643,7 +639,7 @@ impl ShureDevice {
         // stop every write.
         let playback_mix = cmd_get_mv7_playback_mix(self.next_seq());
         match self.model {
-            DeviceModel::Mv6 => self.query_optional(&playback_mix, readback)?,
+            DeviceModel::Mv6 => self.query_as(&playback_mix, Need::Optional, readback)?,
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6Gen2
@@ -689,10 +685,17 @@ impl ShureDevice {
             cmd_get_mv6_tone,
         ];
         self.run_getters(getters, readback)?;
-        // MV7+ firmware 1.3.0.13 returns an unrecognised response to this GET
-        // (read-only hardware probe, 2026-10-19). Do not guess the button state.
+        // The MV7+ has this setting from firmware 1.4.0, and 1.3.0.13 answers
+        // the GET with an unrecognised reply (see cmd_get_mv6_mute_btn_disable()).
+        // Do not guess the button state: it stays None.
         let skipped_before_mute_button = readback.skipped.len();
-        self.query_optional(&cmd_get_mv6_mute_btn_disable(self.next_seq()), readback)?;
+        self.query_as(
+            &cmd_get_mv6_mute_btn_disable(self.next_seq()),
+            Need::Optional,
+            readback,
+        )?;
+        let mute_button_note = (readback.skipped.len() > skipped_before_mute_button)
+            .then_some(skipped_before_mute_button);
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_mv6_mix, // Mic Level (prefix=0x00)
             cmd_get_mv7_playback_mix,
@@ -715,10 +718,15 @@ impl ShureDevice {
             cmd_get_serial,
         ];
         self.run_getters(getters, readback)?;
-        // Firmware is read above without changing GET order. An old firmware's
-        // unavailable button is explained on its card, not as a read error.
-        if readback.state.mute_button_needs_firmware(self.model) {
-            readback.skipped.truncate(skipped_before_mute_button);
+        // Firmware is read above without changing GET order. On firmware that
+        // predates the setting, its card says so, so it isn't a read error.
+        if let Some(index) = mute_button_note
+            && readback
+                .state
+                .mute_button_needs_firmware(self.model)
+                .is_some()
+        {
+            readback.skipped.remove(index);
         }
         Ok(())
     }
@@ -1235,7 +1243,8 @@ pub struct Readback {
 #[derive(Clone, Copy)]
 enum Need {
     Required,
-    /// Unconfirmed on the model's hardware, or unavailable on some firmware.
+    /// Unconfirmed on the model's hardware, or missing from some firmware:
+    /// noted in [`Readback::skipped`].
     Optional,
 }
 

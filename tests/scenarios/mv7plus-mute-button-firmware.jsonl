@@ -1,7 +1,7 @@
 {"models":["mv7plus"],"modes":["fake"],"scenario":"mv7plus-mute-button-firmware","size":[120,40]}
-{"device": {"firmware": "1.3.0.13", "unanswered_get": "MUTE_BUTTON"}}
+{"device": {"firmware": "1.3.0.13", "refused_get": "MUTE_BUTTON"}}
 {"key": "r"}
-{"expect": {"get": "MUTE_BUTTON", "status": "State refreshed from device.", "status_is_error": false, "state": {"firmware_version": "1.3.0.13", "mute_btn_available": false}}}
+{"expect": {"get": "MUTE_BUTTON", "status": "State refreshed from device.", "status_is_error": false, "state": {"firmware_version": "1.3.0.13", "mute_btn_disabled": null}}}
 {"key": "Tab", "repeat": 2}
 {"expect": {"screen_contains": ["Firmware: 1.3.0.13", "Needs firmware 1.4.0+"], "screen_not_contains": ["Couldn't read", "Unknown", "could not be read"]}}
 {"resize": [80, 24]}
@@ -9,10 +9,10 @@
 {"click_on": "Mute Button"}
 {"key": "Enter"}
 {"key": "Space"}
-{"expect": {"no_packets": true, "status": "Mute Button needs firmware 1.4.0+", "status_is_error": false, "state": {"mute_btn_available": false, "mute_btn_disabled": false}}}
+{"expect": {"no_packets": true, "status": "Mute Button needs firmware 1.4.0+", "status_is_error": true, "state": {"mute_btn_disabled": null}}}
 {"device": {"firmware": "1.4.0"}}
 {"key": "r"}
-{"expect": {"status": "optional setting", "screen_contains": ["Pressing it: Unknown", "Unavailable"], "screen_not_contains": "Needs firmware", "state": {"firmware_version": "1.4.0", "mute_btn_available": false}}}
+{"expect": {"status": "optional setting", "screen_contains": ["Pressing it: Unknown", "Unavailable"], "screen_not_contains": "Needs firmware", "state": {"firmware_version": "1.4.0", "mute_btn_disabled": null}}}
 {"key": "Enter"}
 {"expect": {"no_packets": true, "status_is_error": true, "status": "Mute Button unavailable"}}
 {"device": {"firmware": "1.6.0.1"}}
@@ -23,6 +23,6 @@
 {"expect": {"status": "optional setting", "screen_contains": "Pressing it: Unknown", "screen_not_contains": "Needs firmware", "state": {"firmware_version": "Unknown"}}}
 {"key": "Enter"}
 {"expect": {"no_packets": true, "status_is_error": true, "status": "Mute Button unavailable"}}
-{"device": {"firmware": "1.3.0.13", "unanswered_get": null}}
+{"device": {"firmware": "1.3.0.13", "refused_get": null}}
 {"key": "r"}
-{"expect": {"get": "MUTE_BUTTON", "screen_contains": "Pressing it: Works", "screen_not_contains": ["Needs firmware", "Couldn't read"], "state": {"mute_btn_available": true}}}
+{"expect": {"get": "MUTE_BUTTON", "screen_contains": "Pressing it: Works", "screen_not_contains": ["Needs firmware", "Couldn't read"], "state": {"mute_btn_disabled": false}}}

@@ -348,7 +348,12 @@ fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
     let write_monitor_mix = apply_preset_to_state(&slot, &mut state, model);
     let refused = apply_preset_to_device(&Some(dev), &slot, &state, model, write_monitor_mix)
         .context("Could not load preset")?;
-    println!("Loaded \"{}\".{}", slot.name, refused_note(&refused));
+    println!(
+        "Loaded \"{}\".{}{}",
+        slot.name,
+        refused_note(&refused),
+        unread_note(&slot, &state, model)
+    );
     Ok(())
 }
 
@@ -829,7 +834,7 @@ fn apply_action(
         return;
     }
     if matches!(action, DeviceAction::SetMv6MuteBtnDisable(_))
-        && !app.device_state.mute_btn_available
+        && app.device_state.mute_btn_disabled.is_none()
     {
         app.report_unavailable_mute_button();
         return;
@@ -1127,7 +1132,12 @@ fn apply_action(
                     write_monitor_mix,
                 )
                 .and_then(|refused| {
-                    let message = format!("Loaded \"{}\".{}", slot.name, refused_note(&refused));
+                    let message = format!(
+                        "Loaded \"{}\".{}{}",
+                        slot.name,
+                        refused_note(&refused),
+                        unread_note(slot, &app.device_state, app.device_model)
+                    );
                     if refused.is_empty() {
                         app.set_ok(message);
                     } else {
@@ -1516,6 +1526,18 @@ fn refused_note(refused: &[String]) -> String {
     }
 }
 
+/// Status suffix for a saved Mute Button the load left alone because the
+/// device's couldn't be read (`PresetSlot::apply_to_device_state()`).
+fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceModel) -> String {
+    if slot.mute_btn_disabled.is_none() || state.mute_btn_disabled.is_some() {
+        return String::new();
+    }
+    match state.mute_button_needs_firmware(model) {
+        Some(firmware) => format!(" Mute Button not loaded: it needs firmware {firmware}+."),
+        None => " Mute Button not loaded: its state could not be read.".into(),
+    }
+}
+
 /// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
 /// Monitor Mix applies, for `apply_preset_to_device()`.
 fn apply_preset_to_state(
@@ -1559,6 +1581,19 @@ fn write_playback_level(
 ) -> Result<()> {
     if slot.playback_mix > 0 {
         d.set_mv7_playback_mix(state.playback_mix)?;
+    }
+    Ok(())
+}
+
+/// Writes a preset's Mute Button when it saved one and the device's was read
+/// (`unread_note()` says when it wasn't).
+fn write_mute_button(
+    d: &ShureDevice,
+    slot: &PresetSlot,
+    state: &protocol::DeviceState,
+) -> Result<()> {
+    if let (Some(_), Some(disabled)) = (slot.mute_btn_disabled, state.mute_btn_disabled) {
+        d.set_mv6_mute_btn_disable(disabled)?;
     }
     Ok(())
 }
@@ -1676,9 +1711,7 @@ fn apply_binary_preset(
         }
         DeviceModel::Mv7Plus => {
             write_voice_settings(d, slot, state)?;
-            if slot.mute_btn_disabled.is_some() && state.mute_btn_available {
-                d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
-            }
+            write_mute_button(d, slot, state)?;
             write_limiter_and_compressor(d, slot, state)?;
             write_playback_level(d, slot, state)?;
             // The MV7+ saves its reverb and LED settings together.
@@ -1716,9 +1749,7 @@ fn write_mv6_settings(
     state: &protocol::DeviceState,
 ) -> Result<()> {
     write_voice_settings(d, slot, state)?;
-    if slot.mute_btn_disabled.is_some() && state.mute_btn_available {
-        d.set_mv6_mute_btn_disable(state.mute_btn_disabled)?;
-    }
+    write_mute_button(d, slot, state)?;
     write_playback_level(d, slot, state)
 }
 
@@ -2017,16 +2048,18 @@ mod tests {
     fn unread_mute_button_is_never_saved_loaded_or_written() {
         let model = DeviceModel::Mv7Plus;
         let fake = FakeDevice::new(model);
-        fake.faults_mut(|faults| faults.unanswered_get = Some("MUTE_BUTTON".into()));
+        fake.faults_mut(|faults| faults.refused_get = Some("MUTE_BUTTON".into()));
         let mut device = Some(fake.open());
         let readback = device
             .as_ref()
             .expect("device")
             .get_state()
             .expect("readback");
-        assert!(!readback.state.mute_btn_available);
+        assert_eq!(readback.state.mute_btn_disabled, None);
         assert_eq!(readback.state.gain_tenths, 240);
         assert_eq!(readback.state.factory_serial, "FAKE0001");
+        // The fake's firmware isn't one known to predate the setting, so this
+        // is a read failure the status bar reports.
         assert_eq!(readback.skipped.len(), 1);
         assert!(readback.skipped[0].contains("Mute Button"));
 
@@ -2053,23 +2086,34 @@ mod tests {
             ..saved
         };
         apply_preset_to_state(&slot, &mut app.device_state, model);
-        assert!(!app.device_state.mute_btn_disabled);
-        assert!(!app.device_state.mute_btn_available);
+        assert_eq!(app.device_state.mute_btn_disabled, None);
+        assert_eq!(
+            unread_note(&slot, &app.device_state, model),
+            " Mute Button not loaded: its state could not be read."
+        );
+        let old_firmware = DeviceState {
+            firmware_version: "1.3.0.13".into(),
+            ..app.device_state.clone()
+        };
+        assert_eq!(
+            unread_note(&slot, &old_firmware, model),
+            " Mute Button not loaded: it needs firmware 1.4.0+."
+        );
         apply_preset_to_device(&device, &slot, &app.device_state, model, true)
             .expect("load other settings");
         assert!(!fake.log_since(start).iter().any(|packet| {
             matches!(&packet.kind, fake_hid::PacketKind::Set { feature, .. }
                 if feature == "MUTE_BUTTON")
         }));
-        fake.faults_mut(|faults| faults.unanswered_get = None);
+        fake.faults_mut(|faults| faults.refused_get = None);
         let state = device
             .as_ref()
             .expect("device")
             .get_state()
             .expect("readback")
             .state;
-        assert!(state.mute_btn_available);
-        assert!(!state.mute_btn_disabled);
+        assert_eq!(state.mute_btn_disabled, Some(false));
+        assert_eq!(unread_note(&slot, &state, model), "");
     }
 
     #[test]
@@ -2081,13 +2125,13 @@ mod tests {
         let mv6_gen2 = FakeDevice::with_state(
             DeviceModel::Mv6Gen2,
             DeviceState {
-                mute_btn_disabled: true,
+                mute_btn_disabled: Some(true),
                 denoiser_level: 80,
                 ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
             },
         );
         let after = load_on_fake(&mv6_gen2, &gen2, DeviceState::default());
-        assert!(after.mute_btn_disabled);
+        assert_eq!(after.mute_btn_disabled, Some(true));
         assert_eq!(after.denoiser_level, 80);
 
         // Its EQ bands carry no on/off switch, which only the Gen 1 has.
@@ -2469,7 +2513,7 @@ mod tests {
             }),
             denoiser_enabled: true,
             popper_stopper_enabled: false,
-            mute_btn_disabled: true,
+            mute_btn_disabled: Some(true),
             tone: 3,
             mv6_gain_locked: true,
             adaptation_rate_fast: true,
