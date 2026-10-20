@@ -8,7 +8,7 @@
 //! page's JavaScript on 2026-10-20 and can change without notice, so any
 //! failure leaves the Info tab showing only the installed version.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
@@ -155,9 +155,10 @@ fn request_body() -> Value {
 }
 
 /// Keep the highest version per item; results come in no particular order.
-/// Entries whose version isn't three or four numbers are skipped. A reply
-/// spanning more than one page is refused, since the newest release could be on
-/// a page not read.
+/// An item with any entry whose version isn't three or four numbers is left
+/// out, since that entry could be its newest release: "1.7.0-hotfix" skipped
+/// would make 1.6.0 read as up to date. A reply spanning more than one page is
+/// refused for the same reason.
 fn parse_response(body: &str) -> Result<LatestFirmware> {
     let response: Value =
         serde_json::from_str(body).context("firmware archive reply isn't JSON")?;
@@ -169,14 +170,15 @@ fn parse_response(body: &str) -> Result<LatestFirmware> {
         .as_array()
         .context("firmware archive reply has no results")?;
     let mut latest = LatestFirmware::default();
+    let mut unreadable = HashSet::new();
     for result in results {
-        let (Some(item), Some(version)) = (
-            result["itemname"]["raw"].as_str(),
-            result["versionnumber"]["raw"].as_str(),
-        ) else {
+        // An entry without an item name can't be counted against any model.
+        let Some(item) = result["itemname"]["raw"].as_str() else {
             continue;
         };
-        let Some(parsed) = parse_firmware(version) else {
+        let version = result["versionnumber"]["raw"].as_str();
+        let (Some(version), Some(parsed)) = (version, version.and_then(parse_firmware)) else {
+            unreadable.insert(item);
             continue;
         };
         let newer = latest
@@ -190,6 +192,9 @@ fn parse_response(body: &str) -> Result<LatestFirmware> {
                 .insert(item.to_string(), version.to_string());
         }
     }
+    latest
+        .versions
+        .retain(|item, _| !unreadable.contains(item.as_str()));
     anyhow::ensure!(
         !latest.versions.is_empty(),
         "firmware archive lists no firmware"
@@ -316,16 +321,45 @@ mod tests {
     fn newest_version_wins_whatever_the_order() {
         let body = reply(
             json!([
-                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.10.0"}},
                 {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.9.0"}},
-                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "beta"}},
-                {"itemname": {"raw": "MV6"}},
+                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.10.0"}},
+                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.2.0"}},
             ]),
             1,
         );
         let latest = parse_response(&body).expect("parses");
         assert_eq!(latest.versions["mv7plus"], "1.10.0");
-        assert!(!latest.versions.contains_key("MV6"));
+    }
+
+    #[test]
+    fn a_model_with_an_unreadable_entry_gets_no_status() {
+        for unreadable in [
+            json!({"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.7.0-hotfix"}}),
+            json!({"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "v1.7.0"}}),
+            json!({"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.7.0 "}}),
+            json!({"itemname": {"raw": "mv7plus"}}),
+        ] {
+            let body = reply(
+                json!([
+                    {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.6.0"}},
+                    unreadable,
+                    {"itemname": {"raw": "MV6"}, "versionnumber": {"raw": "1.3.0"}},
+                    {"versionnumber": {"raw": "9.9.9-beta"}},
+                ]),
+                1,
+            );
+            let latest = parse_response(&body).expect("MV6 still parses");
+            assert_eq!(
+                latest.status(DeviceModel::Mv7Plus, "1.6.0.1"),
+                None,
+                "{unreadable}"
+            );
+            assert_eq!(
+                latest.status(DeviceModel::Mv6, "1.3.0.6"),
+                Some(FirmwareStatus::UpToDate),
+                "{unreadable}"
+            );
+        }
     }
 
     #[test]
