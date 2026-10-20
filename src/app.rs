@@ -239,6 +239,22 @@ impl App {
         self.set_status(msg, true);
     }
 
+    /// Refuse a Mute Button change while its state is unread, and say why:
+    /// first a device that hasn't been read at all, as for any other write.
+    pub fn report_unavailable_mute_button(&mut self) {
+        if self.state_unread {
+            self.set_err(STATE_UNREAD_HINT);
+            return;
+        }
+        match self
+            .device_state
+            .mute_button_needs_firmware(self.device_model)
+        {
+            Some(firmware) => self.set_err(format!("Mute Button needs firmware {firmware}+")),
+            None => self.set_err(MUTE_BTN_UNREAD),
+        }
+    }
+
     // ── Tab navigation ────────────────────────────────────────────────────────
 
     /// Returns true when a tab does not exist on this model at all (Reverb
@@ -1275,10 +1291,12 @@ impl App {
                 ))
             }
             Focus::MuteBtnDisable => {
-                self.device_state.mute_btn_disabled = !self.device_state.mute_btn_disabled;
-                Some(DeviceAction::SetMv6MuteBtnDisable(
-                    self.device_state.mute_btn_disabled,
-                ))
+                let Some(disabled) = self.device_state.mute_btn_disabled else {
+                    self.report_unavailable_mute_button();
+                    return None;
+                };
+                self.device_state.mute_btn_disabled = Some(!disabled);
+                Some(DeviceAction::SetMv6MuteBtnDisable(!disabled))
             }
             Focus::ReverbOutput => {
                 self.device_state.reverb_on_output = !self.device_state.reverb_on_output;
@@ -1367,6 +1385,12 @@ impl App {
         }
     }
 }
+
+/// Status for a write refused because the device's settings haven't been read.
+pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
+
+/// Status for a Mute Button change refused because its state wasn't read.
+const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";
 
 /// Commands to send to the device, produced by App but executed by main.
 #[derive(Debug)]

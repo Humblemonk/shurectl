@@ -19,6 +19,8 @@ Which controls each model has is listed under [Device support](#device-support).
 
 ## Install
 
+Before using shurectl, update your device's firmware with Shure's MOTIV mobile app.
+
 **Arch Linux (AUR)** — includes the udev rules; replug the device after installing.
 
 ```bash
@@ -161,7 +163,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | ✓ | — | ✓ |
 | Denoiser | — | ✓ | ✓ | ✓, level 1–100% | — | ✓ |
 | Popper Stopper | — | ✓ | ✓ | ✓ | — | ✓ |
-| Mute Button (Works / Ignored) | — | — | ✓ | ✓ | — | ✓ |
+| Mute Button (Works / Ignored) | — | — | ✓ | ✓ | — | ✓, firmware 1.4.0+ |
 | **Other tabs** | | | | | | |
 | Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | — | ✓ |
 | LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |

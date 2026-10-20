@@ -102,6 +102,11 @@ pub struct Faults {
     pub fail_io: bool,
     /// Commands to answer with an unknown address (binary) or `[Failed]` (MV7).
     pub refuse: usize,
+    /// Feature whose GETs are answered with an unknown address, as `refuse`
+    /// does, until cleared.
+    pub refused_get: Option<String>,
+    /// Firmware version for FIRMWARE GETs to answer with, until cleared.
+    pub firmware_version: Option<String>,
 }
 
 type ValueOf = Box<dyn Fn(&DeviceState) -> Vec<u8>>;
@@ -297,7 +302,7 @@ fn features(model: DeviceModel) -> Vec<Feature> {
         ),
         set_feature(
             "MUTE_BUTTON",
-            |s| cmd_set_mv6_mute_btn_disable(0, s.mute_btn_disabled),
+            |s| cmd_set_mv6_mute_btn_disable(0, s.mute_btn_disabled.unwrap_or_default()),
             Some(|s| json!(s.mute_btn_disabled)),
         ),
         set_feature(
@@ -615,18 +620,34 @@ impl FakeState {
         match request {
             Request::Get(key) => {
                 let feature = self.feature_name(key);
+                let refused = if self.faults.refused_get.as_deref() == Some(feature.as_str()) {
+                    true
+                } else if self.faults.refuse > 0 {
+                    self.faults.refuse -= 1;
+                    true
+                } else {
+                    false
+                };
+                let firmware_version = (feature == "FIRMWARE")
+                    .then_some(self.faults.firmware_version.as_deref())
+                    .flatten();
                 self.log.push(Packet {
                     raw,
                     kind: PacketKind::Get { feature },
                 });
-                if self.faults.refuse > 0 {
-                    self.faults.refuse -= 1;
+                if refused {
                     let unknown = Key {
                         addr: UNKNOWN_ADDR,
                         ..key
                     };
                     self.input
                         .push_back(fake_wire::reply(seq, unknown, &[0x00]));
+                } else if let Some(version) = firmware_version {
+                    self.input.push_back(fake_wire::reply(
+                        seq,
+                        key,
+                        &fake_wire::lp_string(version),
+                    ));
                 } else if let Some(value) = self.store.get(&key) {
                     self.input.push_back(fake_wire::reply(seq, key, value));
                 }
@@ -923,7 +944,7 @@ mod tests {
             locked: true,
             denoiser_enabled: true,
             popper_stopper_enabled: false,
-            mute_btn_disabled: true,
+            mute_btn_disabled: Some(true),
             tone: -4,
             mv6_gain_locked: true,
             adaptation_rate_fast: true,
@@ -999,6 +1020,20 @@ mod tests {
                 );
             }
             assert_eq!(readback.state.factory_serial, "FAKE0001", "{model:?}");
+        }
+    }
+
+    #[test]
+    fn refused_required_get_still_fails_readback() {
+        for (model, feature, label) in [
+            (DeviceModel::Mv7Plus, "GAIN", "Gain"),
+            (DeviceModel::Mv6, "MUTE_BUTTON", "Mute Button"),
+            (DeviceModel::Mv6Gen2, "MUTE_BUTTON", "Mute Button"),
+        ] {
+            let fake = FakeDevice::new(model);
+            fake.faults_mut(|faults| faults.refused_get = Some(feature.into()));
+            let error = fake.open().get_state().err().expect("readback must fail");
+            assert!(error.to_string().contains(label), "{model:?}: {error}");
         }
     }
 

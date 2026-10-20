@@ -6,6 +6,26 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.14.0 — 2026-10-20
+
+The MV7+ works again on firmware older than 1.4.0.
+
+### Fixed
+
+- **MV7+:** on firmware older than 1.4.0, shurectl reads and changes the mic's settings
+  again, and `--mute` works. Since 2.13.1 it refused every change with "Couldn't read a
+  setting: no usable reply to Mute Button", because that firmware doesn't have the Mute
+  Button setting.
+
+### Changed
+
+- **MV7+:** the Mute Button setting needs firmware 1.4.0 or newer. On older firmware, the
+  Summary and the Mute Button card say so, and the card shows your firmware version. Update
+  the mic with Shure's MOTIV app to use it.
+- **MV7+:** if shurectl can't read the Mute Button setting, it shows Unknown and can't be
+  changed, instead of blocking every other setting. Presets neither save nor load it then,
+  and a preset load says it was left out.
+
 ## 2.13.2 — 2026-10-17
 
 Clearer errors when shurectl can't read a setting.

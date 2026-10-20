@@ -1438,7 +1438,11 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
             }
         }
         SummaryRow::PopperStopper => on_off(ds.popper_stopper_enabled),
-        SummaryRow::MuteButton => mute_btn_span(ds.mute_btn_disabled),
+        SummaryRow::MuteButton => match ds.mute_button_needs_firmware(model) {
+            // "Needs firmware …" would be cut at 80x24; the card says it in full.
+            Some(firmware) => text(format!("Needs {firmware}+")),
+            None => mute_btn_span(ds.mute_btn_disabled),
+        },
         SummaryRow::Hpf => text(ds.hpf.to_string()),
         SummaryRow::ReverbOutput => on_off(ds.reverb_on_output),
         SummaryRow::ReverbMonitor => on_off(ds.reverb_monitoring),
@@ -1933,24 +1937,48 @@ fn draw_popper_stopper_card(f: &mut UiFrame, app: &App, area: Rect) {
 /// "Mute Button: ON" reads as the mic being muted.
 fn draw_mute_btn_card(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::MuteBtnDisable);
+    let read = app.device_state.mute_btn_disabled.is_some();
+    let needs_firmware = app
+        .device_state
+        .mute_button_needs_firmware(app.device_model)
+        .map(|firmware| format!("Needs firmware {firmware}+."));
     let card = StatusCard {
         title: "Mute Button",
-        status: vec![Line::from(vec![
-            Span::styled("Pressing it: ", Style::default().fg(C_DIM)),
-            mute_btn_span(app.device_state.mute_btn_disabled),
-        ])],
-        description: "Whether pressing the mic's mute button mutes it.",
-        hint: "[Enter] toggle",
+        status: vec![Line::from(match &needs_firmware {
+            Some(_) => vec![
+                Span::styled("Firmware: ", Style::default().fg(C_DIM)),
+                Span::styled(
+                    &app.device_state.firmware_version,
+                    Style::default().fg(C_TEXT),
+                ),
+            ],
+            None => vec![
+                Span::styled("Pressing it: ", Style::default().fg(C_DIM)),
+                mute_btn_span(app.device_state.mute_btn_disabled),
+            ],
+        })],
+        description: if read {
+            "Whether pressing the mic's mute button mutes it."
+        } else if let Some(needs_firmware) = &needs_firmware {
+            needs_firmware
+        } else {
+            "Unavailable: its state could not be read."
+        },
+        hint: if read {
+            "[Enter] toggle"
+        } else {
+            "🔒 Unavailable"
+        },
     };
     draw_status_card(f, app.focus == Focus::MuteBtnDisable, card, area);
 }
 
 /// The physical mute button's state for the card and the Summary.
-fn mute_btn_span(disabled: bool) -> Span<'static> {
-    if disabled {
-        Span::styled("Ignored", Style::default().fg(C_WARN))
-    } else {
-        Span::styled("Works", Style::default().fg(C_TEXT))
+fn mute_btn_span(disabled: Option<bool>) -> Span<'static> {
+    match disabled {
+        None => Span::styled("Unknown", Style::default().fg(C_WARN)),
+        Some(true) => Span::styled("Ignored", Style::default().fg(C_WARN)),
+        Some(false) => Span::styled("Works", Style::default().fg(C_TEXT)),
     }
 }
 
@@ -3205,7 +3233,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
-            ("  Mute Button  : ", "Works / Ignored"),
+            ("  Mute Button  : ", "Works / Ignored (firmware 1.4.0+)"),
             ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             (
                 "  Reverb       : ",
@@ -3379,6 +3407,28 @@ mod tests {
         DeviceModel::Mv7,
         DeviceModel::Mv7Plus,
     ];
+
+    /// The Info tab's Capabilities list is static text, so it can't read
+    /// `mute_button_firmware()`; check that it names the same firmware.
+    #[test]
+    fn info_tab_names_the_mute_button_firmware() {
+        for model in MODELS {
+            let Some(firmware) = model.mute_button_firmware() else {
+                continue;
+            };
+            let app = App {
+                device_model: model,
+                active_tab: Tab::Info,
+                ..App::default()
+            };
+            let (text, _) = render_text(draw, &app, 120, 40);
+            let row = format!("Works / Ignored (firmware {firmware}+)");
+            assert!(
+                text.contains(&row),
+                "{model:?} Info tab lacks {row:?}:\n{text}"
+            );
+        }
+    }
 
     #[test]
     fn summary_rows_keep_the_shared_order() {

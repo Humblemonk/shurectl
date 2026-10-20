@@ -431,6 +431,24 @@ impl Harness {
                         "drop_acks" => fake.faults_mut(|f| f.drop_acks = count),
                         "extra_acks" => fake.faults_mut(|f| f.extra_acks = count),
                         "refuse" => fake.faults_mut(|f| f.refuse = count),
+                        "refused_get" => {
+                            let feature = match amount {
+                                Value::Null => None,
+                                Value::String(name) if fake.feature_names().contains(name) => {
+                                    Some(name.clone())
+                                }
+                                _ => bail!("\"refused_get\" takes a feature name or null"),
+                            };
+                            fake.faults_mut(|f| f.refused_get = feature);
+                        }
+                        "firmware" => {
+                            let version = match amount {
+                                Value::Null => None,
+                                Value::String(version) => Some(version.clone()),
+                                _ => bail!("\"firmware\" takes a version string or null"),
+                            };
+                            fake.faults_mut(|f| f.firmware_version = version);
+                        }
                         "fail_io" => {
                             fake.faults_mut(|f| f.fail_io = amount.as_bool().unwrap_or(false))
                         }
