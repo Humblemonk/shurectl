@@ -29,6 +29,7 @@ mod device;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod fake_hid;
+mod firmware;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod harness;
@@ -39,7 +40,7 @@ mod protocol;
 mod ui;
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -250,7 +251,8 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_event_loop(&mut terminal, &mut app, &mut device);
+    let latest_firmware = (!demo_mode).then(firmware::spawn_check);
+    let result = run_event_loop(&mut terminal, &mut app, &mut device, latest_firmware);
 
     drop(terminal);
     drop(cleanup);
@@ -431,12 +433,19 @@ fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     device: &mut Option<ShureDevice>,
+    latest_firmware: Option<mpsc::Receiver<firmware::LatestFirmware>>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
     let mut loop_state = LoopState::new(Instant::now());
 
     loop {
+        if let Some(latest) = latest_firmware
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
+            app.latest_firmware = Some(latest);
+        }
         let mut hits = mouse::HitMap::default();
         let mut fits = true;
         terminal.draw(|f| {

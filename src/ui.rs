@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus, Tab};
+use crate::firmware::FirmwareStatus;
 use crate::mouse::{HitMap, Target};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
@@ -3082,10 +3083,26 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     ]));
 
     if ds.firmware_version != "Unknown" {
-        lines.push(Line::from(vec![
+        let mut row = vec![
             Span::styled("  Firmware     : ", Style::default().fg(C_DIM)),
             Span::styled(&*ds.firmware_version, Style::default().fg(C_TEXT)),
-        ]));
+        ];
+        // Nothing is added until Shure's archive answers, or if it can't.
+        match app
+            .latest_firmware
+            .as_ref()
+            .and_then(|latest| latest.status(model, &ds.firmware_version))
+        {
+            Some(FirmwareStatus::UpToDate) => {
+                row.push(Span::styled("  Up to date", Style::default().fg(C_SUCCESS)));
+            }
+            Some(FirmwareStatus::UpdateAvailable(newest)) => row.push(Span::styled(
+                format!("  Update {newest} available in the MOTIV app"),
+                Style::default().fg(C_WARN),
+            )),
+            None => {}
+        }
+        lines.push(Line::from(row));
     }
 
     lines.push(Line::from(vec![
@@ -3427,6 +3444,45 @@ mod tests {
                 text.contains(&row),
                 "{model:?} Info tab lacks {row:?}:\n{text}"
             );
+        }
+    }
+
+    /// The firmware status shows in full at 80x24, on every model the archive
+    /// is compared for, and on no other.
+    #[test]
+    fn info_tab_shows_the_firmware_status() {
+        let latest = || {
+            crate::firmware::latest_for_tests(&[
+                ("mvx2u", "1.12.0"),
+                ("mvx2u-gen2", "1.12.0"),
+                ("MV6", "1.12.0"),
+                ("mv6-gen2", "1.12.0"),
+                ("mv7plus", "1.12.0"),
+            ])
+        };
+        for model in MODELS {
+            for (installed, status) in [
+                ("1.11.0.123", "Update 1.12.0 available in the MOTIV app"),
+                ("1.12.0.123", "Up to date"),
+            ] {
+                let app = App {
+                    device_model: model,
+                    active_tab: Tab::Info,
+                    device_state: crate::protocol::DeviceState {
+                        firmware_version: installed.into(),
+                        ..crate::protocol::DeviceState::default()
+                    },
+                    latest_firmware: Some(latest()),
+                    ..App::default()
+                };
+                let (text, _) = render_text(draw, &app, MIN_SIZE.0, MIN_SIZE.1);
+                let row = format!("Firmware     : {installed}  {status}");
+                assert_eq!(
+                    text.contains(&row),
+                    model != DeviceModel::Mv7,
+                    "{model:?} Info tab, {row:?}:\n{text}"
+                );
+            }
         }
     }
 

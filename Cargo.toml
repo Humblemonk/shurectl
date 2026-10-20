@@ -1,6 +1,6 @@
 [package]
 name = "shurectl"
-version = "2.14.0"
+version = "2.14.1"
 edition = "2024"
 rust-version = "1.88"
 default-run = "shurectl"
@@ -28,7 +28,7 @@ required-features = ["qa"]
 probe = []
 # Maintainer and CI only: `--qa` and `--fake-device`, the headless JSON-lines
 # driver used by tests/e2e.rs and agent QA passes. Never enabled for releases.
-qa = ["dep:serde_json"]
+qa = []
 
 [dependencies]
 ratatui = "0.30"
@@ -39,7 +39,9 @@ cpal = "0.18.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 dirs-next = "2.0"
-serde_json = { version = "1", optional = true }
+serde_json = "1"
+# Firmware archive lookup for the Info tab (firmware.rs). rustls, so no OpenSSL.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 [target.'cfg(unix)'.dependencies]
 # libc is used solely for the stderr suppressor in meter.rs (dup/dup2).
@@ -57,7 +59,6 @@ hidapi = { version = "2.4.1", default-features = false, features = ["macos-share
 hidapi = "2.4.1"
 
 [dev-dependencies]
-serde_json = "1"
 portable-pty = "0.9"
 
 [profile.release]

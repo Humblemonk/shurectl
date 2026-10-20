@@ -6,6 +6,17 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.14.1 — 2026-10-20
+
+The Info tab says whether your firmware is up to date.
+
+### Added
+
+- The Info tab's Firmware row says "Up to date", or which newer version Shure has released
+  and that it's in the MOTIV app. shurectl looks this up in Shure's online firmware archive
+  at startup; without a connection, the row shows only your version, as before. Every
+  model except the MV7, whose firmware reports its version differently from the archive.
+
 ## 2.14.0 — 2026-10-20
 
 The MV7+ works again on firmware older than 1.4.0.

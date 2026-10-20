@@ -833,7 +833,7 @@ const MV7_PLUS_MUTE_BUTTON_FIRMWARE: &str = "1.4.0";
 
 /// A firmware version of three or four dot-separated numbers, padded to four,
 /// so versions compare in order. `None` for anything else ("Unknown").
-fn parse_firmware(version: &str) -> Option<[u32; 4]> {
+pub fn parse_firmware(version: &str) -> Option<[u32; 4]> {
     let mut parts = [0_u32; 4];
     let mut count = 0;
     for part in version.split('.') {

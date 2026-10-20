@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crossterm::event::KeyCode;
 
+use crate::firmware::LatestFirmware;
 use crate::meter::PeakWindow;
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
@@ -195,6 +196,9 @@ pub struct App {
     /// The time the meter is read at; `None` reads the system clock. The `--qa`
     /// harness sets its fake clock here, so peak-hold expiry follows `tick`.
     pub meter_clock: Option<Instant>,
+    /// The newest firmware Shure lists for each model, once the background
+    /// lookup answers. `None` before then, in demo mode, and if it failed.
+    pub latest_firmware: Option<LatestFirmware>,
 }
 
 impl Default for App {
@@ -221,6 +225,7 @@ impl Default for App {
             armed_preset_action: None,
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
             meter_clock: None,
+            latest_firmware: None,
         }
     }
 }
