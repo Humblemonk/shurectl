@@ -3448,12 +3448,11 @@ mod tests {
     }
 
     /// The firmware status shows in full at 80x24, on every model the archive
-    /// is compared for, and on no other.
+    /// is compared for, and on no other (firmware.rs `only_compared_models_are_looked_up`).
     #[test]
     fn info_tab_shows_the_firmware_status() {
         let latest = || {
             crate::firmware::latest_for_tests(&[
-                ("mvx2u", "1.12.0"),
                 ("mvx2u-gen2", "1.12.0"),
                 ("MV6", "1.12.0"),
                 ("mv6-gen2", "1.12.0"),
@@ -3479,7 +3478,7 @@ mod tests {
                 let row = format!("Firmware     : {installed}  {status}");
                 assert_eq!(
                     text.contains(&row),
-                    model != DeviceModel::Mv7,
+                    crate::firmware::is_compared(model),
                     "{model:?} Info tab, {row:?}:\n{text}"
                 );
             }

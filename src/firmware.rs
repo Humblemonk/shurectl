@@ -24,13 +24,15 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Every archive item `archive_item()` returns. The request names them all, so
 /// it doesn't say which model is connected.
-const ARCHIVE_ITEMS: [&str; 5] = ["mvx2u", "mvx2u-gen2", "MV6", "mv6-gen2", "mv7plus"];
+const ARCHIVE_ITEMS: [&str; 4] = ["mvx2u-gen2", "MV6", "mv6-gen2", "mv7plus"];
 
 /// The archive's item name for a model's firmware, `None` where the version the
 /// device reports can't be compared with the archive's.
 fn archive_item(model: DeviceModel) -> Option<&'static str> {
     match model {
-        DeviceModel::Mvx2u => Some("mvx2u"),
+        // Unconfirmed what version string the Gen 1 reports; a scheme like the
+        // MV7's would tell every Gen 1 an update is available.
+        DeviceModel::Mvx2u => None,
         DeviceModel::Mvx2uGen2 => Some("mvx2u-gen2"),
         DeviceModel::Mv6 => Some("MV6"),
         DeviceModel::Mv6Gen2 => Some("mv6-gen2"),
@@ -40,6 +42,12 @@ fn archive_item(model: DeviceModel) -> Option<&'static str> {
         DeviceModel::Mv7 => None,
         DeviceModel::Mv7Plus => Some("mv7plus"),
     }
+}
+
+/// Whether the Info tab can show a firmware status for this model, so the
+/// lookup is worth making.
+pub fn is_compared(model: DeviceModel) -> bool {
+    archive_item(model).is_some()
 }
 
 /// How the installed firmware compares with the newest the archive lists.
@@ -61,15 +69,16 @@ impl LatestFirmware {
     /// or the archive lists nothing for it.
     ///
     /// The archive lists three-part versions ("1.1.0") and devices report four
-    /// ("1.1.0.21"), so only the first three parts are compared. Pairs seen on
-    /// hardware: MV6 Gen 2 1.1.0.21 (2026-10-20), MV7+ 1.3.0.13 and 1.6.0.1
-    /// (2026-10-19/20), MV6 1.3.0.6, MVX2U Gen 2 1.2.0.6. Unconfirmed on the
-    /// MVX2U Gen 1.
+    /// ("1.1.0.21"); padded to four, the archive's release compares at or below
+    /// every build of it. Versions the devices report, all matching the
+    /// archive's first three parts: MV6 Gen 2 1.1.0.21 (shown in shurectl,
+    /// 2026-10-20), MVX2U Gen 2 1.2.0.6 (shown Up to date, 2026-10-20; MOTIV Mix
+    /// capture, 2026-10-12), MV7+ 1.3.0.13 (read-only probe, 2026-10-19) and
+    /// 1.6.0.1 (tested on hardware, 2026-10-20), MV6 1.3.0.6 (GET probe,
+    /// 2026-04-16).
     pub fn status(&self, model: DeviceModel, installed: &str) -> Option<FirmwareStatus<'_>> {
         let latest = self.versions.get(archive_item(model)?)?;
-        let installed = parse_firmware(installed)?;
-        let newest = parse_firmware(latest)?;
-        Some(if installed[..3] >= newest[..3] {
+        Some(if parse_firmware(installed)? >= parse_firmware(latest)? {
             FirmwareStatus::UpToDate
         } else {
             FirmwareStatus::UpdateAvailable(latest)
@@ -82,12 +91,17 @@ impl LatestFirmware {
 /// `try_recv()` and never waits on the network.
 pub fn spawn_check() -> mpsc::Receiver<LatestFirmware> {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        if let Ok(latest) = fetch() {
-            // The receiver is gone only when shurectl is quitting.
-            let _ = sender.send(latest);
-        }
-    });
+    // `Builder::spawn()` returns an error where `thread::spawn()` would panic,
+    // and a panic aborts shurectl. Without a thread, the sender is dropped and
+    // the receiver never gets a value.
+    let _ = thread::Builder::new()
+        .name("firmware-check".into())
+        .spawn(move || {
+            if let Ok(latest) = fetch() {
+                // The receiver is gone only when shurectl is quitting.
+                let _ = sender.send(latest);
+            }
+        });
     receiver
 }
 
@@ -123,10 +137,16 @@ fn request_body() -> Value {
 }
 
 /// Keep the highest version per item; results come in no particular order.
-/// Entries whose version isn't three or four numbers are skipped.
+/// Entries whose version isn't three or four numbers are skipped. A reply
+/// spanning more than one page is refused, since the newest release could be on
+/// a page not read.
 fn parse_response(body: &str) -> Result<LatestFirmware> {
     let response: Value =
         serde_json::from_str(body).context("firmware archive reply isn't JSON")?;
+    let pages = response["meta"]["page"]["total_pages"]
+        .as_u64()
+        .context("firmware archive reply has no page count")?;
+    anyhow::ensure!(pages <= 1, "firmware archive reply spans {pages} pages");
     let results = response["results"]
         .as_array()
         .context("firmware archive reply has no results")?;
@@ -188,11 +208,15 @@ mod tests {
         parse_response(body).expect("the recorded reply parses")
     }
 
+    /// A reply in the archive's shape, with the page count it reports.
+    fn reply(results: Value, total_pages: u64) -> String {
+        json!({"meta": {"page": {"total_pages": total_pages}}, "results": results}).to_string()
+    }
+
     #[test]
     fn recorded_reply_gives_the_newest_release_of_each_model() {
         let latest = recorded();
         let newest = [
-            (DeviceModel::Mvx2u, "1.2.1"),
             (DeviceModel::Mvx2uGen2, "1.2.0"),
             (DeviceModel::Mv6, "1.3.0"),
             (DeviceModel::Mv6Gen2, "1.1.0"),
@@ -218,11 +242,16 @@ mod tests {
     }
 
     #[test]
-    fn status_compares_the_first_three_parts() {
+    fn status_compares_installed_with_newest() {
         let latest = recorded();
-        // Seen on hardware: the MV6 Gen 2 on 1.1.0.21 is on the newest release.
+        // Seen on hardware: the MV6 Gen 2 on 1.1.0.21 and the MVX2U Gen 2 on
+        // 1.2.0.6 are on the newest release.
         assert_eq!(
             latest.status(DeviceModel::Mv6Gen2, "1.1.0.21"),
+            Some(FirmwareStatus::UpToDate)
+        );
+        assert_eq!(
+            latest.status(DeviceModel::Mvx2uGen2, "1.2.0.6"),
             Some(FirmwareStatus::UpToDate)
         );
         assert_eq!(
@@ -230,13 +259,19 @@ mod tests {
             Some(FirmwareStatus::UpdateAvailable("1.6.0"))
         );
         assert_eq!(
-            latest.status(DeviceModel::Mvx2u, "1.2.0"),
-            Some(FirmwareStatus::UpdateAvailable("1.2.1"))
+            latest.status(DeviceModel::Mv6, "1.2.0"),
+            Some(FirmwareStatus::UpdateAvailable("1.3.0"))
         );
         // Firmware newer than the archive lists is up to date, not an update.
         assert_eq!(
             latest.status(DeviceModel::Mvx2uGen2, "1.3.0.1"),
             Some(FirmwareStatus::UpToDate)
+        );
+        // A four-part archive version is a newer build of the same release.
+        let hotfix = latest_for_tests(&[("mv7plus", "1.6.0.2")]);
+        assert_eq!(
+            hotfix.status(DeviceModel::Mv7Plus, "1.6.0.1"),
+            Some(FirmwareStatus::UpdateAvailable("1.6.0.2"))
         );
     }
 
@@ -245,38 +280,58 @@ mod tests {
         let latest = recorded();
         assert_eq!(latest.status(DeviceModel::Mv7Plus, "Unknown"), None);
         assert_eq!(latest.status(DeviceModel::Mv7, "0.0.52.0"), None);
+        let with_gen1 = latest_for_tests(&[("mvx2u", "1.2.1")]);
+        assert_eq!(with_gen1.status(DeviceModel::Mvx2u, "1.2.0.1"), None);
         let only_mv6 = latest_for_tests(&[("MV6", "1.3.0")]);
         assert_eq!(only_mv6.status(DeviceModel::Mv6Gen2, "1.0.0.1"), None);
     }
 
     #[test]
+    fn only_compared_models_are_looked_up() {
+        for model in MODELS {
+            let expected = !matches!(model, DeviceModel::Mvx2u | DeviceModel::Mv7);
+            assert_eq!(is_compared(model), expected, "{model:?}");
+        }
+    }
+
+    #[test]
     fn newest_version_wins_whatever_the_order() {
-        let body = json!({"results": [
-            {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.10.0"}},
-            {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.9.0"}},
-            {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "beta"}},
-            {"itemname": {"raw": "MV6"}},
-        ]});
-        let latest = parse_response(&body.to_string()).expect("parses");
+        let body = reply(
+            json!([
+                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.10.0"}},
+                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.9.0"}},
+                {"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "beta"}},
+                {"itemname": {"raw": "MV6"}},
+            ]),
+            1,
+        );
+        let latest = parse_response(&body).expect("parses");
         assert_eq!(latest.versions["mv7plus"], "1.10.0");
         assert!(!latest.versions.contains_key("MV6"));
     }
 
     #[test]
     fn unusable_replies_are_errors() {
+        let release = json!([{"itemname": {"raw": "mv7plus"}, "versionnumber": {"raw": "1.6.0"}}]);
         // The archive's replies to a wrong key and a wrong engine (HTTP 401 and
         // 404, 2026-10-20), and other shapes it could change to.
         for body in [
-            "",
-            "<html>Moved</html>",
-            r#"{"error":"Invalid credentials"}"#,
-            r#"{"errors":["Could not find engine."]}"#,
-            r#"{"results":{}}"#,
-            r#"{"results":[]}"#,
-            r#"{"results":[{"title":{"raw":"MV7+"},"version":{"raw":"1.6.0"}}]}"#,
+            String::new(),
+            "<html>Moved</html>".into(),
+            r#"{"error":"Invalid credentials"}"#.into(),
+            r#"{"errors":["Could not find engine."]}"#.into(),
+            json!({"results": release}).to_string(),
+            reply(release.clone(), 2),
+            reply(json!({}), 1),
+            reply(json!([]), 0),
+            reply(
+                json!([{"title": {"raw": "MV7+"}, "version": {"raw": "1.6.0"}}]),
+                1,
+            ),
         ] {
-            assert!(parse_response(body).is_err(), "{body}");
+            assert!(parse_response(&body).is_err(), "{body}");
         }
+        assert!(parse_response(&reply(release, 1)).is_ok());
     }
 
     /// Asks the real archive: `cargo test -- --ignored`. Run it when the Info tab

@@ -251,7 +251,8 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let latest_firmware = (!demo_mode).then(firmware::spawn_check);
+    let latest_firmware =
+        (!demo_mode && firmware::is_compared(device_model)).then(firmware::spawn_check);
     let result = run_event_loop(&mut terminal, &mut app, &mut device, latest_firmware);
 
     drop(terminal);

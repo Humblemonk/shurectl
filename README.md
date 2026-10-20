@@ -169,7 +169,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
 | Rename device (Info tab) | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | Factory Reset (Info tab) | — | ✓ | — | ✓ | — | ✓ |
-| Firmware update check (Info tab) | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Firmware update check (Info tab) | — | ✓ | ✓ | ✓ | — | ✓ |
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
 firmware version), `--mute`, `--preset`, and `--demo`.

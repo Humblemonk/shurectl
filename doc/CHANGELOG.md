@@ -14,8 +14,9 @@ The Info tab says whether your firmware is up to date.
 
 - The Info tab's Firmware row says "Up to date", or which newer version Shure has released
   and that it's in the MOTIV app. shurectl looks this up in Shure's online firmware archive
-  at startup; without a connection, the row shows only your version, as before. Every
-  model except the MV7, whose firmware reports its version differently from the archive.
+  at startup; without a connection, the row shows only your version, as before. Not on
+  the MV7, whose firmware reports its version differently from the archive, or the MVX2U
+  Gen 1, whose version format is unconfirmed.
 
 ## 2.14.0 — 2026-10-20
 

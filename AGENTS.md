@@ -253,8 +253,9 @@ rather than promoting a lower one.
 - `ACK_TIMEOUT_MS` is 15 ms on every model
 - `unsafe` `dup`/`dup2` in `meter.rs` (silences ALSA/JACK probing)
 - `send_if_connected()` succeeding silently in demo mode
-- `firmware.rs` contacting Shure's firmware archive at every non-demo start, with no opt-out.
-  Its request names every compared model and nothing about the device
+- `firmware.rs` contacting Shure's firmware archive once at every non-demo start of a
+  compared model, with no opt-out and no retry. The request names every compared model, so
+  it says a supported Shure device is connected but not which
 - The MV7 bypassing `send_set()`/`send_get()` for its text shell
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's
