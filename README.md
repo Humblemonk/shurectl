@@ -169,6 +169,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
 | Rename device (Info tab) | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | Factory Reset (Info tab) | — | ✓ | — | ✓ | — | ✓ |
+| Firmware update check (Info tab) | — | ✓ | ✓ | ✓ | — | ✓ |
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
 firmware version), `--mute`, `--preset`, and `--demo`.
@@ -223,6 +224,7 @@ author's own usbmon captures.
 
 shurectl does not update device firmware. The firmware-update commands are intentionally
 left out of its protocol implementation, and it never sends them. To update firmware, use
-ShurePlus MOTIV; the Info tab shows the firmware version your device is running.
+ShurePlus MOTIV; the Info tab shows the firmware version your device is running and, at
+startup, checks Shure's online firmware archive for a newer one.
 
 shurectl is not affiliated with or endorsed by Shure Incorporated.

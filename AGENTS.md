@@ -43,12 +43,14 @@ src/
   ui.rs         # ratatui rendering: the tabs in Tab::ALL + help overlay
   ui_renders.golden  # Render hashes checked by ui.rs `renders_match_golden`
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
+  firmware.rs   # Info tab firmware check: background lookup in Shure's online archive
   fake_hid.rs   # Fake device behind device.rs's HidTransport (tests and `--features qa` only)
   harness.rs    # `--qa` JSON-lines driver over the real event loop step (tests and qa only)
 tests/
   e2e.rs        # Runs tests/scenarios/*.jsonl through `shurectl --qa` per model; PTY smoke
   scenarios/    # One JSON-lines file per scenario
-  fixtures/     # Older preset files, and preset-loads.golden (main.rs `preset_loads_match_golden`)
+  fixtures/     # Older preset files, preset-loads.golden (main.rs `preset_loads_match_golden`),
+                #   firmware-archive.json (a recorded archive reply, firmware.rs tests)
 ```
 
 **Control flow:** key event → `step()` → `handle_key()` → `DeviceAction` → `apply_action()`
@@ -251,6 +253,9 @@ rather than promoting a lower one.
 - `ACK_TIMEOUT_MS` is 15 ms on every model
 - `unsafe` `dup`/`dup2` in `meter.rs` (silences ALSA/JACK probing)
 - `send_if_connected()` succeeding silently in demo mode
+- `firmware.rs` contacting Shure's firmware archive once at every non-demo start of a
+  compared model, with no opt-out and no retry. The request names every compared model, so
+  it says a supported Shure device is connected but not which
 - The MV7 bypassing `send_set()`/`send_get()` for its text shell
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's
