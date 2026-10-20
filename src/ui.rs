@@ -3408,6 +3408,28 @@ mod tests {
         DeviceModel::Mv7Plus,
     ];
 
+    /// The Info tab's Capabilities list is static text, so it can't read
+    /// `mute_button_firmware()`; check that it names the same firmware.
+    #[test]
+    fn info_tab_names_the_mute_button_firmware() {
+        for model in MODELS {
+            let Some(firmware) = model.mute_button_firmware() else {
+                continue;
+            };
+            let app = App {
+                device_model: model,
+                active_tab: Tab::Info,
+                ..App::default()
+            };
+            let (text, _) = render_text(draw, &app, 120, 40);
+            let row = format!("Works / Ignored (firmware {firmware}+)");
+            assert!(
+                text.contains(&row),
+                "{model:?} Info tab lacks {row:?}:\n{text}"
+            );
+        }
+    }
+
     #[test]
     fn summary_rows_keep_the_shared_order() {
         for model in MODELS {
