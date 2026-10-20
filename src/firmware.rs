@@ -9,6 +9,7 @@
 //! failure leaves the Info tab showing only the installed version.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -21,6 +22,10 @@ use crate::protocol::{DeviceModel, parse_firmware};
 const ENDPOINT: &str = "https://initial2022.ent.eu-west-1.aws.found.io/api/as/v1/engines/redesign-meta-prod/search.json";
 const SEARCH_KEY: &str = "search-fbxbkqcj2rc5xbe2y3itp812";
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest decompressed reply read. The full reply is ~3.4 KB, and 100 results
+/// would be ~28 KB. ureq's own 10 MB limit counts compressed bytes, so a gzip
+/// bomb from a hostile server would get past it.
+const MAX_REPLY_BYTES: u64 = 64 * 1024;
 
 /// Every archive item `archive_item()` returns. The request names them all, so
 /// it doesn't say which model is connected.
@@ -111,14 +116,27 @@ fn fetch() -> Result<LatestFirmware> {
         .user_agent(concat!("shurectl/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
-    let body = agent
+    let response = agent
         .post(ENDPOINT)
         .header("Authorization", format!("Bearer {SEARCH_KEY}"))
         .content_type("application/json")
-        .send(request_body().to_string())?
-        .body_mut()
-        .read_to_string()?;
-    parse_response(&body)
+        .send(request_body().to_string())?;
+    parse_response(&read_capped(response.into_body().into_reader())?)
+}
+
+/// Read a decompressed reply, refusing one longer than `MAX_REPLY_BYTES`
+/// without reading past it.
+fn read_capped(reply: impl Read) -> Result<String> {
+    let mut body = String::new();
+    reply
+        .take(MAX_REPLY_BYTES + 1)
+        .read_to_string(&mut body)
+        .context("firmware archive reply isn't UTF-8 text")?;
+    anyhow::ensure!(
+        body.len() as u64 <= MAX_REPLY_BYTES,
+        "firmware archive reply is over {MAX_REPLY_BYTES} bytes"
+    );
+    Ok(body)
 }
 
 /// Every firmware release of every compared model, in US English (each
@@ -332,6 +350,17 @@ mod tests {
             assert!(parse_response(&body).is_err(), "{body}");
         }
         assert!(parse_response(&reply(release, 1)).is_ok());
+    }
+
+    #[test]
+    fn replies_over_the_cap_are_refused_without_reading_them_whole() {
+        let fixture = include_str!("../tests/fixtures/firmware-archive.json");
+        assert_eq!(read_capped(fixture.as_bytes()).expect("fits"), fixture);
+        let at_cap = "x".repeat(MAX_REPLY_BYTES as usize);
+        assert!(read_capped(at_cap.as_bytes()).is_ok());
+        // What a gzip bomb decompresses to: far more than the cap. An endless
+        // reader proves only the first MAX_REPLY_BYTES + 1 bytes are read.
+        assert!(read_capped(std::io::repeat(b' ')).is_err());
     }
 
     /// Asks the real archive: `cargo test -- --ignored`. Run it when the Info tab
