@@ -239,8 +239,13 @@ impl App {
         self.set_status(msg, true);
     }
 
-    /// Refuse a Mute Button change while its state is unread, and say why.
+    /// Refuse a Mute Button change while its state is unread, and say why:
+    /// first a device that hasn't been read at all, as for any other write.
     pub fn report_unavailable_mute_button(&mut self) {
+        if self.state_unread {
+            self.set_err(STATE_UNREAD_HINT);
+            return;
+        }
         match self
             .device_state
             .mute_button_needs_firmware(self.device_model)
@@ -1380,6 +1385,9 @@ impl App {
         }
     }
 }
+
+/// Status for a write refused because the device's settings haven't been read.
+pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
 
 /// Status for a Mute Button change refused because its state wasn't read.
 const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";

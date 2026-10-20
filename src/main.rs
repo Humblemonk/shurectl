@@ -55,7 +55,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, DeviceAction};
+use app::{App, DeviceAction, STATE_UNREAD_HINT};
 use device::ShureDevice;
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
@@ -1195,9 +1195,6 @@ fn apply_action(
     app.settle_focus(mode_before);
 }
 
-/// Status for a write refused because the device's settings haven't been read.
-const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
-
 /// What an action does, which decides whether it may run before the device's
 /// settings have been read (`reads_no_state()`) and how a failure is undone
 /// (`recover_from_failure()`).
@@ -2076,6 +2073,15 @@ mod tests {
         };
         let start = fake.log_len();
         assert!(app.toggle_focused().is_none());
+        assert_eq!(
+            app.status_message,
+            "Mute Button unavailable: its state could not be read"
+        );
+        // With nothing read yet, the real fix is a readback, so say that instead.
+        app.state_unread = true;
+        assert!(app.toggle_focused().is_none());
+        assert_eq!(app.status_message, STATE_UNREAD_HINT);
+        app.state_unread = false;
         apply_action(
             &mut app,
             &mut device,

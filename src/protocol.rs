@@ -826,9 +826,9 @@ impl Default for DeviceState {
 }
 
 /// Shure's MV7+ release notes list "Disable hardware mute feature" as new in
-/// firmware 1.4.0 (2025-09-12). Firmware 1.3.0.13 doesn't answer its GET
-/// (read-only probe, 2026-10-19); 1.6.0.1 reads and writes it (tested
-/// 2026-10-20).
+/// firmware 1.4.0 (2025-09-12). Firmware 1.3.0.13 answers its GET with an
+/// unrecognised 09 02 01 reply (read-only probe, 2026-10-19); 1.6.0.1 reads
+/// and writes it (tested 2026-10-20).
 const MV7_PLUS_MUTE_BUTTON_FIRMWARE: &str = "1.4.0";
 
 /// A firmware version of three or four dot-separated numbers, padded to four,
