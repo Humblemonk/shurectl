@@ -1529,7 +1529,10 @@ fn refused_note(refused: &[String]) -> String {
 /// Status suffix for a saved Mute Button the load left alone because the
 /// device's couldn't be read (`PresetSlot::apply_to_device_state()`).
 fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceModel) -> String {
-    if slot.mute_btn_disabled.is_none() || state.mute_btn_disabled.is_some() {
+    if !model.has_mute_button()
+        || slot.mute_btn_disabled.is_none()
+        || state.mute_btn_disabled.is_some()
+    {
         return String::new();
     }
     match state.mute_button_needs_firmware(model) {
@@ -2099,6 +2102,8 @@ mod tests {
             unread_note(&slot, &old_firmware, model),
             " Mute Button not loaded: it needs firmware 1.4.0+."
         );
+        // A model without the setting reads none, and has nothing to load it into.
+        assert_eq!(unread_note(&slot, &old_firmware, DeviceModel::Mvx2u), "");
         apply_preset_to_device(&device, &slot, &app.device_state, model, true)
             .expect("load other settings");
         assert!(!fake.log_since(start).iter().any(|packet| {

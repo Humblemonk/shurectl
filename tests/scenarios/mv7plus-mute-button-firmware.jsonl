@@ -1,11 +1,14 @@
 {"models":["mv7plus"],"modes":["fake"],"scenario":"mv7plus-mute-button-firmware","size":[120,40]}
 {"device": {"firmware": "1.3.0.13", "refused_get": "MUTE_BUTTON"}}
 {"key": "r"}
-{"expect": {"get": "MUTE_BUTTON", "status": "State refreshed from device.", "status_is_error": false, "state": {"firmware_version": "1.3.0.13", "mute_btn_disabled": null}}}
+{"expect": {"get": "MUTE_BUTTON", "status": "State refreshed from device.", "status_is_error": false, "screen_contains": "Mute Button : Needs 1.4.0+", "screen_not_contains": "Unknown", "state": {"firmware_version": "1.3.0.13", "mute_btn_disabled": null}}}
 {"key": "Tab", "repeat": 2}
 {"expect": {"screen_contains": ["Firmware: 1.3.0.13", "Needs firmware 1.4.0+"], "screen_not_contains": ["Couldn't read", "Unknown", "could not be read"]}}
 {"resize": [80, 24]}
 {"expect": {"screen_contains": ["Firmware: 1.3.0.13", "Needs firmware 1.4.0+"], "fits": true}}
+{"click_on": "Main"}
+{"expect": {"screen_contains": "Mute Button : Needs 1.4.0+", "screen_not_contains": "Unknown", "fits": true}}
+{"click_on": "Dynamics"}
 {"click_on": "Mute Button"}
 {"key": "Enter"}
 {"key": "Space"}

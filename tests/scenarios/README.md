@@ -100,7 +100,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `dynamics-hpf-cycle` | all but MV7 | fake | HPF cycles Off → 75 Hz → 150 Hz → Off and sends HPF |
 | `mute-button-setting` | MV6, MV6 Gen 2, MV7+ | fake, demo | Mute Button toggles between Works and Ignored and sends MUTE_BUTTON |
 | `mv7plus-refused-mute-button` | MV7+ | fake | A Mute Button GET answered with an unknown address leaves other settings usable, shows Unknown at 120x40 and 80x24, refuses button writes, says a preset load left it out, and recovers when the GET answers again |
-| `mv7plus-mute-button-firmware` | MV7+ | fake | An unread Mute Button on firmware 1.3.0.13 shows the 1.4.0 requirement without a read-error notice at 120x40 and 80x24; newer and unknown firmware keep the notice, unread controls send nothing, and a successful GET stays authoritative |
+| `mv7plus-mute-button-firmware` | MV7+ | fake | An unread Mute Button on firmware 1.3.0.13 shows the 1.4.0 requirement in the Summary and on its card, without a read-error notice, at 120x40 and 80x24; newer and unknown firmware keep the notice, unread controls send nothing, and a successful GET stays authoritative |
 | `reverb-controls` | MV7+ | fake, demo | Reverb output, monitoring, type and intensity (clamped 0–100%) each send their feature |
 | `led-brightness` | MV7+ | fake, demo | Enter cycles LED brightness and sends LED_BRIGHTNESS |
 | `led-custom-rgb` | MV7+ | fake, demo | Pulsing with a Custom theme reveals R/G/B sliders that send LED_PULSING_COLOR; choosing Shure hides them |

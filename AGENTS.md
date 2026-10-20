@@ -219,8 +219,8 @@ rather than promoting a lower one.
   byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
   left at its default (36 dB gain). `query_as()` with `Need::Optional` is for a GET unchecked
-  on that model's hardware or missing from some firmware. Its field must then be an `Option`
-  left `None` (Mute Button), so nothing shows, saves or writes a default.
+  on that model's hardware or missing from some firmware. A new one's field is an `Option`
+  left `None`, as the Mute Button's is, so nothing shows, saves or writes a default.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must

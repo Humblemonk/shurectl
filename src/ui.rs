@@ -1438,7 +1438,11 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
             }
         }
         SummaryRow::PopperStopper => on_off(ds.popper_stopper_enabled),
-        SummaryRow::MuteButton => mute_btn_span(ds.mute_btn_disabled),
+        SummaryRow::MuteButton => match ds.mute_button_needs_firmware(model) {
+            // "Needs firmware …" would be cut at 80x24; the card says it in full.
+            Some(firmware) => text(format!("Needs {firmware}+")),
+            None => mute_btn_span(ds.mute_btn_disabled),
+        },
         SummaryRow::Hpf => text(ds.hpf.to_string()),
         SummaryRow::ReverbOutput => on_off(ds.reverb_on_output),
         SummaryRow::ReverbMonitor => on_off(ds.reverb_monitoring),

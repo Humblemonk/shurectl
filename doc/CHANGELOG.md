@@ -19,12 +19,12 @@ The MV7+ works again on firmware older than 1.4.0.
 
 ### Changed
 
-- **MV7+:** the Mute Button setting needs firmware 1.4.0 or newer. On older firmware, its
-  card on the Dynamics tab shows your firmware version and "Needs firmware 1.4.0+". Update
+- **MV7+:** the Mute Button setting needs firmware 1.4.0 or newer. On older firmware, the
+  Summary and the Mute Button card say so, and the card shows your firmware version. Update
   the mic with Shure's MOTIV app to use it.
-- If shurectl can't read the Mute Button setting, it shows Unknown and can't be changed,
-  instead of blocking every other setting. Presets neither save nor load it then, and a
-  preset load says it was left out.
+- **MV7+:** if shurectl can't read the Mute Button setting, it shows Unknown and can't be
+  changed, instead of blocking every other setting. Presets neither save nor load it then,
+  and a preset load says it was left out.
 
 ## 2.13.2 — 2026-10-17
 

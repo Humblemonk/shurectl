@@ -270,6 +270,15 @@ impl DeviceModel {
         }
     }
 
+    /// Whether the model has the Mute Button setting (`mute_btn_disabled`), on
+    /// some firmware at least (see `mute_button_firmware()`).
+    pub fn has_mute_button(&self) -> bool {
+        match self {
+            DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => true,
+            DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 | DeviceModel::Mv7 => false,
+        }
+    }
+
     /// The first firmware with the Mute Button setting, on a model that got it
     /// in an update. `None` where every firmware has it, or the model lacks it.
     pub fn mute_button_firmware(&self) -> Option<&'static str> {
