@@ -831,7 +831,7 @@ fn apply_action(
     if matches!(action, DeviceAction::SetMv6MuteBtnDisable(_))
         && !app.device_state.mute_btn_available
     {
-        app.set_err("Mute Button unavailable: its state could not be read");
+        app.report_unavailable_mute_button();
         return;
     }
     let mode_before = app.device_state.mode;

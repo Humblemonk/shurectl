@@ -436,6 +436,11 @@ impl Harness {
                                 f.unanswered_get = amount.as_str().map(str::to_owned);
                             });
                         }
+                        "firmware" => {
+                            fake.faults_mut(|f| {
+                                f.firmware_version = amount.as_str().map(str::to_owned);
+                            });
+                        }
                         "fail_io" => {
                             fake.faults_mut(|f| f.fail_io = amount.as_bool().unwrap_or(false))
                         }

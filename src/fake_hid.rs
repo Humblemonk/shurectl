@@ -104,6 +104,8 @@ pub struct Faults {
     pub refuse: usize,
     /// Feature whose GETs receive no reply, until cleared.
     pub unanswered_get: Option<String>,
+    /// Firmware string to return from GETs, if overridden.
+    pub firmware_version: Option<String>,
 }
 
 type ValueOf = Box<dyn Fn(&DeviceState) -> Vec<u8>>;
@@ -618,6 +620,9 @@ impl FakeState {
             Request::Get(key) => {
                 let feature = self.feature_name(key);
                 let unanswered = self.faults.unanswered_get.as_deref() == Some(feature.as_str());
+                let firmware_version = (feature == "FIRMWARE")
+                    .then_some(self.faults.firmware_version.as_deref())
+                    .flatten();
                 self.log.push(Packet {
                     raw,
                     kind: PacketKind::Get { feature },
@@ -633,6 +638,12 @@ impl FakeState {
                     };
                     self.input
                         .push_back(fake_wire::reply(seq, unknown, &[0x00]));
+                } else if let Some(version) = firmware_version {
+                    self.input.push_back(fake_wire::reply(
+                        seq,
+                        key,
+                        &fake_wire::lp_string(version),
+                    ));
                 } else if let Some(value) = self.store.get(&key) {
                     self.input.push_back(fake_wire::reply(seq, key, value));
                 }

@@ -161,7 +161,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | ✓ | — | ✓ |
 | Denoiser | — | ✓ | ✓ | ✓, level 1–100% | — | ✓ |
 | Popper Stopper | — | ✓ | ✓ | ✓ | — | ✓ |
-| Mute Button (Works / Ignored) | — | — | ✓ | ✓ | — | Firmware-dependent |
+| Mute Button (Works / Ignored) | — | — | ✓ | ✓ | — | Firmware 1.4.0+ |
 | **Other tabs** | | | | | | |
 | Reverb (Plate / Hall / Studio, intensity 0–100%, output and monitor on/off) | — | — | — | — | — | ✓ |
 | LED Panel | — | — | — | — | Live Meter, Night Mode | Behavior, Brightness, Theme, custom RGB |
@@ -173,9 +173,10 @@ firmware version), `--mute`, `--preset`, and `--demo`.
 
 - On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
   5-band EQ (Advanced), as in MOTIV.
-- On the MV7+, a Mute Button setting that cannot be read shows Unknown and is unavailable, without blocking other controls or `--mute`.
-  Presets neither save nor apply that setting while it is unread.
-  A read-only hardware probe on 2026-10-19 found no usable Mute Button state reply on firmware 1.3.0.13; no alternate readable address was confirmed.
+- On the MV7+, disabling the Mute Button needs firmware 1.4.0 or newer, introduced as "Disable hardware mute feature" in [Shure's September 12, 2025 release notes](https://www.shure.com/en-US/support/downloads/software-firmware-archive/mv7plus).
+  If its state cannot be read on older firmware, the card shows the installed version and "Needs firmware 1.4.0+" without a read-error notice.
+  Other unread cases still show Unknown/Unavailable with a readback notice, without blocking other controls or `--mute`.
+  Presets neither save nor apply the Mute Button setting while it is unread.
 - Monitor Mix balances mic against playback in your headphones. On the MVX2U Gen 2, MV6,
   MV6 Gen 2 and MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
 - The level meter reads your system's default input, so set the Shure as the default input

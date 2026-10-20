@@ -1933,14 +1933,29 @@ fn draw_popper_stopper_card(f: &mut UiFrame, app: &App, area: Rect) {
 /// "Mute Button: ON" reads as the mic being muted.
 fn draw_mute_btn_card(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::MuteBtnDisable);
+    let needs_firmware = app
+        .device_state
+        .mute_button_needs_firmware(app.device_model);
     let card = StatusCard {
         title: "Mute Button",
-        status: vec![Line::from(vec![
-            Span::styled("Pressing it: ", Style::default().fg(C_DIM)),
-            mute_btn_span(&app.device_state),
-        ])],
+        status: if needs_firmware {
+            vec![Line::from(vec![
+                Span::styled("Firmware: ", Style::default().fg(C_DIM)),
+                Span::styled(
+                    &app.device_state.firmware_version,
+                    Style::default().fg(C_TEXT),
+                ),
+            ])]
+        } else {
+            vec![Line::from(vec![
+                Span::styled("Pressing it: ", Style::default().fg(C_DIM)),
+                mute_btn_span(&app.device_state),
+            ])]
+        },
         description: if app.device_state.mute_btn_available {
             "Whether pressing the mic's mute button mutes it."
+        } else if needs_firmware {
+            "Needs firmware 1.4.0+."
         } else {
             "Unavailable: its state could not be read."
         },

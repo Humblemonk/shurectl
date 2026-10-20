@@ -239,6 +239,17 @@ impl App {
         self.set_status(msg, true);
     }
 
+    pub fn report_unavailable_mute_button(&mut self) {
+        if self
+            .device_state
+            .mute_button_needs_firmware(self.device_model)
+        {
+            self.set_ok("Mute Button needs firmware 1.4.0+");
+        } else {
+            self.set_err("Mute Button unavailable: its state could not be read");
+        }
+    }
+
     // ── Tab navigation ────────────────────────────────────────────────────────
 
     /// Returns true when a tab does not exist on this model at all (Reverb
@@ -1276,7 +1287,7 @@ impl App {
             }
             Focus::MuteBtnDisable => {
                 if !self.device_state.mute_btn_available {
-                    self.set_err("Mute Button unavailable: its state could not be read");
+                    self.report_unavailable_mute_button();
                     return None;
                 }
                 self.device_state.mute_btn_disabled = !self.device_state.mute_btn_disabled;

@@ -805,6 +805,31 @@ impl Default for DeviceState {
 }
 
 impl DeviceState {
+    /// Shure's MV7+ release notes introduced Disable hardware mute in 1.4.0
+    /// (2025-09-12). Only explain an unread setting this way for a known older
+    /// firmware; a successful GET remains authoritative.
+    pub fn mute_button_needs_firmware(&self, model: DeviceModel) -> bool {
+        if model != DeviceModel::Mv7Plus || self.mute_btn_available {
+            return false;
+        }
+        let mut version = [0_u32; 4];
+        let mut count = 0;
+        for (index, part) in self.firmware_version.split('.').enumerate() {
+            if index >= version.len()
+                || part.is_empty()
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return false;
+            }
+            let Ok(number) = part.parse() else {
+                return false;
+            };
+            version[index] = number;
+            count += 1;
+        }
+        count >= 3 && version < [1, 4, 0, 0]
+    }
+
     /// The serial number to show the user: the factory serial (printed on the
     /// device, shown in the MOTIV app) when the device reported one, otherwise the
     /// USB descriptor serial as a fallback so the field is never blank.
@@ -3986,6 +4011,42 @@ pub mod mv7_text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mute_button_firmware_requirement_is_only_for_known_older_mv7plus() {
+        for (firmware, needs_firmware) in [
+            ("1.3.0.13", true),
+            ("1.3.0", true),
+            ("1.3.99.0", true),
+            ("1.4.0", false),
+            ("1.4.0.1", false),
+            ("1.6.0.1", false),
+            ("1.10.0", false),
+            ("2.0.0", false),
+            ("Unknown", false),
+            ("1.3", false),
+            ("1.3.0.bad", false),
+            ("1.3.0.0.1", false),
+            ("1.3.4294967296", false),
+        ] {
+            let state = DeviceState {
+                firmware_version: firmware.into(),
+                mute_btn_available: false,
+                ..DeviceState::default()
+            };
+            assert_eq!(
+                state.mute_button_needs_firmware(DeviceModel::Mv7Plus),
+                needs_firmware,
+                "{firmware}"
+            );
+            assert!(!state.mute_button_needs_firmware(DeviceModel::Mv6));
+            let state = DeviceState {
+                mute_btn_available: true,
+                ..state
+            };
+            assert!(!state.mute_button_needs_firmware(DeviceModel::Mv7Plus));
+        }
+    }
 
     /// Two labels on one address would name one setting for the other.
     #[test]

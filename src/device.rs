@@ -691,6 +691,7 @@ impl ShureDevice {
         self.run_getters(getters, readback)?;
         // MV7+ firmware 1.3.0.13 returns an unrecognised response to this GET
         // (read-only hardware probe, 2026-10-19). Do not guess the button state.
+        let skipped_before_mute_button = readback.skipped.len();
         self.query_optional(&cmd_get_mv6_mute_btn_disable(self.next_seq()), readback)?;
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_mv6_mix, // Mic Level (prefix=0x00)
@@ -713,7 +714,13 @@ impl ShureDevice {
             cmd_get_firmware_version,
             cmd_get_serial,
         ];
-        self.run_getters(getters, readback)
+        self.run_getters(getters, readback)?;
+        // Firmware is read above without changing GET order. An old firmware's
+        // unavailable button is explained on its card, not as a read error.
+        if readback.state.mute_button_needs_firmware(self.model) {
+            readback.skipped.truncate(skipped_before_mute_button);
+        }
+        Ok(())
     }
 
     /// Read just the factory serial number (the serial printed on the device,
