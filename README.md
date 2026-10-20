@@ -19,6 +19,8 @@ Which controls each model has is listed under [Device support](#device-support).
 
 ## Install
 
+Before using shurectl, update your device's firmware with Shure's MOTIV mobile app.
+
 **Arch Linux (AUR)** — includes the udev rules; replug the device after installing.
 
 ```bash
@@ -173,13 +175,6 @@ firmware version), `--mute`, `--preset`, and `--demo`.
 
 - On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
   5-band EQ (Advanced), as in MOTIV.
-- On the MV7+, the Mute Button setting needs firmware 1.4.0 or newer: Shure's
-  [release notes](https://www.shure.com/en-US/support/downloads/software-firmware-archive/mv7plus)
-  list "Disable hardware mute feature" as new in 1.4.0 (2025-09-12). shurectl read and changed
-  it on an MV7+ with firmware 1.6.0.1 (tested 2026-10-20). On older firmware its card shows
-  the installed version and "Needs firmware 1.4.0+"; if newer firmware doesn't answer, it
-  shows Unknown and the status bar says so. Either way other controls and `--mute` keep
-  working, and presets neither save nor apply the setting, and a load says so.
 - Monitor Mix balances mic against playback in your headphones. On the MVX2U Gen 2, MV6,
   MV6 Gen 2 and MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
 - The level meter reads your system's default input, so set the Shure as the default input
