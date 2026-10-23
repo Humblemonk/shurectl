@@ -616,7 +616,15 @@ fn step(
                     before,
                 });
             }
-            Some(action) => apply_action(app, device, action, before),
+            Some(action) => {
+                // Whether a device applies a mute before acking it is
+                // unconfirmed, so a poll straight after could read the old
+                // state and show it as changed on the device.
+                if matches!(action, DeviceAction::SetMute(_)) {
+                    loop_state.last_mute_poll = now;
+                }
+                apply_action(app, device, action, before);
+            }
             None => {}
         }
     }
@@ -1538,7 +1546,10 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
 /// The MV7 stores mode, mic position and tone as one setting, and changing it
 /// changes other state too: entering Auto Level resets EQ and compressor, and
 /// leaving it reports a new gain. Re-read the whole state afterwards so the UI
-/// shows what the mic actually has. No-op for other models and in demo mode.
+/// shows what the mic actually has. No-op for other models and in demo mode:
+/// the MV6 Gen 2 and MVX2U Gen 2 keep their manual gain through Auto (20 dB
+/// before and after, tested on both 2026-10-23); the MV6, MVX2U Gen 1 and
+/// MV7+ are unconfirmed.
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
         Some(dev) => match dev.model {
@@ -2014,6 +2025,50 @@ mod tests {
 
     /// Finding of the 09e9569 review: a wheel adjustment still pending when the
     /// next key changed the screen took that key's change in with it.
+    #[test]
+    fn a_mute_key_pushes_the_next_mute_poll_back() {
+        let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let hits = mouse::HitMap::default();
+        let now = Instant::now();
+        let mut loop_state = LoopState::new(now);
+        let mut run = |event: Option<KeyCode>, at: Duration| {
+            let event = event
+                .map(|code| Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)));
+            let start = fake.log_len();
+            step(
+                &mut app,
+                &mut device,
+                &hits,
+                true,
+                event,
+                now + at,
+                &mut loop_state,
+            );
+            fake.log_since(start)
+        };
+        let mute_gets = |packets: &[fake_hid::Packet]| {
+            packets
+                .iter()
+                .filter(|p| matches!(&p.kind, fake_hid::PacketKind::Get { feature } if feature == "MUTE"))
+                .count()
+        };
+        run(Some(KeyCode::Down), Duration::ZERO);
+        // Enter on Mute when a poll is due: the SET goes out, the poll waits.
+        let packets = run(Some(KeyCode::Enter), Duration::from_secs(1));
+        assert!(packets.iter().any(
+            |p| matches!(&p.kind, fake_hid::PacketKind::Set { feature, .. } if feature == "MUTE")
+        ));
+        assert_eq!(mute_gets(&packets), 0);
+        assert_eq!(mute_gets(&run(None, Duration::from_millis(1900))), 0);
+        assert_eq!(mute_gets(&run(None, Duration::from_secs(2))), 1);
+    }
+
     #[test]
     fn a_pending_wheel_adjustment_goes_out_before_the_next_key() {
         let fake = FakeDevice::new(DeviceModel::Mv7);

@@ -58,7 +58,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
 | `mute-toggle` | all but MV7 | fake, demo | Enter and Space toggle Mute, send MUTE, and show `● ON` in the error colour |
-| `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is; a poll that finds the device gone marks it disconnected |
+| `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is |
+| `mute-poll-finds-the-device-gone` | all | fake | Unplugged at 0.5 s, the device shows as disconnected by the mute poll at 1 s, before the 2 s presence poll |
 | `gain-adjust` | all but MV7 | fake | ←/→ step gain by 1 dB and send GAIN |
 | `gain-limits-60db` | MVX2U, MVX2U Gen 2 | fake | Gain clamps at 0 and 60 dB |
 | `gain-limits-36db` | MV6, MV6 Gen 2, MV7, MV7+ | fake | Gain clamps at 0 and 36 dB |

@@ -77,9 +77,12 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 **Mute poll:** `poll_mute()` reads the mute state every second (`read_mute()`: one GET, or
 `micMute` on the MV7) while connected and read, so a press of the mic's own mute button shows
 without `r`. It only reads. It ignores an unusable answer and marks the device disconnected
-on a `Disconnected` error. The binary models drain queued input before the GET. A pressed
-mute button sends no input report (checked on the MV6 Gen 2 under Linux, 2026-10-23), so
-polling is the only way to see it.
+on a `Disconnected` error. The binary models drain queued input before the GET. On the MV6
+Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the press
+(tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
+their mute GET reflects it, and whether the MV7 answers `micMute` within the poll's 200 ms.
+A key that writes mute pushes the next poll back a second, since whether a device applies a
+mute before acking it is unconfirmed.
 
 ## Adding a New Command
 

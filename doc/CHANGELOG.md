@@ -14,6 +14,7 @@ Mute follows the mic's own button, and presets leave mute alone.
 
 - Mute follows the mic: when you mute or unmute with the mic's own button, shurectl shows
   it within a second, without pressing `r`. shurectl reads the mute state once a second.
+  Tested on the MV6 Gen 2; unconfirmed on other models.
 - Presets no longer save or change mute. Loading a preset never unmutes a muted mic, or
   mutes a live one. Presets you saved before keep working; the mute state in them is
   ignored. The Mute Button setting (Works / Ignored) is still saved.

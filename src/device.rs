@@ -95,7 +95,8 @@ const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long the mute poll waits for the MV7's `micMute` reply, as long as a
 /// binary GET waits. The full `MV7_REPLY_TIMEOUT` every second would leave
 /// the TUI waiting on a mic that doesn't answer; a reply that comes later is
-/// drained before the next command.
+/// drained before the next command. Unconfirmed on hardware whether `micMute`
+/// answers within it.
 const MV7_POLL_TIMEOUT: Duration = Duration::from_millis(READ_TIMEOUT_MS as u64);
 
 /// Upper bound on stale input reports discarded before a command. Far more
