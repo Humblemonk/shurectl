@@ -6,6 +6,21 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## Unreleased
+
+shurectl can be driven from scripts and desktop widgets without the TUI.
+
+### Added
+
+- `--json` prints every setting, the device info, the presets and what the model supports
+  as one line of JSON. `--set KEY=VALUE` changes a setting (repeat it to change several, in
+  order) through the same path as the TUI, then prints that JSON; `--set help` lists the
+  keys. `--json --follow` keeps running: it prints the JSON again whenever a setting changes,
+  including a press of the mic's own mute button, and applies `KEY=VALUE` lines read from
+  stdin, so a status-bar widget can keep one process open instead of opening the device a
+  second time. Tested on the MV7+ (firmware 1.6.0.1); the keys for settings other models
+  have (48V, EQ bands, Auto Level tuning) are unconfirmed on hardware.
+
 ## 2.14.2 — 2026-10-23
 
 Mute follows the mic's own button, and presets leave mute alone.
