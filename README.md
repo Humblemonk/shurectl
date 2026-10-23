@@ -92,6 +92,28 @@ to confirm. Most terminals let you hold `Shift` to select text while the mouse i
 The TUI needs a terminal of at least 80×24. In a smaller one it shows the size it needs, and
 only `q` and `Ctrl+C` work (`Ctrl+C` alone while a name is being edited).
 
+## Scripting
+
+`--json`, `--set` and `--follow` are for status bars, desktop widgets and shell scripts,
+without the TUI:
+
+```bash
+shurectl --json                          # every setting, device info, presets and model
+                                         #   features as one line of JSON
+shurectl --set gain=12 --set hpf=75      # change settings (applied in order), then print the JSON
+shurectl --set mute=toggle               # booleans take on|off|true|false|yes|no|1|0|toggle
+shurectl --set preset_save=2:Call        # save slot 2 as "Call"; preset_load=2, preset_delete=2
+shurectl --set help                      # list every key and its values
+shurectl --json --follow 500             # keep running: print the JSON again whenever a setting
+                                         #   changes, and apply KEY=VALUE lines read from stdin
+```
+
+`--follow` is meant to be the one process a widget keeps open: it polls the device (every
+500 ms by default), notices the mic's own mute button and changes made from the MOTIV app,
+and takes writes on stdin, so nothing else needs to open the HID device at the same time.
+A disconnected device prints `{"connected": false, ...}` and is picked up again when it is
+plugged back in.
+
 ## Presets
 
 On the Presets tab, `s` saves the current settings into the focused slot, `Enter` on its

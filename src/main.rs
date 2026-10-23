@@ -33,6 +33,7 @@ mod firmware;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod harness;
+mod json_cli;
 mod meter;
 mod mouse;
 mod presets;
@@ -127,6 +128,24 @@ struct Cli {
           value_parser = clap::value_parser!(u8).range(1..=presets::PRESET_COUNT as i64))]
     preset: Option<u8>,
 
+    /// Print the device's settings, info and presets as one line of JSON and
+    /// exit, for scripts and desktop widgets. With --set, apply those first.
+    #[arg(long, conflicts_with_all = ["mute", "preset", "list", "demo"])]
+    json: bool,
+
+    /// Change a setting without the TUI, as KEY=VALUE (repeatable, applied in
+    /// order), then print the JSON that --json prints. `--set help` lists the keys.
+    #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append,
+          conflicts_with_all = ["mute", "preset", "list", "demo"])]
+    set: Vec<String>,
+
+    /// With --json: keep going. Print the JSON again whenever a setting changes
+    /// (polling every MS milliseconds, default 500), and apply KEY=VALUE lines
+    /// read from stdin, so one process serves a widget.
+    #[arg(long, value_name = "MS", requires = "json", num_args = 0..=1,
+          default_missing_value = "500")]
+    follow: Option<u64>,
+
     /// Maintainers only: drive the app headlessly with JSON lines on stdin and
     /// stdout, for tests/e2e.rs and agent QA. Needs --demo MODEL or
     /// --fake-device MODEL; never opens real hardware.
@@ -152,6 +171,10 @@ fn main() -> Result<()> {
             _ => anyhow::bail!("--qa needs --demo MODEL or --fake-device MODEL"),
         };
         return harness::run_qa(parse_demo_model(model)?, fake);
+    }
+
+    if cli.json || !cli.set.is_empty() {
+        return json_cli::run(cli.device.as_deref(), &cli.set, cli.follow);
     }
 
     if let Some(action) = cli.mute {
