@@ -1,0 +1,5 @@
+{"scenario": "mute-poll-finds-the-device-gone", "models": "all", "modes": ["fake"]}
+{"tick": 500}
+{"device": "unplug"}
+{"tick": 600}
+{"expect": {"connected": false, "status": "disconnected — it reconnects automatically when plugged back in.", "status_is_error": true}}

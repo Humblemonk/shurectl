@@ -449,6 +449,10 @@ impl Harness {
                             };
                             fake.faults_mut(|f| f.firmware_version = version);
                         }
+                        "muted" => match amount {
+                            Value::Bool(muted) => fake.set_muted_on_device(*muted),
+                            _ => bail!("\"muted\" takes true or false"),
+                        },
                         "fail_io" => {
                             fake.faults_mut(|f| f.fail_io = amount.as_bool().unwrap_or(false))
                         }

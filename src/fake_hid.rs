@@ -807,6 +807,22 @@ impl FakeDevice {
         self.0.borrow_mut().plugged = true;
     }
 
+    /// Mute or unmute the mic on the device itself, as a press of its mute
+    /// button does: nothing is sent, so only a GET shows the change.
+    pub fn set_muted_on_device(&self, muted: bool) {
+        let mut state = self.0.borrow_mut();
+        if let Some(shell) = &mut state.shell {
+            shell.answer(&mv7_text::set_mute(muted).line);
+        } else if let Some(feature) = state.features.iter().find(|f| f.name == "MUTE") {
+            let value = (feature.value)(&DeviceState {
+                muted,
+                ..DeviceState::default()
+            });
+            let key = feature.key;
+            state.store.insert(key, value);
+        }
+    }
+
     pub fn faults_mut(&self, change: impl FnOnce(&mut Faults)) {
         change(&mut self.0.borrow_mut().faults);
     }

@@ -34,9 +34,10 @@ Inputs:
 | `{"click": [col, row]}`, `{"wheel": "up", "at": [col, row]}` | Mouse at a cell |
 | `{"click_on": "Mute:"}` | Click the first cell of the first row containing that text |
 | `{"resize": [80, 24]}` | Redraw at a new size (max 300x120) |
-| `{"tick": 2100}` | Advance the fake clock (ms, max 60000); runs the presence poll |
+| `{"tick": 2100}` | Advance the fake clock (ms, max 60000); runs the presence poll (every 2 s) and the mute poll (every 1 s, a mute GET or `micMute` on the MV7) when they fall due |
 | `{"device": "unplug"}`, `{"device": "replug"}` | Fake device only |
-| `{"device": {"drop_acks": 1, "extra_acks": 1, "refuse": 1, "fail_io": true}}` | Inject faults: fewer or more acks after the next CONFIRM, answer the next command with an unknown address (`[Failed]` on the MV7), fail all I/O |
+| `{"device": {"drop_acks": 1, "extra_acks": 1, "refuse": 1, "fail_io": true}}` | Inject faults: fewer or more acks after the next CONFIRM, answer the next command with an unknown address (`[Failed]` on the MV7), fail all I/O. A `tick` that runs the mute poll can use up `refuse`, and its drain discards queued acks, so put a one-shot fault right before the command it is for |
+| `{"device": {"muted": true}}` | Mute (or with `false` unmute) the fake on the device itself, as its mute button does; the next mute poll shows it |
 | `{"meter": -12.5}` | Push a peak (dBFS) into the meter at the fake clock's time; `tick` ages it (bar 0.3 s, peak hold 3 s). Demo mode has no meter |
 | `{"preset_dir": "fixtures/presets-v2.9"}` | Copy preset files into this session's temp preset dir |
 | `{"reset": true}` | Start over on the same model |

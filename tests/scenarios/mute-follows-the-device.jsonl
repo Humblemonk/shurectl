@@ -1,0 +1,13 @@
+{"scenario": "mute-follows-the-device", "models": "all", "modes": ["fake"]}
+{"expect": {"state": {"muted": false}}}
+{"device": {"muted": true}}
+{"tick": 1000}
+{"expect": {"state": {"muted": true}, "status": "Mute → ON (changed on the device)", "style": {"text": "● ON", "fg": "C_ERROR"}}}
+{"device": {"muted": false}}
+{"tick": 1000}
+{"expect": {"state": {"muted": false}, "status": "Mute → OFF (changed on the device)", "screen_contains": "○ OFF"}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}, "status": "Mute → ON"}}
+{"tick": 1000}
+{"expect": {"state": {"muted": true}, "screen_not_contains": "changed on the device"}}

@@ -92,10 +92,17 @@ const ACK_TIMEOUT_MS: i32 = 15;
 /// longer than a single read timeout, so waiting is bounded by time, not reads.
 const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// Upper bound on stale MV7 input reports discarded before a command. Far more
-/// than any reply needs (`help`, the longest, is a few dozen lines); it only
-/// keeps the drain loop finite if the device never stops sending.
-const MV7_DRAIN_MAX_REPORTS: usize = 256;
+/// How long the mute poll waits for the MV7's `micMute` reply, as long as a
+/// binary GET waits. The full `MV7_REPLY_TIMEOUT` every second would leave
+/// the TUI waiting on a mic that doesn't answer; a reply that comes later is
+/// drained before the next command. Unconfirmed on hardware whether `micMute`
+/// answers within it.
+const MV7_POLL_TIMEOUT: Duration = Duration::from_millis(READ_TIMEOUT_MS as u64);
+
+/// Upper bound on stale input reports discarded before a command. Far more
+/// than any reply needs (`help`, the longest MV7 reply, is a few dozen lines);
+/// it only keeps the drain loop finite if the device never stops sending.
+const DRAIN_MAX_REPORTS: usize = 256;
 
 /// A HID read or write failed, or `reopen()` could not find the device: it was
 /// unplugged or its handle went stale. Kept as its own type so `main.rs` can
@@ -376,11 +383,20 @@ impl ShureDevice {
     /// Send one MV7 command line and return its reply line (which may be
     /// [`mv7_text::FAILED_REPLY`]). Unrelated lines in between are skipped.
     fn send_text(&self, command: &mv7_text::TextCommand) -> Result<String> {
+        self.send_text_within(command, MV7_REPLY_TIMEOUT)
+    }
+
+    /// [`Self::send_text`], waiting at most `timeout` for the reply.
+    fn send_text_within(
+        &self,
+        command: &mv7_text::TextCommand,
+        timeout: Duration,
+    ) -> Result<String> {
         let mut buf = vec![0u8; PACKET_SIZE];
-        self.drain_text_input(&mut buf)?;
+        self.drain_input(&mut buf)?;
         self.write(&command.packet())?;
         let mut received = String::new();
-        let deadline = Instant::now() + MV7_REPLY_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let n = self
                 .transport
@@ -398,12 +414,13 @@ impl ShureDevice {
         Err(anyhow!("No reply from the MV7 to \"{}\"", command.line))
     }
 
-    /// Discard any MV7 input still queued from before this command: a reply
-    /// that arrived after its command timed out, or output from a command MOTIV
-    /// sent. `[Failed]` and `Locked` carry no command name, so a stale one would
-    /// otherwise be read as the answer to the next command.
-    fn drain_text_input(&self, buf: &mut [u8]) -> Result<()> {
-        for _ in 0..MV7_DRAIN_MAX_REPORTS {
+    /// Discard any input still queued from before this command: a reply that
+    /// arrived after its command timed out, a late ack, or output from a
+    /// command MOTIV sent. On the MV7, `[Failed]` and `Locked` carry no command
+    /// name, so a stale one would otherwise be read as the answer to the next
+    /// command.
+    fn drain_input(&self, buf: &mut [u8]) -> Result<()> {
+        for _ in 0..DRAIN_MAX_REPORTS {
             let n = self.transport.read_timeout(buf, 0).map_err(read_failed)?;
             if n == 0 {
                 return Ok(());
@@ -729,6 +746,37 @@ impl ShureDevice {
             readback.skipped.remove(index);
         }
         Ok(())
+    }
+
+    /// Read the mute state alone, for the TUI's mute poll, so a press of the
+    /// mic's mute button shows without a full readback. `Ok(None)` when the
+    /// device gave no usable answer (a timeout, a refusal, another reply); only
+    /// a HID failure is an error. On the binary models, input still queued from
+    /// earlier (a late ack) is discarded first, so it can't be read as the
+    /// answer or shift a later readback.
+    pub fn read_mute(&self) -> Result<Option<bool>> {
+        let mut state = DeviceState::default();
+        let applied = match self.model {
+            DeviceModel::Mv7 => {
+                match self.send_text_within(&mv7_text::get_mute(), MV7_POLL_TIMEOUT) {
+                    Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
+                    Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+                    Err(_) => false,
+                }
+            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => {
+                self.drain_input(&mut [0u8; PACKET_SIZE])?;
+                self.send_get(&cmd_get_mute(self.next_seq()))?
+                    .is_some_and(|reply| {
+                        protocol::is_mute_reply(&reply) && apply_reply(&reply, &mut state)
+                    })
+            }
+        };
+        Ok(applied.then_some(state.muted))
     }
 
     /// Read just the factory serial number (the serial printed on the device,

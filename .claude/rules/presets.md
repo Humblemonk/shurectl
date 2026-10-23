@@ -10,7 +10,9 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
 - **Mirror types:** `presets.rs` defines `Ser*` enums with serde derives, so `protocol.rs`
   types stay serde-free and the on-disk format is decoupled from internal enum changes
 - `PresetSlot` captures all DSP settings from `DeviceState`. Identity (serial number,
-  firmware version, device name) isn't saved, so a load keeps the device's own
+  firmware version, device name) isn't saved, so a load keeps the device's own. Neither is
+  mute: it is live state, and a load must never mute or unmute the mic. Older files still
+  hold `muted`, which loading ignores. The Mute Button setting (Works / Ignored) is saved
 - **Per-model settings** are `Option`s, saved only by a model that has the setting (the
   `match` in `from_device_state()`, which mirrors `main.rs::apply_binary_preset()` and the
   MV7's `setting_changes()`). `None` keeps the device's value on load, so a preset from

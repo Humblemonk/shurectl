@@ -58,6 +58,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
 | `mute-toggle` | all but MV7 | fake, demo | Enter and Space toggle Mute, send MUTE, and show `● ON` in the error colour |
+| `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is |
+| `mute-poll-finds-the-device-gone` | all | fake | Unplugged at 0.5 s, the device shows as disconnected by the mute poll at 1 s, before the 2 s presence poll |
 | `gain-adjust` | all but MV7 | fake | ←/→ step gain by 1 dB and send GAIN |
 | `gain-limits-60db` | MVX2U, MVX2U Gen 2 | fake | Gain clamps at 0 and 60 dB |
 | `gain-limits-36db` | MV6, MV6 Gen 2, MV7, MV7+ | fake | Gain clamps at 0 and 36 dB |
@@ -110,7 +112,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
-| `preset-save-load-delete` | all | fake, demo | `s` saves the current settings, Enter loads them back (undoing a mute), `d` deletes without sending |
+| `preset-save-load-delete` | all | fake, demo | `s` saves the current settings, Enter loads them back but leaves mute alone (`r` reads it back), `d` deletes without sending |
 | `preset-name-edit` | all | fake, demo | Renaming takes typed text including `q`; Ctrl-C doesn't quit while editing; Esc or clicking away cancels |
 | `preset-load-unlocks-relocks` | MV6, MV6 Gen 2, MVX2U Gen 2 | fake | Loading under Gain Lock sends unlock → GAIN → re-lock, in that order, and the gain applies |
 | `preset-old-file-keeps-fields` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | A pre-Playback-Level preset file (`fixtures/presets-v2.9`) loads without zeroing Playback Level |
@@ -136,6 +138,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `readback-unanswered-get-keeps-state` | all | fake | A GET left without a usable reply during `r` keeps that setting, not resetting gain to 36 dB |
 | `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
 | `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |
+| `mute-poll-clears-extra-ack` | MV6, MV7+ | fake | After one ack too many, the next mute poll discards it, so a later `r` reads the serial number |
 
 The fake fault `{"device":{"refused_get":"MUTE_BUTTON"}}` answers that feature's GETs with an unknown address, as `refuse` does, until cleared with `{"device":{"refused_get":null}}`.
+`{"device":{"muted":true}}` mutes (or with `false` unmutes) the fake on the device itself, as its mute button does, without a packet.
 The fake fault `{"device":{"firmware":"1.3.0.13"}}` overrides the firmware GET reply until cleared with `{"device":{"firmware":null}}`, so older firmware can be checked without downgrading hardware.
