@@ -287,3 +287,7 @@ rather than promoting a lower one.
   a SET" explained a probe bug and was repeated for six months (0c3a0de).
 - When a cross-model UI divergence is unavoidable, name the affected models in the commit/PR
   body.
+- Review a change that touches device writes, readback, presets or a release in a session
+  that didn't write it: give it the diff, the intent and the hardware results, not the
+  author's conclusions about whether the code is right. Docs- or test-only changes can skip
+  this.
