@@ -6,6 +6,18 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.14.2 — 2026-10-23
+
+Mute follows the mic's own button, and presets leave mute alone.
+
+### Changed
+
+- Mute follows the mic: when you mute or unmute with the mic's own button, shurectl shows
+  it within a second, without pressing `r`. shurectl reads the mute state once a second.
+- Presets no longer save or change mute. Loading a preset never unmutes a muted mic, or
+  mutes a live one. Presets you saved before keep working; the mute state in them is
+  ignored. The Mute Button setting (Works / Ignored) is still saved.
+
 ## 2.14.1 — 2026-10-20
 
 The Info tab says whether your firmware is up to date.

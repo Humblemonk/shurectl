@@ -7,7 +7,8 @@
 //! Each file is human-readable and hand-editable. The preset captures the
 //! configurable DSP settings from `DeviceState` that the saving model has.
 //! Identity fields (serial numbers, firmware version, device name) are left
-//! out, so a load keeps the device's own.
+//! out, so a load keeps the device's own. So is mute, which is live state
+//! rather than a sound setting: a load never mutes or unmutes the mic.
 //!
 //! Presets live on the host only: loading one sends a SET for each saved
 //! setting, with no device-side preset bank involved.
@@ -43,7 +44,6 @@ pub struct PresetSlot {
     /// before fractional gain stored a whole number here, which still loads.
     pub gain_db: f32,
     pub mode: SerInputMode,
-    pub muted: bool,
     /// Monitor Mix, as `DeviceState::monitor_mix`: one mic ↔ playback balance,
     /// or the Mic Level on models with `has_playback_mix()`.
     #[serde(default)]
@@ -171,7 +171,6 @@ impl PresetSlot {
             name: name.into(),
             gain_db: f32::from(state.gain_tenths) / 10.0,
             mode: SerInputMode::from(state.mode),
-            muted: state.muted,
             monitor_mix: state.monitor_mix,
             monitor_mix_is_mic_level: Some(model.has_playback_mix()),
             playback_mix: state.playback_mix,
@@ -262,7 +261,6 @@ impl PresetSlot {
     pub fn apply_to_device_state(&self, state: &mut DeviceState) {
         state.gain_tenths = gain_db_to_tenths(self.gain_db);
         state.mode = InputMode::from(self.mode);
-        state.muted = self.muted;
         state.monitor_mix = self.monitor_mix.min(100);
         // 0 is what every preset holds that wasn't saved on a model reading
         // Playback Mix (and MV6 presets from before it did), so it means "not
@@ -1112,11 +1110,28 @@ mod tests {
         assert!(target.phantom_power);
 
         // Files saved before this still carry the setting and apply it.
-        let older = text.replacen("muted = true", "muted = true\nphantom_power = false", 1);
+        let older = text.replacen("monitor_mix =", "phantom_power = false\nmonitor_mix =", 1);
         let older: PresetSlot = toml::from_str(&older).expect("deserialise");
         assert_eq!(older.phantom_power, Some(false));
         older.apply_to_device_state(&mut target);
         assert!(!target.phantom_power);
+    }
+
+    #[test]
+    fn mute_is_neither_saved_nor_loaded() {
+        let slot = PresetSlot::from_device_state("S", &example_state(), DeviceModel::Mv6Gen2);
+        let text = toml::to_string_pretty(&slot).expect("serialise");
+        assert!(!text.contains("muted"), "{text}");
+
+        // Files saved before this hold `muted`, which loading ignores.
+        let older = text.replacen("monitor_mix =", "muted = false\nmonitor_mix =", 1);
+        let older: PresetSlot = toml::from_str(&older).expect("deserialise");
+        let mut target = DeviceState {
+            muted: true,
+            ..DeviceState::default()
+        };
+        older.apply_to_device_state(&mut target);
+        assert!(target.muted);
     }
 
     /// Checked on hardware both ways between an MVX2U Gen 2 and an MV6 Gen 2.
@@ -1171,7 +1186,6 @@ mod tests {
         assert_eq!(slot, decoded);
         assert_eq!(decoded.name, "My Preset");
         assert_eq!(decoded.gain_db, 36.0);
-        assert!(decoded.muted);
         let bands = decoded.eq_bands.expect("the Gen 1 saves its EQ bands");
         assert_eq!(bands[0].gain_db, 40); // +4.0 dB in tenths
         assert_eq!(bands[4].gain_db, -80); // -8.0 dB in tenths
@@ -1198,7 +1212,8 @@ mod tests {
         assert_eq!(target.auto_position, MicPosition::Far);
         assert_eq!(target.auto_tone, AutoTone::Bright);
         assert_eq!(target.auto_gain, AutoGain::Loud);
-        assert!(target.muted);
+        // Mute is live state, not a sound setting: a preset neither saves nor sets it.
+        assert!(!target.muted);
         assert!(target.phantom_power);
         assert_eq!(target.monitor_mix, 50);
         assert!(target.limiter_enabled);

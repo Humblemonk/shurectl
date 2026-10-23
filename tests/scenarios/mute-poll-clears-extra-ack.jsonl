@@ -1,0 +1,9 @@
+{"scenario": "mute-poll-clears-extra-ack", "models": ["mv6", "mv7plus"], "modes": ["fake"]}
+{"key": "Down"}
+{"device": {"extra_acks": 1}}
+{"key": "Enter"}
+{"expect": {"set": {"feature": "MUTE", "value": true}}}
+{"tick": 1000}
+{"expect": {"state": {"muted": true}}}
+{"key": "r"}
+{"expect": {"status": "State refreshed from device.", "status_is_error": false, "state": {"muted": true, "factory_serial": "FAKE0001"}}}

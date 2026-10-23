@@ -10,6 +10,8 @@
 {"click_on": "Presets"}
 {"key": "Down"}
 {"key": "Enter"}
-{"expect": {"focus": "PresetActions(0)", "status": "Loaded \"Preset 1\".", "state": {"muted": false}}}
+{"expect": {"focus": "PresetActions(0)", "status": "Loaded \"Preset 1\".", "state": {"muted": true}}}
+{"key": "r"}
+{"expect": {"state": {"muted": true}}}
 {"key": "d"}
 {"expect": {"status": "Deleted \"Preset 1\".", "no_packets": true, "screen_not_contains": "[Enter] Load"}}

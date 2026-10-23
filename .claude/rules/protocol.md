@@ -66,7 +66,8 @@ DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives 
 - Map a new block by snapshotting `getBlock` before and after one change in MOTIV. MOTIV's
   exact command strings are in its bundled `ndl-addon.node` (`strings -a`), but that addon
   is shared with other Shure devices
-- MOTIV and shurectl share one command channel. Quit MOTIV before testing against the MV7
+- MOTIV and shurectl share one command channel, and shurectl's mute poll sends `micMute`
+  every second. Quit MOTIV before testing against the MV7
 
 ## Debugging on real hardware
 

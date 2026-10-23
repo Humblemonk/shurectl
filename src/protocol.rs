@@ -2622,6 +2622,12 @@ fn decode_lp_string(value: &[u8]) -> Option<String> {
     )
 }
 
+/// Whether `reply` answers `cmd_get_mute()`, for the mute poll, which reads
+/// the mute state alone and must not take another setting's reply for it.
+pub fn is_mute_reply(reply: &Reply) -> bool {
+    reply.feat == FEAT_MUTE
+}
+
 /// Apply a parsed [`Reply`] to `state`. Playback Mix shares FEAT_MIX with
 /// Monitor Mix and is told apart by its prefix; everything else goes by address.
 /// The MV7+ echo of prefix 0x03 is inferred from its LED replies, not checked.
@@ -3226,7 +3232,6 @@ pub mod mv7_text {
                 changes.push((label, to));
             }
         };
-        add("Mute", |state| set_mute(state.muted));
         if target.mode == InputMode::Manual && current.mode == InputMode::Manual {
             add("Gain", |state| set_gain(state.gain_tenths));
             add("Compressor", |state| set_compressor(state.compressor));
@@ -3984,20 +3989,17 @@ pub mod mv7_text {
             let current = manual_state();
             let mut target = current.clone();
             target.monitor_mix = 74;
+            // Mute is live state, which a preset load leaves alone.
             target.muted = true;
             target.eq_preset = EqPreset::HighPass;
             target.led_night_mode = true;
             let changes = setting_changes(&current, &target, true);
-            assert_eq!(
-                labels(&changes),
-                ["Mute", "EQ", "Night Mode", "Monitor Mix"]
-            );
-            assert_eq!(changes[0].1, set_mute(true));
-            assert_eq!(changes[3].1, set_monitor_mix(74));
+            assert_eq!(labels(&changes), ["EQ", "Night Mode", "Monitor Mix"]);
+            assert_eq!(changes[2].1, set_monitor_mix(74));
             // A Monitor Mix of the other kind is left alone.
             assert_eq!(
                 labels(&setting_changes(&current, &target, false)),
-                ["Mute", "EQ", "Night Mode"]
+                ["EQ", "Night Mode"]
             );
         }
 
@@ -4020,8 +4022,11 @@ pub mod mv7_text {
             let mut target = manual_state();
             target.gain_tenths = 300;
             target.compressor = CompressorPreset::Heavy;
-            target.muted = true;
-            assert_eq!(labels(&setting_changes(&current, &target, true)), ["Mute"]);
+            target.led_night_mode = true;
+            assert_eq!(
+                labels(&setting_changes(&current, &target, true)),
+                ["Night Mode"]
+            );
         }
 
         #[test]

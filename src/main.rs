@@ -492,6 +492,7 @@ fn run_event_loop(
 /// Event-loop state carried between `step()` calls.
 struct LoopState {
     last_presence_poll: Instant,
+    last_mute_poll: Instant,
     seen_back: bool,
     pending_scroll: Option<PendingScroll>,
 }
@@ -518,6 +519,7 @@ impl LoopState {
     fn new(now: Instant) -> Self {
         Self {
             last_presence_poll: now,
+            last_mute_poll: now,
             seen_back: false,
             pending_scroll: None,
         }
@@ -529,8 +531,9 @@ impl LoopState {
 /// pending wheel adjustment, and poll for the device every
 /// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
 /// below the minimum size only the notice is on screen, so keys only quit and
-/// mouse events are dropped. `now` is passed in so the `--qa` harness can run
-/// the same code on a fake clock.
+/// mouse events are dropped. The mute state is read every
+/// `MUTE_POLL_INTERVAL`. `now` is passed in so the `--qa` harness can run the
+/// same code on a fake clock.
 fn step(
     app: &mut App,
     device: &mut Option<ShureDevice>,
@@ -619,13 +622,22 @@ fn step(
     }
 
     let poll_due = now.duration_since(loop_state.last_presence_poll) >= PRESENCE_POLL_INTERVAL;
+    let mute_poll_due = now.duration_since(loop_state.last_mute_poll) >= MUTE_POLL_INTERVAL;
+    // A pending wheel write goes out before a poll, so if it fails, putting
+    // back its `before` state can't undo a mute change the poll just read.
     if loop_state.pending_scroll.as_ref().is_some_and(|pending| {
         !queued
             || app.should_quit
             || poll_due
+            || mute_poll_due
             || now.duration_since(pending.started) >= SCROLL_FLUSH_INTERVAL
     }) {
         flush_scroll(app, device, loop_state);
+    }
+
+    if mute_poll_due {
+        loop_state.last_mute_poll = now;
+        poll_mute(app, device);
     }
 
     if poll_due {
@@ -1455,16 +1467,48 @@ fn poll_presence(app: &mut App, device: &mut Option<ShureDevice>, seen_back: &mu
     };
     match poll_step(app.device_connected, present, *seen_back) {
         PollStep::Nothing | PollStep::WaitForBoot => {}
-        PollStep::MarkDisconnected => {
-            app.device_connected = false;
-            app.set_err(format!(
-                "{} disconnected — {RECONNECT_HINT}",
-                dev.model.display_name()
-            ));
-        }
+        PollStep::MarkDisconnected => mark_disconnected(app, dev.model),
         PollStep::Reconnect => apply_action(app, device, DeviceAction::Reconnect, None),
     }
     *seen_back = present && !app.device_connected;
+}
+
+/// Show the device as lost, found by a poll rather than a command.
+fn mark_disconnected(app: &mut App, model: DeviceModel) {
+    app.device_connected = false;
+    app.set_err(format!(
+        "{} disconnected — {RECONNECT_HINT}",
+        model.display_name()
+    ));
+}
+
+/// How often the event loop reads the mic's mute state.
+const MUTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Read the mic's mute state and show it, so a press of its mute button (or
+/// another app muting it) shows without `r`. Nothing changes when the device
+/// gives no usable answer; the next poll asks again. A HID failure marks the
+/// device disconnected, as the presence poll does. Skipped in demo mode, while
+/// disconnected, and while the state is unread, where `r` is the way back.
+fn poll_mute(app: &mut App, device: &Option<ShureDevice>) {
+    let Some(dev) = device.as_ref() else {
+        return; // demo mode
+    };
+    if !app.device_connected || app.state_unread {
+        return;
+    }
+    match dev.read_mute() {
+        Ok(Some(muted)) if muted != app.device_state.muted => {
+            app.device_state.muted = muted;
+            app.set_ok(format!(
+                "Mute → {} (changed on the device)",
+                if muted { "ON" } else { "OFF" }
+            ));
+        }
+        Err(e) if is_disconnect(&e) => mark_disconnected(app, dev.model),
+        // Anything else leaves the mute state unknown for now, not changed.
+        Ok(Some(_) | None) | Err(_) => {}
+    }
 }
 
 /// Status-bar suffix for optional settings a readback couldn't read, so they
@@ -1653,7 +1697,7 @@ fn apply_binary_preset(
         state.auto_position,
         state.auto_tone,
     )?;
-    // Order: mode → gain → mute → HPF.
+    // Order: mode → gain → HPF. Mute is live state, which a preset leaves alone.
     // A gain-locked device ignores gain writes (tested on the MV6, MV6 Gen 2
     // and MVX2U Gen 2, 2026-10-10), so unlock, write the gain, then lock
     // straight away so a later failed write can't leave the device unlocked
@@ -1666,7 +1710,6 @@ fn apply_binary_preset(
     if model.has_gain_lock() {
         d.set_mv6_gain_lock(state.mv6_gain_locked)?;
     }
-    d.set_mute(state.muted)?;
     if model.has_hpf() && slot.hpf.is_some() {
         d.set_hpf(&state.hpf)?;
     }

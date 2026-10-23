@@ -74,6 +74,13 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 (`r` does it on demand), so `apply_action()` stays the only writer. Only a
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
+**Mute poll:** `poll_mute()` reads the mute state every second (`read_mute()`: one GET, or
+`micMute` on the MV7) while connected and read, so a press of the mic's own mute button shows
+without `r`. It only reads. It ignores an unusable answer and marks the device disconnected
+on a `Disconnected` error. The binary models drain queued input before the GET. A pressed
+mute button sends no input report (checked on the MV6 Gen 2 under Linux, 2026-10-23), so
+polling is the only way to see it.
+
 ## Adding a New Command
 
 In order, without skipping steps:
