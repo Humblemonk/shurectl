@@ -6,7 +6,7 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## Unreleased
+## 2.15.0 — 2026-10-24
 
 Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the
 device's state as JSON.
