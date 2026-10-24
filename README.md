@@ -124,15 +124,16 @@ shurectl --mode manual --gain 24 --json  # Several changes, then the JSON
 
 Changes go in the TUI's order (mode, mute, gain, then the monitor levels). Each is refused,
 with the reason, where the TUI wouldn't make it: gain in Auto Level mode or with Gain Lock on,
-a Playback Level on a model without one. A failure exits with status 1. `--mute on` and
-`--mute off` send a single command without reading the device first, and `--mute toggle` and
-`--mute status` read only the mute state, so a mute button stays quick. Everything else is
-changed in the TUI.
+a Playback Level on a model without one. A failure exits with status 1; a mistyped option
+is reported on stderr with status 2. On their own, `--mute on` and `--mute off` send a single
+command without reading the device first, and `--mute toggle` and `--mute status` read only
+the mute state, so a mute button stays quick. Everything else is changed in the TUI.
 
 `--json` prints the model, mute, firmware, serial and device name, and `settings`: the
 device's settings with the names and values a preset file uses, except EQ band gains, which
-are in dB here and in tenths of a dB in the file. A failure prints `{"error": "..."}` and
-exits with status 1.
+are in dB here and in tenths of a dB in the file. Settings the model lacks are left out. When
+the device can't be opened or read, or a change is refused or fails, it prints
+`{"error": "..."}` and exits with status 1.
 
 With two mics, pick one by the serial `--list` shows, as in `--device 3EK26001276`. A path
 like `/dev/hidraw1` can change when a mic is replugged.

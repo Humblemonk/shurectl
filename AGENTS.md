@@ -78,8 +78,10 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 **Mute poll:** `poll_mute()` reads the mute state every second (`read_mute()`: one GET, or
 `micMute` on the MV7) while connected, so a press of the mic's own mute button shows without
 `r`. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
-allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. It only reads. It ignores an unusable answer and marks the device disconnected
-on a `Disconnected` error. The binary models drain queued input before the GET. On the MV6
+allowed before a readback in the TUI and CLI, because refusing it would leave the mic live.
+A mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
+(`recover_from_failure()`). It only reads. It ignores an unusable answer and marks the device
+disconnected on a `Disconnected` error. The binary models drain queued input before the GET. On the MV6
 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the press
 (tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
 their mute GET reflects it, and whether the MV7 answers `micMute` within the poll's 200 ms.

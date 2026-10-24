@@ -17,12 +17,17 @@
 //!   shurectl --demo mv7        # Demo MV7 without a device
 //!   shurectl --demo mv7plus    # Demo MV7+ without a device
 //!   shurectl --list            # List detected devices and exit
-//!   shurectl --device PATH     # Open a specific device by HID path
+//!   shurectl --device SERIAL   # Open a specific device by serial or HID path
 //!   shurectl --mute            # Toggle mute (no TUI)
 //!   shurectl --mute on         # Mute (no TUI)
 //!   shurectl --mute off        # Unmute (no TUI)
 //!   shurectl --mute status     # Print on/off (no TUI)
 //!   shurectl --preset 1        # Load preset slot 1 (no TUI)
+//!   shurectl --mode toggle     # Switch Auto Level / Manual (no TUI)
+//!   shurectl --gain +1         # Gain one step up; or a value in dB (no TUI)
+//!   shurectl --monitor-mix 40  # Monitor Mix or Mic Level, 0-100 or +N/-N (no TUI)
+//!   shurectl --playback-mix 40 # Playback Level, 0-100 or +N/-N (no TUI)
+//!   shurectl --json            # Print the state as JSON (no TUI)
 
 mod app;
 mod cli;
@@ -91,12 +96,13 @@ struct Cli {
     /// Set mute state without launching the TUI.
     /// toggle (default): flip current state. on: mute. off: unmute.
     /// status: print the current state (on or off) without changing it.
-    #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION")]
+    #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION",
+          conflicts_with_all = ["list", "demo"])]
     mute: Option<MuteAction>,
 
     /// Load a saved preset slot (1-4) onto the device without launching the TUI.
     #[arg(long, short = 'p', value_name = "SLOT",
-          conflicts_with_all = ["mute", "mode", "gain", "monitor_mix", "playback_mix"],
+          conflicts_with_all = ["mute", "mode", "gain", "monitor_mix", "playback_mix", "list", "demo"],
           value_parser = clap::value_parser!(u8).range(1..=presets::PRESET_COUNT as i64))]
     preset: Option<u8>,
 
@@ -567,6 +573,7 @@ fn step(
                     loop_state.last_mute_poll = now;
                 }
                 apply_action(app, device, action, before);
+                note_unread(app);
             }
             None => {}
         }
@@ -1289,6 +1296,13 @@ fn recover_from_failure(
             Some(read)
         }
     };
+    // A mute nothing could read back may or may not have landed. Show it as
+    // off: Muted over a live mic is the worse mistake, and the mute poll
+    // shows the real state once the device answers.
+    let mute_unknown = matches!(action, DeviceAction::SetMute(_)) && read_back == Some(false);
+    if mute_unknown {
+        app.device_state.muted = false;
+    }
     if gone {
         app.device_connected = false;
     }
@@ -1297,6 +1311,9 @@ fn recover_from_failure(
     } else {
         match read_back {
             Some(true) => format!("Device error: {e}. Settings read back from the device."),
+            Some(false) if mute_unknown => {
+                format!("Device error: {e}. Mute state unknown, shown as OFF. {STATE_UNREAD_HINT}")
+            }
             Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
             None => format!("Device error: {e}"),
         }
@@ -1459,10 +1476,21 @@ fn poll_mute(app: &mut App, device: &Option<ShureDevice>) {
                 "Mute → {} (changed on the device)",
                 if muted { "ON" } else { "OFF" }
             ));
+            note_unread(app);
         }
         Err(e) if is_disconnect(&e) => mark_disconnected(app, dev.model),
         // Anything else leaves the mute state unknown for now, not changed.
         Ok(Some(_) | None) | Err(_) => {}
+    }
+}
+
+/// While the settings are unread, keep saying so after a change that still
+/// goes through then (mute): the rest of the screen isn't the device's. The
+/// TUI's status bar only; the CLI prints the plain line.
+fn note_unread(app: &mut App) {
+    if app.state_unread && !app.status_is_error {
+        let done = app.status_message.trim_end_matches('.').to_string();
+        app.set_err(format!("{done}. {STATE_UNREAD_HINT}"));
     }
 }
 

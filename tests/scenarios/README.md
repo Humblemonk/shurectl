@@ -134,7 +134,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `refused-command-stays-connected` | all | fake | A refused GET fails `r`'s readback without marking the device disconnected; the reconnect reads it again |
 | `write-failed-keeps-screen` | all | fake | When a write fails (I/O error), Mute and Gain keep showing what the device has |
 | `mv7-rejected-write-keeps-screen` | MV7 | fake | A Mode, Mute or Gain change the MV7 rejects is undone on screen, and the mic stays connected |
-| `readback-failed-reconnect-refuses-writes` | all | fake | If a reconnect can't read the device, writes are refused and the screen kept until `r` succeeds |
+| `readback-failed-reconnect-refuses-writes` | all | fake | If a reconnect can't read the device, writes other than mute are refused and the screen kept until `r` succeeds; mute still goes through and follows the mic, and the status keeps saying the settings aren't read |
+| `mv7-unconfirmed-mute-shows-off` | mv7 | fake | A mute the MV7 neither confirms nor lets be read back shows as OFF with the state called unknown, never as Muted over a live mic |
 | `readback-unanswered-get-keeps-state` | all | fake | A GET left without a usable reply during `r` keeps that setting, not resetting gain to 36 dB |
 | `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
 | `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |

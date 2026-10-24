@@ -1394,9 +1394,9 @@ impl App {
 
     /// Whether the TUI could send an action of `action`'s kind right now: a
     /// key sends it, or ←/→ or Enter on a control of a tab this model shows and
-    /// hasn't locked. `--set` refuses the rest, so a script reaches no setting
-    /// the model lacks, nor one the screen hides in its current mode, tone mode
-    /// or LED theme or behind Gain Lock.
+    /// hasn't locked. The command line's write flags refuse the rest, so a
+    /// script reaches no setting the model lacks, nor one the screen hides in
+    /// its current mode, tone mode or LED theme or behind Gain Lock.
     pub fn offers(&self, action: &DeviceAction) -> bool {
         use DeviceAction::*;
         match action {

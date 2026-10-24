@@ -15,7 +15,8 @@ device's state as JSON.
 
 - `--json` prints the device's state as one line of JSON: its model, mute, firmware, serial
   and device name, and its settings with the names and values a preset file uses (EQ gains
-  in dB). A failure prints `{"error": …}` and exits with status 1.
+  in dB). When the device can't be opened or read, or a change fails, it prints
+  `{"error": …}` and exits with status 1.
 - `--mode auto|manual|toggle`, `--gain`, `--monitor-mix` and `--playback-mix` change those
   settings without the TUI, to a value or by `+N`/`-N` steps like the arrow keys. They can
   be combined, and each is refused with the reason where the TUI wouldn't make the change,
@@ -26,12 +27,18 @@ device's state as JSON.
 ### Changed
 
 - Mute works before the device's settings have been read, in the TUI and with `--mute`, and
-  the shown mute state keeps following the mic then. Other changes still wait for a
-  readback.
+  the shown mute state keeps following the mic then, with the status still saying the
+  settings aren't read. Other changes still wait for a readback. A mute the device can't
+  confirm shows as OFF, never as Muted while the mic may be live.
 - `--mute on` and `--mute off` send one command without reading the device first, and
   `--mute toggle` and `--mute status` read only the mute state.
 - `--mute` and `--preset` now make their change the same way the TUI does. A preset load
   the device partly refuses exits with status 1.
+
+### Fixed
+
+- `--mute` and `--preset` no longer act on the connected device when given with `--demo` or
+  `--list`; the combination is refused.
 
 Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired these.
 

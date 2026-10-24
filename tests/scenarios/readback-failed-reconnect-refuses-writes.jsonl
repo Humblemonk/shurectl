@@ -9,10 +9,10 @@
 {"device": {"refuse": 0}}
 {"key": "Down"}
 {"key": "Enter"}
-{"expect": {"focus": "Mute", "status": "Mute → ON", "status_is_error": false, "state": {"muted": true}, "style": {"text": "● ON", "fg": "C_ERROR"}}}
+{"expect": {"focus": "Mute", "status": "Mute → ON. Settings not read from the device yet", "status_is_error": true, "state": {"muted": true}, "style": {"text": "● ON", "fg": "C_ERROR"}}}
 {"device": {"muted": false}}
 {"tick": 1000}
-{"expect": {"state": {"muted": false}, "status": "Mute → OFF (changed on the device)", "screen_contains": "○ OFF"}}
+{"expect": {"state": {"muted": false}, "status": "Mute → OFF (changed on the device). Settings not read from the device yet", "status_is_error": true, "screen_contains": "○ OFF"}}
 {"key": "Down"}
 {"key": "Right"}
 {"expect": {"focus": "Gain", "status": "Settings not read from the device yet", "no_packets": true, "state": {"gain_tenths": 240}, "screen_contains": "24 dB"}}

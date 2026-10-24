@@ -122,13 +122,17 @@ impl Request<'_> {
 /// state after any writes, or `{"error": …}` and exit status 1. Without it,
 /// each write prints the TUI's status line, and errors go to stderr.
 pub fn run(request: &Request) -> Result<()> {
-    let opened = || check(request).and_then(|()| open(request.device));
+    let opened = || -> Result<(Option<(usize, PresetSlot)>, ShureDevice)> {
+        check(request)?;
+        let preset = requested_preset(request)?;
+        Ok((preset, open(request.device)?))
+    };
     if !request.json {
-        let dev = opened()?;
-        return execute(request, dev, &mut |line| println!("{line}")).map(|_| ());
+        let (preset, dev) = opened()?;
+        return execute(request, preset, dev, &mut |line| println!("{line}")).map(|_| ());
     }
     let printed = opened()
-        .and_then(|dev| execute(request, dev, &mut |_| {}))
+        .and_then(|(preset, dev)| execute(request, preset, dev, &mut |_| {}))
         .and_then(|app| state_json(&app));
     match printed {
         Ok(value) => println!("{value}"),
@@ -138,6 +142,18 @@ pub fn run(request: &Request) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The slot `--preset` names and its preset, read before the device is opened:
+/// an empty slot or a file that won't parse is an error of its own.
+fn requested_preset(request: &Request) -> Result<Option<(usize, PresetSlot)>> {
+    let Some(number) = request.preset else {
+        return Ok(None);
+    };
+    let index = usize::from(number) - 1;
+    let slot =
+        presets::load_preset(index)?.with_context(|| format!("Preset slot {number} is empty."))?;
+    Ok(Some((index, slot)))
 }
 
 /// Refuse a combination that asks two things at once, before opening the device.
@@ -150,7 +166,12 @@ fn check(request: &Request) -> Result<()> {
 
 /// Do what `request` asks, reporting each write's status line. Returns the
 /// app, whose state is what the device has after the writes.
-fn execute(request: &Request, dev: ShureDevice, report: &mut dyn FnMut(&str)) -> Result<App> {
+fn execute(
+    request: &Request,
+    preset: Option<(usize, PresetSlot)>,
+    dev: ShureDevice,
+    report: &mut dyn FnMut(&str),
+) -> Result<App> {
     let mute = request.mute;
     let mut app = App {
         device_model: dev.model,
@@ -192,9 +213,9 @@ fn execute(request: &Request, dev: ShureDevice, report: &mut dyn FnMut(&str)) ->
 
     crate::reload_state(&mut app, &dev).context("Could not read device state")?;
     let mut device = Some(dev);
-    if let Some(slot) = request.preset {
-        app.presets = presets::load_all_presets();
-        let action = DeviceAction::LoadPreset(usize::from(slot) - 1);
+    if let Some((index, slot)) = preset {
+        app.presets[index] = Some(slot);
+        let action = DeviceAction::LoadPreset(index);
         write(&mut app, &mut device, "--preset", action, |_| {}, report)?;
     }
     // The TUI's focus order: mode, mute, gain, then the monitor levels.
@@ -212,6 +233,14 @@ fn execute(request: &Request, dev: ShureDevice, report: &mut dyn FnMut(&str)) ->
             |state| state.mode = mode,
             report,
         )?;
+        // A gain step starts from the gain read before the switch; whether
+        // every model reports the same gain once in Manual is unconfirmed, so
+        // read it again (the MV7 already does, in apply_action()).
+        if request.gain.is_some()
+            && let Some(dev) = device.as_ref()
+        {
+            crate::reload_state(&mut app, dev).context("Could not read device state")?;
+        }
     }
     let mute_to = mute.and_then(|action| match action {
         MuteAction::On => Some(true),
@@ -388,8 +417,13 @@ fn state_json(app: &App) -> Result<Value> {
     let slot = PresetSlot::from_device_state("", state, model);
     let mut settings = serde_json::to_value(&slot)?;
     if let Some(fields) = settings.as_object_mut() {
-        // A preset's own label, not a setting.
+        // A preset's own label, and how a load reads Monitor Mix: not settings.
         fields.remove("name");
+        fields.remove("monitor_mix_is_mic_level");
+        // Saved on every model, but only some have one.
+        if !model.has_playback_mix() {
+            fields.remove("playback_mix");
+        }
         // The preset file keeps EQ gains in tenths of a dB under `gain_db`;
         // show dB, as the top-level `gain_db` is, so -40 can't read as -40 dB.
         if let (Some(bands), Some(Value::Array(shown))) =
@@ -434,7 +468,8 @@ mod tests {
         let start = fake.log_len();
         let mut lines = Vec::new();
         let result = check(request).and_then(|()| {
-            execute(request, fake.open(), &mut |line| {
+            let preset = requested_preset(request)?;
+            execute(request, preset, fake.open(), &mut |line| {
                 lines.push(line.to_string())
             })
         });
@@ -503,11 +538,17 @@ mod tests {
             let mut settings = json["settings"].clone();
             for value in [&mut preset, &mut settings] {
                 value.as_object_mut().map(|fields| {
-                    fields.remove("name");
+                    for left_out in ["name", "monitor_mix_is_mic_level", "playback_mix"] {
+                        fields.remove(left_out);
+                    }
                     fields.remove("eq_bands")
                 });
             }
             assert_eq!(settings, preset, "{model:?}");
+            let shown = &json["settings"];
+            assert!(shown.get("monitor_mix_is_mic_level").is_none(), "{model:?}");
+            let has_playback = shown.get("playback_mix").is_some();
+            assert_eq!(has_playback, model.has_playback_mix(), "{model:?}");
             assert_eq!(json["model"], json!(model.display_name()));
             assert_eq!(json["muted"], json!(false));
             assert_eq!(json["serial"], json!("FAKE0001"));
@@ -752,5 +793,29 @@ mod tests {
         assert!(error_of(result).contains("--playback-mix"));
         assert_eq!(lines, ["Gain → 30 dB"], "the gain went out and says so");
         assert_eq!(writes(&packets), 1);
+    }
+
+    #[test]
+    fn a_gain_step_after_a_mode_switch_starts_from_a_fresh_read() {
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            ..FakeDevice::seed_state(DeviceModel::Mv7Plus)
+        };
+        let fake = FakeDevice::with_state(DeviceModel::Mv7Plus, auto);
+        let request = Request {
+            mode: Some(ModeChoice::Manual),
+            gain: Some(Amount::By(1)),
+            ..Request::default()
+        };
+        let (result, _, packets) = run_on(&fake, &request);
+        result.expect("mode, then gain");
+        let is_set = |packet: &Packet| matches!(packet.kind, PacketKind::Set { .. });
+        let mode_set = packets.iter().position(is_set).expect("the mode SET");
+        let gain_set = packets.iter().rposition(is_set).expect("the gain SET");
+        assert!(mode_set < gain_set);
+        assert!(
+            reads(&packets[mode_set..gain_set]) > 1,
+            "a readback between the two: {packets:?}"
+        );
     }
 }
