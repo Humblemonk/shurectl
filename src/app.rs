@@ -1464,6 +1464,10 @@ impl App {
             App::toggle_focused,
         ];
         let mut walker = self.scratch();
+        // Reused for every press: each resets the state, tab, focus and band
+        // below, which is all adjust_focused() and toggle_focused() read.
+        // Reset more here if they start reading other fields (name editing,
+        // the factory-reset confirmation).
         let mut probe = self.scratch();
         for tab in Tab::ALL {
             if self.is_tab_locked(tab) {
@@ -1500,7 +1504,8 @@ impl App {
     }
 }
 
-/// Status for a write refused because the device's settings haven't been read.
+/// Status for a write refused because the device's settings haven't been read,
+/// and the TUI's note after a mute that still goes through then.
 pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
 
 /// Status for a Mute Button change refused because its state wasn't read.

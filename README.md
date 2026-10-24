@@ -115,7 +115,7 @@ and exits:
 shurectl --mute toggle                   # Or on / off; status prints "on" or "off"
 shurectl --preset 2                      # Load preset slot 2
 shurectl --mode toggle                   # Or auto / manual
-shurectl --gain 24                       # dB; +1 / -1 steps like the arrow keys
+shurectl --gain 24                       # dB, rounded down to the model's step; +1 / -1 steps
 shurectl --monitor-mix 40                # 0-100, or +5 / -5
 shurectl --playback-mix 40               # 0-100, or +5 / -5, where the model has it
 shurectl --json                          # The device's state as one line of JSON
@@ -127,13 +127,15 @@ with the reason, where the TUI wouldn't make it: gain in Auto Level mode or with
 a Playback Level on a model without one. A failure exits with status 1; a mistyped option
 is reported on stderr with status 2. On their own, `--mute on` and `--mute off` send a single
 command without reading the device first, and `--mute toggle` and `--mute status` read only
-the mute state, so a mute button stays quick. Everything else is changed in the TUI.
+the mute state, so a mute button stays quick; combined with other options, the device is read
+first, as for any change. Everything else is changed in the TUI.
 
-`--json` prints the model, mute, firmware, serial and device name, and `settings`: the
-device's settings with the names and values a preset file uses, except EQ band gains, which
-are in dB here and in tenths of a dB in the file. Settings the model lacks are left out. When
-the device can't be opened or read, or a change is refused or fails, it prints
-`{"error": "..."}` and exits with status 1.
+`--json` prints the model, mute, firmware, serial and (where the model has one) device name,
+and `settings`: the device's settings with the names and values a preset file uses, except
+EQ band gains, which are in dB here and in tenths of a dB in the file. Settings the model
+lacks are left out. When the device can't be opened or read, or a change is refused or
+fails, it prints `{"error": "..."}` and exits with status 1. A mistyped option or a
+combination that can't work is an argument error instead, on stderr with status 2.
 
 With two mics, pick one by the serial `--list` shows, as in `--device 3EK26001276`. A path
 like `/dev/hidraw1` can change when a mic is replugged.

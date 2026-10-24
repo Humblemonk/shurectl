@@ -123,7 +123,6 @@ impl Request<'_> {
 /// each write prints the TUI's status line, and errors go to stderr.
 pub fn run(request: &Request) -> Result<()> {
     let opened = || -> Result<(Option<(usize, PresetSlot)>, ShureDevice)> {
-        check(request)?;
         let preset = requested_preset(request)?;
         Ok((preset, open(request.device)?))
     };
@@ -156,8 +155,9 @@ fn requested_preset(request: &Request) -> Result<Option<(usize, PresetSlot)>> {
     Ok(Some((index, slot)))
 }
 
-/// Refuse a combination that asks two things at once, before opening the device.
-fn check(request: &Request) -> Result<()> {
+/// Refuse a combination that asks two things at once. `main()` reports it as
+/// an argument error, as clap does the other conflicts.
+pub fn check(request: &Request) -> Result<()> {
     if request.mute == Some(MuteAction::Status) && request.combined() {
         bail!("--mute status reads the mute state alone; it can't be combined with other options");
     }
@@ -211,6 +211,7 @@ fn execute(
         return Ok(app);
     }
 
+    check_values(request, &app)?;
     crate::reload_state(&mut app, &dev).context("Could not read device state")?;
     let mut device = Some(dev);
     if let Some((index, slot)) = preset {
@@ -220,6 +221,7 @@ fn execute(
     }
     // The TUI's focus order: mode, mute, gain, then the monitor levels.
     if let Some(choice) = request.mode {
+        let switched_from = app.device_state.mode;
         let mode = match (choice, app.device_state.mode) {
             (ModeChoice::Auto, _) | (ModeChoice::Toggle, InputMode::Manual) => InputMode::Auto,
             (ModeChoice::Manual, _) | (ModeChoice::Toggle, InputMode::Auto) => InputMode::Manual,
@@ -233,10 +235,11 @@ fn execute(
             |state| state.mode = mode,
             report,
         )?;
-        // A gain step starts from the gain read before the switch; whether
-        // every model reports the same gain once in Manual is unconfirmed, so
-        // read it again (the MV7 already does, in apply_action()).
-        if request.gain.is_some()
+        // Whether every model keeps its gain across the switch is unconfirmed,
+        // so read the device again before a gain step or the JSON uses it. The
+        // MV7 is read twice, as apply_action() re-reads it too; it's one
+        // readback, not worth a model check.
+        if mode != switched_from
             && let Some(dev) = device.as_ref()
         {
             crate::reload_state(&mut app, dev).context("Could not read device state")?;
@@ -338,13 +341,72 @@ fn write(
     if !app.offers(&action) {
         bail!("{}", refusal(app, flag, &action));
     }
+    let is_mute = matches!(action, DeviceAction::SetMute(_));
     let before = app.device_state.clone();
     change(&mut app.device_state);
-    crate::apply_action(app, device, action, Some(before));
+    // The device was just read and already has this value. Don't send it:
+    // the MV7 answers [Failed] to a write that changes nothing. With no
+    // device, apply_action() still sets the TUI's status line, and sends nothing.
+    let unchanged = app.device_state == before
+        && !app.state_unread
+        && !matches!(action, DeviceAction::LoadPreset(_));
+    let mut no_device = None;
+    let target = if unchanged { &mut no_device } else { device };
+    crate::apply_action(app, target, action, Some(before));
     if app.status_is_error {
-        bail!("{}", app.status_message);
+        let mut message = without_tui_hints(&app.status_message);
+        // The screen would show the mute read back; say it instead.
+        if is_mute && app.device_connected && !app.state_unread {
+            message.push_str(if app.device_state.muted {
+                " Mute is ON."
+            } else {
+                " Mute is OFF."
+            });
+        }
+        bail!("{message}");
     }
     report(&app.status_message);
+    Ok(())
+}
+
+/// A failure's status line, without the TUI's advice: a one-shot run has no
+/// `r` to press, no screen showing OFF, and doesn't wait for a replug.
+fn without_tui_hints(status: &str) -> String {
+    status
+        .replace(
+            crate::STATE_UNREAD_HINT,
+            "The device's settings couldn't be read back.",
+        )
+        .replace(crate::MUTE_UNKNOWN_NOTE, "The mute state is unknown.")
+        .replace(crate::RECONNECT_HINT, "the device disconnected.")
+        .replace(crate::READ_BACK_NOTE, "The device was read back.")
+}
+
+/// Refuse what can be known wrong before anything is sent: an absolute value
+/// out of range for the model, or a Playback Level it lacks. Otherwise a bad
+/// `--gain` would leave an earlier `--mode` already changed. Steps can't fail;
+/// they stop at the ends.
+fn check_values(request: &Request, app: &App) -> Result<()> {
+    if request.mode == Some(ModeChoice::Auto) && request.gain.is_some() {
+        bail!("--gain: --mode auto turns on Auto Level, which sets its own gain.");
+    }
+    if let Some(amount @ Amount::To(_)) = request.gain {
+        gain_tenths(app, amount)?;
+    }
+    for (flag, amount) in [
+        ("--monitor-mix", request.monitor_mix),
+        ("--playback-mix", request.playback_mix),
+    ] {
+        if let Some(amount @ Amount::To(_)) = amount {
+            level(flag, 0, amount)?;
+        }
+    }
+    if request.playback_mix.is_some() && !app.device_model.has_playback_mix() {
+        bail!(
+            "{}",
+            refusal(app, "--playback-mix", &DeviceAction::SetMv7PlaybackMix(0))
+        );
+    }
     Ok(())
 }
 
@@ -782,17 +844,101 @@ mod tests {
 
     #[test]
     fn the_first_refused_write_stops_the_run() {
-        // The MVX2U Gen 1 takes the gain, then has no Playback Level.
-        let fake = FakeDevice::new(DeviceModel::Mvx2u);
+        // Gain Lock is only known from the readback: the mute goes out first.
+        let locked = DeviceState {
+            mv6_gain_locked: true,
+            ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
+        };
+        let fake = FakeDevice::with_state(DeviceModel::Mv6Gen2, locked);
         let request = Request {
+            mute: Some(MuteAction::On),
             gain: Some(Amount::To(30.0)),
-            playback_mix: Some(Amount::To(40.0)),
             ..Request::default()
         };
         let (result, lines, packets) = run_on(&fake, &request);
-        assert!(error_of(result).contains("--playback-mix"));
-        assert_eq!(lines, ["Gain → 30 dB"], "the gain went out and says so");
+        assert!(error_of(result).contains("Gain Lock"));
+        assert_eq!(lines, ["Mute → ON"], "the mute went out and says so");
         assert_eq!(writes(&packets), 1);
+    }
+
+    #[test]
+    fn a_value_known_wrong_is_refused_before_anything_is_sent() {
+        for (model, request) in [
+            (
+                DeviceModel::Mv6,
+                Request {
+                    mode: Some(ModeChoice::Auto),
+                    gain: Some(Amount::By(1)),
+                    ..Request::default()
+                },
+            ),
+            (
+                DeviceModel::Mv7Plus,
+                Request {
+                    mode: Some(ModeChoice::Toggle),
+                    gain: Some(Amount::To(50.0)),
+                    ..Request::default()
+                },
+            ),
+            (
+                DeviceModel::Mv6Gen2,
+                Request {
+                    mode: Some(ModeChoice::Toggle),
+                    monitor_mix: Some(Amount::To(40.5)),
+                    ..Request::default()
+                },
+            ),
+            (
+                DeviceModel::Mvx2u,
+                Request {
+                    gain: Some(Amount::To(30.0)),
+                    playback_mix: Some(Amount::To(40.0)),
+                    ..Request::default()
+                },
+            ),
+        ] {
+            let fake = FakeDevice::new(model);
+            let (result, lines, packets) = run_on(&fake, &request);
+            assert!(result.is_err(), "{model:?}");
+            assert!(lines.is_empty(), "{model:?}: {lines:?}");
+            assert_eq!(packets.len(), 0, "{model:?}: not even a readback");
+        }
+    }
+
+    #[test]
+    fn failures_leave_out_the_tuis_advice() {
+        let unread = format!("Device error: timeout. {}", crate::STATE_UNREAD_HINT);
+        let mute = format!(
+            "Device error: timeout. {} {}",
+            crate::MUTE_UNKNOWN_NOTE,
+            crate::STATE_UNREAD_HINT
+        );
+        let gone = format!("Device error: gone — {}", crate::RECONNECT_HINT);
+        let read_back = format!("Device error: timeout. {}", crate::READ_BACK_NOTE);
+        assert_eq!(
+            without_tui_hints(&read_back),
+            "Device error: timeout. The device was read back."
+        );
+        assert_eq!(
+            without_tui_hints(&unread),
+            "Device error: timeout. The device's settings couldn't be read back."
+        );
+        assert_eq!(
+            without_tui_hints(&mute),
+            "Device error: timeout. The mute state is unknown. \
+             The device's settings couldn't be read back."
+        );
+        assert_eq!(
+            without_tui_hints(&gone),
+            "Device error: gone — the device disconnected."
+        );
+        for message in [unread, mute, gone] {
+            let plain = without_tui_hints(&message);
+            assert!(
+                !plain.contains("press r") && !plain.contains("shown as OFF"),
+                "{plain}"
+            );
+        }
     }
 
     #[test]
@@ -817,5 +963,42 @@ mod tests {
             reads(&packets[mode_set..gain_set]) > 1,
             "a readback between the two: {packets:?}"
         );
+    }
+
+    #[test]
+    fn a_value_the_device_already_has_is_not_sent() {
+        // The MV7 answers [Failed] to a write that changes nothing.
+        for model in MODELS {
+            let fake = FakeDevice::new(model);
+            let request = Request {
+                mode: Some(ModeChoice::Manual),
+                gain: Some(Amount::To(24.0)),
+                monitor_mix: Some(Amount::By(-5)),
+                ..Request::default()
+            };
+            let (result, lines, packets) = run_on(&fake, &request);
+            result.unwrap_or_else(|e| panic!("{model:?}: {e:#}"));
+            assert_eq!(writes(&packets), 0, "{model:?}: {packets:?}");
+            assert_eq!(
+                lines.len(),
+                3,
+                "{model:?}: each still says where it is: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_mute_that_was_read_back_says_where_it_is() {
+        // The MV7 answers [Failed] to the SET and to its check, then the
+        // re-read works: the mute didn't land, and the error says so.
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        fake.faults_mut(|faults| faults.refuse = 2);
+        let (result, lines, _) = run_on(&fake, &mute(MuteAction::On));
+        let err = error_of(result);
+        assert!(
+            err.ends_with("The device was read back. Mute is OFF."),
+            "{err}"
+        );
+        assert!(lines.is_empty());
     }
 }

@@ -50,7 +50,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use crossterm::{
     cursor::Show,
     event::{
@@ -173,6 +173,11 @@ fn main() -> Result<()> {
         playback_mix: cli.playback_mix,
     };
     if one_shot.is_one_shot() {
+        if let Err(e) = cli::check(&one_shot) {
+            Cli::command()
+                .error(clap::error::ErrorKind::ArgumentConflict, e)
+                .exit();
+        }
         return cli::run(&one_shot);
     }
 
@@ -569,11 +574,14 @@ fn step(
                 // Whether a device applies a mute before acking it is
                 // unconfirmed, so a poll straight after could read the old
                 // state and show it as changed on the device.
-                if matches!(action, DeviceAction::SetMute(_)) {
+                let mute = matches!(action, DeviceAction::SetMute(_));
+                if mute {
                     loop_state.last_mute_poll = now;
                 }
                 apply_action(app, device, action, before);
-                note_unread(app);
+                if mute {
+                    note_unread(app);
+                }
             }
             None => {}
         }
@@ -1310,9 +1318,9 @@ fn recover_from_failure(
         format!("Device error: {e} — {RECONNECT_HINT}")
     } else {
         match read_back {
-            Some(true) => format!("Device error: {e}. Settings read back from the device."),
+            Some(true) => format!("Device error: {e}. {READ_BACK_NOTE}"),
             Some(false) if mute_unknown => {
-                format!("Device error: {e}. Mute state unknown, shown as OFF. {STATE_UNREAD_HINT}")
+                format!("Device error: {e}. {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}")
             }
             Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
             None => format!("Device error: {e}"),
@@ -1401,6 +1409,12 @@ const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Status-bar wording for a lost device, shared by the poll and failed commands.
 const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in.";
 
+/// Status-bar note after a failed write whose device was then read again.
+const READ_BACK_NOTE: &str = "Settings read back from the device.";
+
+/// Status-bar note for a mute nothing could read back (`recover_from_failure()`).
+const MUTE_UNKNOWN_NOTE: &str = "Mute state unknown, shown as OFF.";
+
 /// What one presence poll does.
 #[derive(Debug, PartialEq)]
 enum PollStep {
@@ -1484,9 +1498,9 @@ fn poll_mute(app: &mut App, device: &Option<ShureDevice>) {
     }
 }
 
-/// While the settings are unread, keep saying so after a change that still
-/// goes through then (mute): the rest of the screen isn't the device's. The
-/// TUI's status bar only; the CLI prints the plain line.
+/// While the settings are unread, keep saying so after a mute, which still
+/// goes through then: the rest of the screen isn't the device's. The TUI's
+/// status bar only; the CLI prints the plain line.
 fn note_unread(app: &mut App) {
     if app.state_unread && !app.status_is_error {
         let done = app.status_message.trim_end_matches('.').to_string();

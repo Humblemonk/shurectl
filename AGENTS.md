@@ -78,15 +78,15 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 **Mute poll:** `poll_mute()` reads the mute state every second (`read_mute()`: one GET, or
 `micMute` on the MV7) while connected, so a press of the mic's own mute button shows without
 `r`. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
-allowed before a readback in the TUI and CLI, because refusing it would leave the mic live.
-A mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
+allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. A
+mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
 (`recover_from_failure()`). It only reads. It ignores an unusable answer and marks the device
-disconnected on a `Disconnected` error. The binary models drain queued input before the GET. On the MV6
-Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the press
-(tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
-their mute GET reflects it, and whether the MV7 answers `micMute` within the poll's 200 ms.
-A key that writes mute pushes the next poll back a second, since whether a device applies a
-mute before acking it is unconfirmed.
+disconnected on a `Disconnected` error. The binary models drain queued input before the GET. On
+the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the
+press (tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
+their mute GET reflects it, and whether the MV7 answers `micMute` within the poll's 200 ms. A
+key that writes mute pushes the next poll back a second, since whether a device applies a mute
+before acking it is unconfirmed.
 
 ## Adding a New Command
 
@@ -114,13 +114,12 @@ In order, without skipping steps:
 ## Command line
 
 The CLI stays small: one-shot commands for scripts, hotkeys and Stream Deck buttons, with no
-long-running modes and no general get/set (maintainer decisions 2026-10-23 and 2026-10-24,
-after #58 and #126). `--json` prints identity, mute and the settings as `PresetSlot`
-serializes them (EQ band gains converted from tenths to dB), so a new setting shows there
-through step 6 with no extra work. Only mute,
-preset loading, mode, gain, Monitor Mix and Playback Level are written; don't add another, or
-a flag that repeats one. Every write goes through `apply_action()` behind `App::offers()`
-(`cli.rs`), so the CLI changes only what the TUI would change right now.
+long-running modes and no general get/set (maintainer decisions 2026-10-23 and 2026-10-24, after
+#58 and #126). `--json` prints identity, mute and the settings as `PresetSlot` serializes them
+(EQ band gains converted from tenths to dB), so a new setting shows there through step 6 with no
+extra work. Only mute, preset loading, mode, gain, Monitor Mix and Playback Level are written;
+don't add another, or a flag that repeats one. Every write goes through `apply_action()` behind
+`App::offers()` (`cli.rs`), so the CLI changes only what the TUI would change right now.
 
 ## TUI / Focus Model
 

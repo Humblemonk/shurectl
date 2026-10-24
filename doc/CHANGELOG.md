@@ -27,7 +27,8 @@ device's state as JSON.
 ### Changed
 
 - Mute works before the device's settings have been read, in the TUI and with `--mute`, and
-  the shown mute state keeps following the mic then, with the status still saying the
+  the mute poll keeps running then (a press of the mic's own button shows on the MV6 Gen 2,
+  tested under Linux; unconfirmed on other models), with the status still saying the
   settings aren't read. Other changes still wait for a readback. A mute the device can't
   confirm shows as OFF, never as Muted while the mic may be live.
 - `--mute on` and `--mute off` send one command without reading the device first, and
