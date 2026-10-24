@@ -89,10 +89,12 @@ mute whose outcome nothing could read back shows as OFF, never Muted over a live
 (`recover_from_failure()`). The poll only reads. It ignores an unusable answer and marks the
 device disconnected on a `Disconnected` error. The binary models drain queued input first. On
 the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the
-press (tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
-their GETs reflect changes made elsewhere, and whether the MV7 answers each line within the
-poll's 200 ms. Any write from the TUI pushes the next poll back a second (`send_from_tui()`),
-since whether a device applies a write before acking it is unconfirmed.
+press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed from the
+command line showed in a running TUI, and the next arrow key stepped from the new gain (tested
+2026-10-24). Unconfirmed elsewhere: whether other models report a press, whether their GETs
+reflect changes made elsewhere, and whether the MV7 answers each line within the poll's 200 ms.
+Any write from the TUI pushes the next poll back a second (`send_from_tui()`), since whether a
+device applies a write before acking it is unconfirmed.
 
 ## Adding a New Command
 

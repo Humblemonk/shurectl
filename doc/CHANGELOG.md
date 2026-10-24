@@ -36,8 +36,8 @@ device's state as JSON.
   `--mute toggle` and `--mute status` read only the mute state.
 - The TUI follows mode, gain, Monitor Mix and Playback Level as it follows mute: changed from
   a script, a Stream Deck or MOTIV, each shows within a second, and a mode change re-reads
-  every setting. Before, the next arrow key stepped from the old value. Unconfirmed on
-  hardware.
+  every setting. Before, the next arrow key stepped from the old value. Tested on the MVX2U
+  Gen 2; unconfirmed on other models.
 - `--mute` and `--preset` now make their change the same way the TUI does. A preset load
   the device partly refuses exits with status 1.
 

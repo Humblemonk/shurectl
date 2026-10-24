@@ -133,10 +133,10 @@ button stays quick; combined with other options, the device is read first, as fo
 Everything else is changed in the TUI.
 
 With the TUI open, a change made from the command line to mute, mode, gain or a monitor level
-shows there within a second (unconfirmed on hardware). After loading a preset from the command
-line, or changing anything else in MOTIV, press `r` in the TUI before adjusting it: it would
-otherwise step from the values it last read. Commands and the TUI then talk to the device at the
-same time, which is untested; avoid it in the middle of a recording.
+shows there within a second. After loading a preset from the command line, or changing
+anything else in MOTIV, press `r` in the TUI before adjusting it: it would otherwise step from
+the values it last read. While recording, avoid running commands with the TUI open, since both
+then talk to the device at once.
 
 `--json` prints the model, mute, firmware, serial and (where the model has one) device name,
 and `settings`: the device's settings with the names and values a preset file uses, except
