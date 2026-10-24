@@ -137,9 +137,6 @@ exits with status 1.
 With two mics, pick one by the serial `--list` shows, as in `--device 3EK26001276`. A path
 like `/dev/hidraw1` can change when a mic is replugged.
 
-On Windows, a Stream Deck "Open" action may flash a console window each time it runs
-shurectl (untested). A Stream Deck plugin that runs commands hidden avoids it.
-
 ## Troubleshooting
 
 **"Cannot open device"** — device not found or a permissions issue.
