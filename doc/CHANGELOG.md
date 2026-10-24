@@ -6,6 +6,35 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## Unreleased
+
+Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the
+device's state as JSON.
+
+### Added
+
+- `--json` prints the device's state as one line of JSON: its model, mute, firmware, serial
+  and device name, and its settings with the names and values a preset file uses (EQ gains
+  in dB). A failure prints `{"error": …}` and exits with status 1.
+- `--mode auto|manual|toggle`, `--gain`, `--monitor-mix` and `--playback-mix` change those
+  settings without the TUI, to a value or by `+N`/`-N` steps like the arrow keys. They can
+  be combined, and each is refused with the reason where the TUI wouldn't make the change,
+  such as gain in Auto Level mode.
+- `--device` also takes the serial `--list` shows, which stays the same when a mic is
+  replugged, unlike its path.
+
+### Changed
+
+- Mute works before the device's settings have been read, in the TUI and with `--mute`, and
+  the shown mute state keeps following the mic then. Other changes still wait for a
+  readback.
+- `--mute on` and `--mute off` send one command without reading the device first, and
+  `--mute toggle` and `--mute status` read only the mute state.
+- `--mute` and `--preset` now make their change the same way the TUI does. A preset load
+  the device partly refuses exits with status 1.
+
+Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired these.
+
 ## 2.14.2 — 2026-10-23
 
 Mute follows the mic's own button, and presets leave mute alone.

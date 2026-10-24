@@ -1389,6 +1389,115 @@ impl App {
             _ => None,
         }
     }
+
+    // ── What the TUI offers ───────────────────────────────────────────────────
+
+    /// Whether the TUI could send an action of `action`'s kind right now: a
+    /// key sends it, or ←/→ or Enter on a control of a tab this model shows and
+    /// hasn't locked. `--set` refuses the rest, so a script reaches no setting
+    /// the model lacks, nor one the screen hides in its current mode, tone mode
+    /// or LED theme or behind Gain Lock.
+    pub fn offers(&self, action: &DeviceAction) -> bool {
+        use DeviceAction::*;
+        match action {
+            SavePreset(_) | LoadPreset(_) | DeletePreset(_) | PersistPresetName(_) | Refresh => {
+                true
+            }
+            // Sent by the presence poll, never by a key.
+            Reconnect => false,
+            RenameDevice(_) => self.device_model.has_device_rename(),
+            FactoryReset => self.supports_factory_reset(),
+            FlattenEq => !self.is_tab_locked(Tab::Eq) && self.eq_bands_shown(),
+            SetGain(_)
+            | SetMode(_)
+            | SetAutoPosition(_)
+            | SetAutoTone(_)
+            | SetAutoGain(_)
+            | SetMute(_)
+            | SetPhantom(_)
+            | SetLock(_)
+            | SetLimiter(_)
+            | SetCompressor(_)
+            | SetHpf(_)
+            | SetEqEnable(_)
+            | SetEqBandEnable(..)
+            | SetEqBandGain(..)
+            | SetMv6Denoiser(_)
+            | SetMv6PopperStopper(_)
+            | SetMv6MuteBtnDisable(_)
+            | SetMv6Tone(_)
+            | SetMv6GainLock(_)
+            | SetMonitorMix(_)
+            | SetMv7PlaybackMix(_)
+            | SetAdaptationRate(_)
+            | SetDenoiserLevel(_)
+            | SetToneMode(_)
+            | SetMicPreset(_)
+            | SetMv7ReverbOutput(_)
+            | SetMv7ReverbMonitor(_)
+            | SetMv7ReverbPreset(_)
+            | SetMv7ReverbIntensity(_)
+            | SetMv7LedBehavior(_)
+            | SetMv7LedBrightness(_)
+            | SetMv7LedLiveTheme(_)
+            | SetMv7LedSolidTheme(_)
+            | SetMv7LedPulsingTheme(_)
+            | SetMv7LedSolidRgb(_)
+            | SetMv7LedPulsingRgb(_)
+            | SetMv7LedLiveEdgeRgb(_)
+            | SetMv7LedLiveMiddleRgb(_)
+            | SetMv7LedLiveInteriorRgb(_)
+            | SetEqPreset(_)
+            | SetLedLiveMeter(_)
+            | SetLedNightMode(_) => self.a_control_sends(action),
+        }
+    }
+
+    /// Whether ←/→ or Enter on a control the TUI shows now sends an action of
+    /// `action`'s kind. Walks every unlocked tab's focus cycle and tries each
+    /// control on a scratch copy, since adjusting one changes the state.
+    fn a_control_sends(&self, action: &DeviceAction) -> bool {
+        let kind = std::mem::discriminant(action);
+        let presses: [fn(&mut App) -> Option<DeviceAction>; 3] = [
+            |app| app.adjust_focused(1),
+            |app| app.adjust_focused(-1),
+            App::toggle_focused,
+        ];
+        let mut walker = self.scratch();
+        let mut probe = self.scratch();
+        for tab in Tab::ALL {
+            if self.is_tab_locked(tab) {
+                continue;
+            }
+            walker.active_tab = tab;
+            walker.reset_focus_for_tab();
+            let mut seen = Vec::new();
+            while !seen.contains(&walker.focus) {
+                seen.push(walker.focus);
+                for press in presses {
+                    probe.device_state.clone_from(&self.device_state);
+                    probe.active_tab = tab;
+                    probe.focus = walker.focus;
+                    probe.eq_selected_band = walker.eq_selected_band;
+                    if press(&mut probe).is_some_and(|sent| std::mem::discriminant(&sent) == kind) {
+                        return true;
+                    }
+                }
+                walker.focus_next();
+            }
+        }
+        false
+    }
+
+    /// A copy of the model and settings for `a_control_sends()` to change.
+    fn scratch(&self) -> App {
+        App {
+            device_model: self.device_model,
+            // Cloned so the walk can change it without touching the real state.
+            device_state: self.device_state.clone(),
+            ..App::default()
+        }
+    }
 }
 
 /// Status for a write refused because the device's settings haven't been read.
@@ -2409,5 +2518,62 @@ mod tests {
             app.adjust_focused(-1),
             Some(DeviceAction::SetEqBandGain(0, 0))
         ));
+    }
+
+    #[test]
+    fn offers_only_what_a_control_on_screen_sends() {
+        let app = |model, mode| App {
+            device_model: model,
+            device_state: DeviceState {
+                mode,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7,
+            DeviceModel::Mv7Plus,
+        ] {
+            let manual = app(model, InputMode::Manual);
+            assert_eq!(
+                manual.offers(&DeviceAction::SetPhantom(true)),
+                model.has_phantom_power(),
+                "{model:?}"
+            );
+            assert!(manual.offers(&DeviceAction::SetGain(0)), "{model:?}");
+            assert!(!app(model, InputMode::Auto).offers(&DeviceAction::SetGain(0)));
+            assert_eq!(
+                manual.offers(&DeviceAction::RenameDevice("x".into())),
+                model.has_device_rename()
+            );
+            assert_eq!(
+                manual.offers(&DeviceAction::FactoryReset),
+                manual.supports_factory_reset()
+            );
+            assert!(!manual.offers(&DeviceAction::Reconnect));
+        }
+
+        let mut locked = app(DeviceModel::Mv6Gen2, InputMode::Manual);
+        locked.device_state.mv6_gain_locked = true;
+        assert!(!locked.offers(&DeviceAction::SetGain(0)));
+
+        // EQ and Dynamics are locked in Auto on the Gen 1.
+        let gen1 = app(DeviceModel::Mvx2u, InputMode::Auto);
+        assert!(!gen1.offers(&DeviceAction::SetLimiter(true)));
+        assert!(!gen1.offers(&DeviceAction::FlattenEq));
+        assert!(app(DeviceModel::Mvx2u, InputMode::Manual).offers(&DeviceAction::FlattenEq));
+
+        // A color only under its behavior's Custom theme.
+        let mut leds = app(DeviceModel::Mv7Plus, InputMode::Manual);
+        let solid_red = DeviceAction::SetMv7LedSolidRgb([255, 0, 0]);
+        assert!(!leds.offers(&solid_red));
+        leds.device_state.led_behavior = LedBehavior::Solid;
+        leds.device_state.led_solid_theme = LedSolidTheme::Custom;
+        assert!(leds.offers(&solid_red));
+        assert!(!leds.offers(&DeviceAction::SetMv7LedLiveTheme(LedLiveTheme::Space)));
     }
 }

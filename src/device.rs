@@ -318,6 +318,49 @@ impl ShureDevice {
         Ok(Self::with_transport(model, open_hid(&api, info, path)?))
     }
 
+    /// Open the device `--device` names: a HID path from `--list`, or a
+    /// serial, the one printed on the device (`--list`'s S/N) or the USB one,
+    /// compared ignoring case. A path can change when the device is replugged
+    /// or the computer restarts; a serial doesn't.
+    pub fn open_selected(selector: &str) -> Result<Self> {
+        let api = HidApi::new().context("Failed to initialise hidapi")?;
+        if api
+            .device_list()
+            .any(|d| d.path().to_string_lossy() == selector)
+        {
+            return Self::open_path(selector);
+        }
+        let found = shure_devices(&api);
+        let same = |serial: &str| serial.eq_ignore_ascii_case(selector);
+        let mut matches: Vec<_> = found
+            .iter()
+            .filter(|(info, _)| info.serial_number().is_some_and(same))
+            .collect();
+        if matches.is_empty() {
+            // The printed serial is only known by asking each device.
+            matches = found
+                .iter()
+                .filter(|(info, model)| {
+                    Self::open_info(&api, info, *model)
+                        .ok()
+                        .and_then(|dev| dev.read_factory_serial())
+                        .is_some_and(|serial| same(&serial))
+                })
+                .collect();
+        }
+        match matches.as_slice() {
+            [(info, model)] => Self::open_info(&api, info, *model),
+            [] => Err(anyhow!(
+                "No Shure device has the path or serial {selector}. Run --list to see them.\n\
+                 Hint: {ACCESS_HINT}."
+            )),
+            several => Err(anyhow!(
+                "{} Shure devices have the serial {selector}. Use a path from --list instead.",
+                several.len()
+            )),
+        }
+    }
+
     fn next_seq(&self) -> u8 {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }

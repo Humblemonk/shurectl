@@ -25,6 +25,7 @@
 //!   shurectl --preset 1        # Load preset slot 1 (no TUI)
 
 mod app;
+mod cli;
 mod device;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
@@ -43,7 +44,7 @@ use std::io;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use crossterm::{
     cursor::Show,
@@ -57,41 +58,11 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, DeviceAction, STATE_UNREAD_HINT};
+use cli::{Amount, ModeChoice, MuteAction};
 use device::ShureDevice;
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
 use protocol::{DeviceModel, InputMode, format_gain};
-
-/// Mute action for the `--mute` flag.
-#[derive(Debug, Clone, PartialEq)]
-enum MuteAction {
-    /// Flip the current mute state.
-    Toggle,
-    /// Mute the microphone.
-    On,
-    /// Unmute the microphone.
-    Off,
-    /// Print the current state (`on` or `off`) without changing it.
-    Status,
-}
-
-impl std::str::FromStr for MuteAction {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "toggle" => Ok(MuteAction::Toggle),
-            "on" => Ok(MuteAction::On),
-            "off" => Ok(MuteAction::Off),
-            "status" => Ok(MuteAction::Status),
-            other => {
-                anyhow::bail!(
-                    "unknown mute action \"{other}\". Valid options: toggle, on, off, status"
-                )
-            }
-        }
-    }
-}
 
 #[derive(Parser)]
 #[command(
@@ -110,10 +81,11 @@ struct Cli {
     #[arg(long, short)]
     list: bool,
 
-    /// Open a specific device by its HID path.
-    /// Without this flag, the only detected device is opened (error if multiple found).
-    /// Use --list to see available paths.
-    #[arg(long, short = 'D')]
+    /// Open a specific device by its HID path or its serial, as --list shows
+    /// them. Without this flag, the only detected device is opened (error if
+    /// multiple found). A path can change when the device is replugged; a
+    /// serial doesn't.
+    #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
     device: Option<String>,
 
     /// Set mute state without launching the TUI.
@@ -123,15 +95,45 @@ struct Cli {
     mute: Option<MuteAction>,
 
     /// Load a saved preset slot (1-4) onto the device without launching the TUI.
-    #[arg(long, short = 'p', value_name = "SLOT", conflicts_with = "mute",
+    #[arg(long, short = 'p', value_name = "SLOT",
+          conflicts_with_all = ["mute", "mode", "gain", "monitor_mix", "playback_mix"],
           value_parser = clap::value_parser!(u8).range(1..=presets::PRESET_COUNT as i64))]
     preset: Option<u8>,
+
+    /// Print the device's settings as one line of JSON and exit: the model,
+    /// mute, firmware and serial, and the settings as a preset saves them.
+    /// With other options, print it after their changes.
+    #[arg(long, conflicts_with_all = ["list", "demo"])]
+    json: bool,
+
+    /// Switch input mode without launching the TUI: auto, manual or toggle.
+    #[arg(long, value_enum, value_name = "MODE", conflicts_with_all = ["list", "demo"])]
+    mode: Option<ModeChoice>,
+
+    /// Set the gain in dB without launching the TUI (Manual mode, Gain Lock
+    /// off), or move it +N/-N steps, as the arrow keys do.
+    #[arg(long, value_name = "DB_OR_STEPS", allow_hyphen_values = true,
+          value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
+    gain: Option<Amount>,
+
+    /// Set Monitor Mix (the Mic Level on models with a Playback Level), 0-100,
+    /// or move it +N/-N, without launching the TUI.
+    #[arg(long, value_name = "PERCENT_OR_STEPS", allow_hyphen_values = true,
+          value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
+    monitor_mix: Option<Amount>,
+
+    /// Set the Playback Level, 0-100, or move it +N/-N, without launching the
+    /// TUI. On models with a Playback Level.
+    #[arg(long, value_name = "PERCENT_OR_STEPS", allow_hyphen_values = true,
+          value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
+    playback_mix: Option<Amount>,
 
     /// Maintainers only: drive the app headlessly with JSON lines on stdin and
     /// stdout, for tests/e2e.rs and agent QA. Needs --demo MODEL or
     /// --fake-device MODEL; never opens real hardware.
     #[cfg(feature = "qa")]
-    #[arg(long, conflicts_with_all = ["device", "list", "mute", "preset"])]
+    #[arg(long, conflicts_with_all = ["device", "list", "mute", "preset", "json", "mode", "gain",
+                                      "monitor_mix", "playback_mix"])]
     qa: bool,
 
     /// With --qa: run against a fake device of this model, which logs every
@@ -154,13 +156,18 @@ fn main() -> Result<()> {
         return harness::run_qa(parse_demo_model(model)?, fake);
     }
 
-    if let Some(action) = cli.mute {
-        let path = cli.device.as_deref();
-        return cmd_mute(action, path);
-    }
-
-    if let Some(slot_number) = cli.preset {
-        return cmd_preset(slot_number.into(), cli.device.as_deref());
+    let one_shot = cli::Request {
+        device: cli.device.as_deref(),
+        json: cli.json,
+        mute: cli.mute,
+        preset: cli.preset,
+        mode: cli.mode,
+        gain: cli.gain,
+        monitor_mix: cli.monitor_mix,
+        playback_mix: cli.playback_mix,
+    };
+    if one_shot.is_one_shot() {
+        return cli::run(&one_shot);
     }
 
     if cli.list {
@@ -202,8 +209,8 @@ fn main() -> Result<()> {
         };
         (None, true, Some(model))
     } else {
-        let open_result = if let Some(ref path) = cli.device {
-            ShureDevice::open_path(path)
+        let open_result = if let Some(ref selector) = cli.device {
+            ShureDevice::open_selected(selector)
         } else {
             ShureDevice::open()
         };
@@ -302,70 +309,6 @@ fn install_terminal_restore_hook() {
         drop(TerminalCleanup);
         default_hook(info);
     }));
-}
-
-/// Apply a mute action to the connected device without launching the TUI.
-///
-/// Opens the device (or the specific path if `--device` was given), reads
-/// current state to resolve `Toggle`, then sends a single `set_mute()`.
-/// Prints the resulting state to stdout so the caller can see what happened.
-/// `Status` prints a bare `on`/`off` instead, for status-bar scripts.
-fn cmd_mute(action: MuteAction, device_path: Option<&str>) -> Result<()> {
-    let dev = open_cli_device(device_path)?;
-    let read_muted = || -> Result<bool> {
-        Ok(dev
-            .get_state()
-            .context("Could not read device state")?
-            .state
-            .muted)
-    };
-
-    let muted = match action {
-        MuteAction::On => true,
-        MuteAction::Off => false,
-        MuteAction::Toggle => !read_muted()?,
-        MuteAction::Status => {
-            println!("{}", if read_muted()? { "on" } else { "off" });
-            return Ok(());
-        }
-    };
-
-    dev.set_mute(muted).context("Could not set mute")?;
-    println!("Mute → {}", if muted { "ON" } else { "OFF" });
-    Ok(())
-}
-
-/// Load preset slot `slot_number` (1-based) onto the device without launching the TUI.
-///
-/// Reads the current state first so settings the preset doesn't cover keep
-/// their values, then sends everything the same way the Presets tab does.
-fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
-    let slot = presets::load_preset(slot_number - 1)?
-        .with_context(|| format!("Preset slot {slot_number} is empty."))?;
-    let dev = open_cli_device(device_path)?;
-    let model = dev.model;
-    let mut state = dev
-        .get_state()
-        .context("Could not read device state")?
-        .state;
-    let write_monitor_mix = apply_preset_to_state(&slot, &mut state, model);
-    let refused = apply_preset_to_device(&Some(dev), &slot, &state, model, write_monitor_mix)
-        .context("Could not load preset")?;
-    println!(
-        "Loaded \"{}\".{}{}",
-        slot.name,
-        refused_note(&refused),
-        unread_note(&slot, &state, model)
-    );
-    Ok(())
-}
-
-fn open_cli_device(device_path: Option<&str>) -> Result<ShureDevice> {
-    match device_path {
-        Some(path) => ShureDevice::open_path(path),
-        None => ShureDevice::open(),
-    }
-    .context("Could not open device")
 }
 
 /// Parse a `--demo` model string into a `DeviceModel`.
@@ -1235,7 +1178,9 @@ enum ActionKind {
     PresetFile,
     /// Saves the shown state as a preset.
     SavePreset,
-    /// One write whose value doesn't come from the shown state.
+    /// One write that can't jump a level from stale state: its value doesn't
+    /// come from the shown state, or it is mute, an on/off that the screen
+    /// shows once written. Mute must work even when a readback failed.
     FixedWrite,
     /// One write built on the shown state.
     Write,
@@ -1250,14 +1195,15 @@ fn action_kind(action: &DeviceAction) -> ActionKind {
             ActionKind::PresetFile
         }
         DeviceAction::SavePreset(_) => ActionKind::SavePreset,
-        DeviceAction::RenameDevice(_) | DeviceAction::FactoryReset => ActionKind::FixedWrite,
+        DeviceAction::RenameDevice(_) | DeviceAction::FactoryReset | DeviceAction::SetMute(_) => {
+            ActionKind::FixedWrite
+        }
         DeviceAction::LoadPreset(_) | DeviceAction::FlattenEq => ActionKind::Writes,
         DeviceAction::SetGain(_)
         | DeviceAction::SetMode(_)
         | DeviceAction::SetAutoPosition(_)
         | DeviceAction::SetAutoTone(_)
         | DeviceAction::SetAutoGain(_)
-        | DeviceAction::SetMute(_)
         | DeviceAction::SetPhantom(_)
         | DeviceAction::SetLock(_)
         | DeviceAction::SetLimiter(_)
@@ -1496,13 +1442,14 @@ const MUTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Read the mic's mute state and show it, so a press of its mute button (or
 /// another app muting it) shows without `r`. Nothing changes when the device
 /// gives no usable answer; the next poll asks again. A HID failure marks the
-/// device disconnected, as the presence poll does. Skipped in demo mode, while
-/// disconnected, and while the state is unread, where `r` is the way back.
+/// device disconnected, as the presence poll does. Skipped in demo mode and
+/// while disconnected. It runs while the other settings are unread too, since
+/// mute can be written then and the screen should show the mic's real state.
 fn poll_mute(app: &mut App, device: &Option<ShureDevice>) {
     let Some(dev) = device.as_ref() else {
         return; // demo mode
     };
-    if !app.device_connected || app.state_unread {
+    if !app.device_connected {
         return;
     }
     match dev.read_mute() {

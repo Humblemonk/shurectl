@@ -35,6 +35,7 @@ Change the gate in the script, not in docs or CI.
 src/
   main.rs       # Entry point, CLI args, one-shot commands, event loop, apply_action()
   app.rs        # App state: Tab, Focus, DeviceAction; DeviceState lives in protocol.rs
+  cli.rs        # One-shot commands: --json, --mute, --preset, --mode, --gain, monitor levels
   device.rs     # hidapi wrapper: open device, send/receive HID reports
   meter.rs      # cpal capture: dBFS metering, RollingWindow, PeakWindow
   mouse.rs      # HitMap from the last rendered frame; clicks/wheel → the same key actions
@@ -75,8 +76,9 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
 **Mute poll:** `poll_mute()` reads the mute state every second (`read_mute()`: one GET, or
-`micMute` on the MV7) while connected and read, so a press of the mic's own mute button shows
-without `r`. It only reads. It ignores an unusable answer and marks the device disconnected
+`micMute` on the MV7) while connected, so a press of the mic's own mute button shows without
+`r`. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
+allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. It only reads. It ignores an unusable answer and marks the device disconnected
 on a `Disconnected` error. The binary models drain queued input before the GET. On the MV6
 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the press
 (tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
@@ -98,13 +100,25 @@ In order, without skipping steps:
 3. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it
    (`get_state_reads_back_the_seeded_state_on_every_model` fails until you do)
 4. `app.rs`: `DeviceAction` variant if user-triggerable, wired into `adjust_focused()` or
-   `toggle_focused()`; `main.rs`: handle it in `apply_action()`
+   `toggle_focused()`, and listed in `App::offers()`; `main.rs`: handle it in
+   `apply_action()`. It gets no command-line flag: see **Command line**
 5. `ui.rs`: UI element if needed, following **Cross-Device UI Consistency**
 6. `presets.rs`: if it's a DSP setting, add it to `PresetSlot`, `from_device_state()` and
    `apply_to_device_state()` (see the **New `PresetSlot` field** trap under Review)
 7. `README.md`: a row in the collapsed Device support table, with the models that have it,
    and the key table if a shortcut changed. Keep the top of the readme for install and first
    run; don't add sections there
+
+## Command line
+
+The CLI stays small: one-shot commands for scripts, hotkeys and Stream Deck buttons, with no
+long-running modes and no general get/set (maintainer decisions 2026-10-23 and 2026-10-24,
+after #58 and #126). `--json` prints identity, mute and the settings as `PresetSlot`
+serializes them (EQ band gains converted from tenths to dB), so a new setting shows there
+through step 6 with no extra work. Only mute,
+preset loading, mode, gain, Monitor Mix and Playback Level are written; don't add another, or
+a flag that repeats one. Every write goes through `apply_action()` behind `App::offers()`
+(`cli.rs`), so the CLI changes only what the TUI would change right now.
 
 ## TUI / Focus Model
 
@@ -175,7 +189,7 @@ Shared across all models unless the hardware makes it impossible:
 - No `unwrap()`/`expect()` in production paths; no `panic!()` outside tests; no
   `todo!()`/`unimplemented!()` in final code
 - No `println!()` once the TUI runs: `eprintln!()` only at startup, and the TUI status bar
-  after that. The one-shot commands (`--list`, `--mute`, `--preset`) and `shurectl-probe`
+  after that. The one-shot commands (`--list` and those in `cli.rs`) and `shurectl-probe`
   print results to stdout so scripts can read them
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`

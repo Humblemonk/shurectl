@@ -13,7 +13,8 @@ macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app
 - Reverb and LED settings on the models that support them
 - Real-time level meter with peak hold
 - 4 preset slots, saved as editable TOML files
-- Mute or load a preset from the command line without opening the TUI
+- Mute, load a preset, change gain, mode or monitor levels, or read the state as JSON from the
+  command line without opening the TUI
 
 Which controls each model has is listed under [Device support](#device-support).
 
@@ -63,11 +64,12 @@ macOS and Windows need no setup.
 ```bash
 shurectl                  # Connect to the first detected device
 shurectl --list           # List detected Shure devices
-shurectl --device <path>  # Connect to a specific device from --list
+shurectl --device <path>  # Connect to a specific device from --list, by path or serial
 shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7, mv7plus
 shurectl --mute           # Toggle mute without launching the TUI (or --mute on / --mute off)
 shurectl --mute status    # Print "on" or "off", e.g. for a status bar
 shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
+shurectl --gain +1        # Change gain, mode or a monitor level, or print JSON (see Scripting)
 ```
 
 | Key | Action |
@@ -103,6 +105,40 @@ hand-editable file, `preset_1.toml` through `preset_4.toml`, in:
 | Linux | `~/.config/shurectl/presets/` |
 | macOS | `~/Library/Application Support/shurectl/presets/` |
 | Windows | `%APPDATA%\shurectl\presets\` |
+
+## Scripting
+
+For scripts, hotkeys and Stream Deck buttons, each of these opens the device, does one thing
+and exits:
+
+```bash
+shurectl --mute toggle                   # Or on / off; status prints "on" or "off"
+shurectl --preset 2                      # Load preset slot 2
+shurectl --mode toggle                   # Or auto / manual
+shurectl --gain 24                       # dB; +1 / -1 steps like the arrow keys
+shurectl --monitor-mix 40                # 0-100, or +5 / -5
+shurectl --playback-mix 40               # 0-100, or +5 / -5, where the model has it
+shurectl --json                          # The device's state as one line of JSON
+shurectl --mode manual --gain 24 --json  # Several changes, then the JSON
+```
+
+Changes go in the TUI's order (mode, mute, gain, then the monitor levels). Each is refused,
+with the reason, where the TUI wouldn't make it: gain in Auto Level mode or with Gain Lock on,
+a Playback Level on a model without one. A failure exits with status 1. `--mute on` and
+`--mute off` send a single command without reading the device first, and `--mute toggle` and
+`--mute status` read only the mute state, so a mute button stays quick. Everything else is
+changed in the TUI.
+
+`--json` prints the model, mute, firmware, serial and device name, and `settings`: the
+device's settings with the names and values a preset file uses, except EQ band gains, which
+are in dB here and in tenths of a dB in the file. A failure prints `{"error": "..."}` and
+exits with status 1.
+
+With two mics, pick one by the serial `--list` shows, as in `--device 3EK26001276`. A path
+like `/dev/hidraw1` can change when a mic is replugged.
+
+On Windows, a Stream Deck "Open" action may flash a console window each time it runs
+shurectl (untested). A Stream Deck plugin that runs commands hidden avoids it.
 
 ## Troubleshooting
 
@@ -172,7 +208,8 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Firmware update check (Info tab) | — | ✓ | ✓ | ✓ | — | ✓ |
 
 Every model also has the level meter, presets, an Info tab (serial number, device name,
-firmware version), `--mute`, `--preset`, and `--demo`.
+firmware version), `--demo`, and the command-line options under [Scripting](#scripting)
+(`--playback-mix` where the model has a Playback Level).
 
 - On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
   5-band EQ (Advanced), as in MOTIV.
