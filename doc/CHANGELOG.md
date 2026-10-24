@@ -20,19 +20,24 @@ device's state as JSON.
 - `--mode auto|manual|toggle`, `--gain`, `--monitor-mix` and `--playback-mix` change those
   settings without the TUI, to a value or by `+N`/`-N` steps like the arrow keys. They can
   be combined, and each is refused with the reason where the TUI wouldn't make the change,
-  such as gain in Auto Level mode.
+  such as gain in Auto Level mode. On an MV6 that doesn't answer its Playback Level read
+  (unconfirmed on that model), `--playback-mix` is refused and `--json` leaves it out.
 - `--device` also takes the serial `--list` shows, which stays the same when a mic is
   replugged, unlike its path.
 
 ### Changed
 
 - Mute works before the device's settings have been read, in the TUI and with `--mute`, and
-  the mute poll keeps running then (a press of the mic's own button shows on the MV6 Gen 2,
-  tested under Linux; unconfirmed on other models), with the status still saying the
+  the TUI keeps reading the mute state then (a press of the mic's own button shows on the MV6
+  Gen 2, tested under Linux; unconfirmed on other models), with the status still saying the
   settings aren't read. Other changes still wait for a readback. A mute the device can't
   confirm shows as OFF, never as Muted while the mic may be live.
 - `--mute on` and `--mute off` send one command without reading the device first, and
   `--mute toggle` and `--mute status` read only the mute state.
+- The TUI follows mode, gain, Monitor Mix and Playback Level as it follows mute: changed from
+  a script, a Stream Deck or MOTIV, each shows within a second, and a mode change re-reads
+  every setting. Before, the next arrow key stepped from the old value. Unconfirmed on
+  hardware.
 - `--mute` and `--preset` now make their change the same way the TUI does. A preset load
   the device partly refuses exits with status 1.
 
@@ -40,6 +45,12 @@ device's state as JSON.
 
 - `--mute` and `--preset` no longer act on the connected device when given with `--demo` or
   `--list`; the combination is refused.
+- A readback (`r`, a reconnect, or the start of a command-line run) no longer takes a report
+  meant for something else as an answer: one left over from earlier (an extra ack after a
+  write, the late reply to a read that timed out), or, on Linux, a reply to a shurectl
+  running alongside. That shifted every answer after it and left the last setting read (the
+  MV7+'s serial number, say) at its default. Found in review and on the fake device; not seen
+  on hardware.
 
 Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired these.
 

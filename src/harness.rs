@@ -25,9 +25,9 @@ use serde_json::{Map, Value, json};
 
 use crate::app::App;
 use crate::device::ShureDevice;
-use crate::fake_hid::{FakeDevice, Packet, PacketKind, hex};
+use crate::fake_hid::{FakeDevice, LiveField, Packet, PacketKind, hex};
 use crate::mouse::HitMap;
-use crate::protocol::{DeviceModel, DeviceState};
+use crate::protocol::{DeviceModel, DeviceState, InputMode};
 use crate::{LoopState, load_initial_state, presets, step, ui};
 
 /// Every model, by the name `--demo` and scenario headers use.
@@ -453,6 +453,39 @@ impl Harness {
                             Value::Bool(muted) => fake.set_muted_on_device(*muted),
                             _ => bail!("\"muted\" takes true or false"),
                         },
+                        "mode" => {
+                            let mode = match amount.as_str() {
+                                Some("Auto") => InputMode::Auto,
+                                Some("Manual") => InputMode::Manual,
+                                _ => bail!("\"mode\" takes \"Auto\" or \"Manual\""),
+                            };
+                            let changed = DeviceState {
+                                mode,
+                                ..DeviceState::default()
+                            };
+                            fake.set_on_device(LiveField::Mode, &changed);
+                        }
+                        "gain_tenths" | "monitor_mix" | "playback_mix" => {
+                            let Some(value) = amount.as_u64() else {
+                                bail!("\"{name}\" takes a number");
+                            };
+                            let mut changed = DeviceState::default();
+                            let field = match name.as_str() {
+                                "gain_tenths" => {
+                                    changed.gain_tenths = u16::try_from(value)?;
+                                    LiveField::Gain
+                                }
+                                "monitor_mix" => {
+                                    changed.monitor_mix = u8::try_from(value)?;
+                                    LiveField::MonitorMix
+                                }
+                                _ => {
+                                    changed.playback_mix = u8::try_from(value)?;
+                                    LiveField::PlaybackMix
+                                }
+                            };
+                            fake.set_on_device(field, &changed);
+                        }
                         "fail_io" => {
                             fake.faults_mut(|f| f.fail_io = amount.as_bool().unwrap_or(false))
                         }

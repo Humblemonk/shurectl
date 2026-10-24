@@ -171,6 +171,9 @@ pub struct App {
     /// never read (defaults), or a failed write or reconnect left them unknown.
     /// Writes based on it are refused until a refresh reads the device.
     pub state_unread: bool,
+    /// The optional GETs the last readback got no usable answer to, such as
+    /// the MV6's unconfirmed Playback Level (#99): their fields hold defaults.
+    pub unread_gets: Vec<Vec<u8>>,
     pub help_visible: bool,
     /// Which device model is connected. Drives which controls are shown.
     pub device_model: DeviceModel,
@@ -214,6 +217,7 @@ impl Default for App {
             demo_mode: false,
             device_connected: true,
             state_unread: false,
+            unread_gets: Vec::new(),
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],

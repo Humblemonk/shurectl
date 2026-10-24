@@ -124,11 +124,19 @@ shurectl --mode manual --gain 24 --json  # Several changes, then the JSON
 
 Changes go in the TUI's order (mode, mute, gain, then the monitor levels). Each is refused,
 with the reason, where the TUI wouldn't make it: gain in Auto Level mode or with Gain Lock on,
-a Playback Level on a model without one. A failure exits with status 1; a mistyped option
-is reported on stderr with status 2. On their own, `--mute on` and `--mute off` send a single
-command without reading the device first, and `--mute toggle` and `--mute status` read only
-the mute state, so a mute button stays quick; combined with other options, the device is read
-first, as for any change. Everything else is changed in the TUI.
+a Playback Level on a model without one, or on an MV6 that doesn't answer its Playback Level
+read. If the device's settings, read at the start of a run, show any change would be refused,
+none is sent. A failure exits with status 1; a mistyped option is reported on stderr with
+status 2. On their own, `--mute on` and `--mute off` send a single command without reading the
+device first, and `--mute toggle` and `--mute status` read only the mute state, so a mute
+button stays quick; combined with other options, the device is read first, as for any change.
+Everything else is changed in the TUI.
+
+With the TUI open, a change made from the command line to mute, mode, gain or a monitor level
+shows there within a second (unconfirmed on hardware). After loading a preset from the command
+line, or changing anything else in MOTIV, press `r` in the TUI before adjusting it: it would
+otherwise step from the values it last read. Commands and the TUI then talk to the device at the
+same time, which is untested; avoid it in the middle of a recording.
 
 `--json` prints the model, mute, firmware, serial and (where the model has one) device name,
 and `settings`: the device's settings with the names and values a preset file uses, except

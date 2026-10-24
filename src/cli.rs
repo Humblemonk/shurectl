@@ -12,13 +12,13 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::app::{App, DeviceAction};
+use crate::app::{App, DeviceAction, Focus};
 use crate::device::ShureDevice;
 use crate::presets::{self, PresetSlot};
-use crate::protocol::{DeviceState, InputMode};
+use crate::protocol::{self, DeviceState, InputMode};
 
 /// Mute action for the `--mute` flag.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
 pub enum MuteAction {
     /// Flip the current mute state.
     Toggle,
@@ -28,22 +28,6 @@ pub enum MuteAction {
     Off,
     /// Print the current state (`on` or `off`) without changing it.
     Status,
-}
-
-impl std::str::FromStr for MuteAction {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "toggle" => Ok(MuteAction::Toggle),
-            "on" => Ok(MuteAction::On),
-            "off" => Ok(MuteAction::Off),
-            "status" => Ok(MuteAction::Status),
-            other => {
-                bail!("unknown mute action \"{other}\". Valid options: toggle, on, off, status")
-            }
-        }
-    }
 }
 
 /// Input mode for the `--mode` flag.
@@ -64,14 +48,15 @@ pub enum Amount {
 }
 
 /// clap's parser for an `Amount`: `24`, `24.5`, `+2` or `-1`.
-pub fn parse_amount(text: &str) -> Result<Amount, String> {
+pub fn parse_amount(text: &str) -> Result<Amount> {
     let text = text.trim();
-    let steps = |digits: &str| {
-        digits
-            .parse::<i32>()
-            .map_err(|_| format!("expected a value, or +N/-N steps, got {text:?}"))
-    };
+    let wrong = || anyhow!("expected a value, or +N/-N steps, got {text:?}");
+    let steps = |digits: &str| digits.parse::<i32>().map_err(|_| wrong());
     if let Some(digits) = text.strip_prefix('+') {
+        // `+-3` would otherwise parse as 3 steps down.
+        if digits.starts_with(['+', '-']) {
+            return Err(wrong());
+        }
         return steps(digits).map(Amount::By);
     }
     if text.starts_with('-') {
@@ -81,7 +66,7 @@ pub fn parse_amount(text: &str) -> Result<Amount, String> {
         .ok()
         .filter(|value| value.is_finite())
         .map(Amount::To)
-        .ok_or_else(|| format!("expected a value, or +N/-N steps, got {text:?}"))
+        .ok_or_else(wrong)
 }
 
 /// What a one-shot run was asked to do.
@@ -213,6 +198,7 @@ fn execute(
 
     check_values(request, &app)?;
     crate::reload_state(&mut app, &dev).context("Could not read device state")?;
+    check_writes(request, &app)?;
     let mut device = Some(dev);
     if let Some((index, slot)) = preset {
         app.presets[index] = Some(slot);
@@ -222,10 +208,7 @@ fn execute(
     // The TUI's focus order: mode, mute, gain, then the monitor levels.
     if let Some(choice) = request.mode {
         let switched_from = app.device_state.mode;
-        let mode = match (choice, app.device_state.mode) {
-            (ModeChoice::Auto, _) | (ModeChoice::Toggle, InputMode::Manual) => InputMode::Auto,
-            (ModeChoice::Manual, _) | (ModeChoice::Toggle, InputMode::Auto) => InputMode::Manual,
-        };
+        let mode = mode_after(choice, switched_from);
         let action = DeviceAction::SetMode(mode);
         write(
             &mut app,
@@ -264,7 +247,10 @@ fn execute(
         )?;
     }
     if let Some(amount) = request.gain {
-        let tenths = gain_tenths(&app, amount)?;
+        let tenths = match amount {
+            Amount::To(db) => absolute_gain(&app, db)?,
+            Amount::By(presses) => pressed(&app, Focus::Gain, presses).gain_tenths,
+        };
         let action = DeviceAction::SetGain(tenths);
         write(
             &mut app,
@@ -276,7 +262,10 @@ fn execute(
         )?;
     }
     if let Some(amount) = request.monitor_mix {
-        let mix = level("--monitor-mix", app.device_state.monitor_mix, amount)?;
+        let mix = match amount {
+            Amount::To(value) => absolute_level("--monitor-mix", value)?,
+            Amount::By(presses) => pressed(&app, Focus::MonitorMix, presses).monitor_mix,
+        };
         let action = DeviceAction::SetMonitorMix(mix);
         write(
             &mut app,
@@ -288,7 +277,10 @@ fn execute(
         )?;
     }
     if let Some(amount) = request.playback_mix {
-        let mix = level("--playback-mix", app.device_state.playback_mix, amount)?;
+        let mix = match amount {
+            Amount::To(value) => absolute_level("--playback-mix", value)?,
+            Amount::By(presses) => pressed(&app, Focus::PlaybackMix, presses).playback_mix,
+        };
         let action = DeviceAction::SetMv7PlaybackMix(mix);
         write(
             &mut app,
@@ -382,23 +374,27 @@ fn without_tui_hints(status: &str) -> String {
         .replace(crate::READ_BACK_NOTE, "The device was read back.")
 }
 
-/// Refuse what can be known wrong before anything is sent: an absolute value
-/// out of range for the model, or a Playback Level it lacks. Otherwise a bad
-/// `--gain` would leave an earlier `--mode` already changed. Steps can't fail;
-/// they stop at the ends.
+/// Whether the last readback went without the Playback Level, an optional
+/// read on the MV6 only (#99).
+fn playback_unread(app: &App) -> bool {
+    app.unread_gets
+        .iter()
+        .any(|get| protocol::is_playback_get(get))
+}
+
+/// Refuse what is wrong whatever the device's settings, before even reading
+/// them: an absolute value out of range for the model, or a Playback Level it
+/// lacks. Steps can't fail; they stop at the ends.
 fn check_values(request: &Request, app: &App) -> Result<()> {
-    if request.mode == Some(ModeChoice::Auto) && request.gain.is_some() {
-        bail!("--gain: --mode auto turns on Auto Level, which sets its own gain.");
-    }
-    if let Some(amount @ Amount::To(_)) = request.gain {
-        gain_tenths(app, amount)?;
+    if let Some(Amount::To(db)) = request.gain {
+        absolute_gain(app, db)?;
     }
     for (flag, amount) in [
         ("--monitor-mix", request.monitor_mix),
         ("--playback-mix", request.playback_mix),
     ] {
-        if let Some(amount @ Amount::To(_)) = amount {
-            level(flag, 0, amount)?;
+        if let Some(Amount::To(value)) = amount {
+            absolute_level(flag, value)?;
         }
     }
     if request.playback_mix.is_some() && !app.device_model.has_playback_mix() {
@@ -408,6 +404,66 @@ fn check_values(request: &Request, app: &App) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Refuse the whole run before its first write if the TUI would refuse any
+/// part of it: replay the writes in order on a copy of the state just read,
+/// asking `offers()` before each, as `write()` will. So `--mode toggle --gain
+/// 30` from Manual, or anything with `--gain` under Gain Lock, changes nothing.
+fn check_writes(request: &Request, app: &App) -> Result<()> {
+    if request.playback_mix.is_some() && playback_unread(app) {
+        bail!(
+            "--playback-mix: the {} didn't answer the Playback Level read, so it isn't \
+             changed (that setting is unconfirmed on this model, #99).",
+            app.device_model.display_name()
+        );
+    }
+    let mut planned = App {
+        device_model: app.device_model,
+        // A copy for the replay to change.
+        device_state: app.device_state.clone(),
+        ..App::default()
+    };
+    if let Some(choice) = request.mode {
+        let mode = mode_after(choice, planned.device_state.mode);
+        let action = DeviceAction::SetMode(mode);
+        if !planned.offers(&action) {
+            bail!("{}", refusal(&planned, "--mode", &action));
+        }
+        planned.device_state.mode = mode;
+    }
+    // The values don't matter to offers(), only which control sends them.
+    let writes = [
+        (
+            request.mute.is_some(),
+            "--mute",
+            DeviceAction::SetMute(true),
+        ),
+        (request.gain.is_some(), "--gain", DeviceAction::SetGain(0)),
+        (
+            request.monitor_mix.is_some(),
+            "--monitor-mix",
+            DeviceAction::SetMonitorMix(0),
+        ),
+        (
+            request.playback_mix.is_some(),
+            "--playback-mix",
+            DeviceAction::SetMv7PlaybackMix(0),
+        ),
+    ];
+    for (asked, flag, action) in writes {
+        if asked && !planned.offers(&action) {
+            bail!("{}", refusal(&planned, flag, &action));
+        }
+    }
+    Ok(())
+}
+
+fn mode_after(choice: ModeChoice, current: InputMode) -> InputMode {
+    match (choice, current) {
+        (ModeChoice::Auto, _) | (ModeChoice::Toggle, InputMode::Manual) => InputMode::Auto,
+        (ModeChoice::Manual, _) | (ModeChoice::Toggle, InputMode::Auto) => InputMode::Manual,
+    }
 }
 
 /// Why the TUI wouldn't send `action` now, for the flag that asked for it.
@@ -429,46 +485,44 @@ fn refusal(app: &App, flag: &str, action: &DeviceAction) -> String {
     }
 }
 
-/// The gain `amount` asks for, in tenths of a dB on the model's step: a value
-/// in range, or presses of →/← from the current gain, stopping at the ends.
-fn gain_tenths(app: &App, amount: Amount) -> Result<u16> {
+/// A gain in dB, in tenths on the model's step, refused outside its range.
+fn absolute_gain(app: &App, db: f64) -> Result<u16> {
     let model = app.device_model;
     let max = model.max_gain_tenths();
-    let moved = match amount {
-        Amount::To(db) => {
-            let tenths = (db * 10.0).round();
-            if !(0.0..=f64::from(max)).contains(&tenths) {
-                bail!(
-                    "--gain: {db} dB is outside 0 to {} dB on the {}",
-                    f64::from(max) / 10.0,
-                    model.display_name()
-                );
-            }
-            tenths as i32
-        }
-        Amount::By(steps) => {
-            let step = i32::from(model.gain_step_tenths());
-            let current = i32::from(app.device_state.gain_tenths);
-            current
-                .saturating_add(steps.saturating_mul(step))
-                .clamp(0, i32::from(max))
-        }
-    };
-    Ok(model.snap_gain_tenths(u16::try_from(moved)?))
+    let tenths = (db * 10.0).round();
+    if !(0.0..=f64::from(max)).contains(&tenths) {
+        bail!(
+            "--gain: {db} dB is outside 0 to {} dB on the {}",
+            f64::from(max) / 10.0,
+            model.display_name()
+        );
+    }
+    Ok(model.snap_gain_tenths(tenths as u16))
 }
 
-/// A 0–100% level: a whole number in range, or `+N`/`-N` from `current`,
-/// stopping at the ends.
-fn level(flag: &str, current: u8, amount: Amount) -> Result<u8> {
-    match amount {
-        Amount::To(value) if value.fract() == 0.0 && (0.0..=100.0).contains(&value) => {
-            Ok(value as u8)
-        }
-        Amount::To(value) => Err(anyhow!("{flag}: expected 0 to 100, got {value}")),
-        Amount::By(steps) => Ok(u8::try_from(
-            i32::from(current).saturating_add(steps).clamp(0, 100),
-        )?),
+/// A 0–100% level, refused unless a whole number in range.
+fn absolute_level(flag: &str, value: f64) -> Result<u8> {
+    if value.fract() != 0.0 || !(0.0..=100.0).contains(&value) {
+        bail!("{flag}: expected 0 to 100, got {value}");
     }
+    Ok(value as u8)
+}
+
+/// The state after `presses` of → on `focus` (← when negative), made with the
+/// TUI's own `adjust_focused()`, so a step is the arrow key's by construction.
+fn pressed(app: &App, focus: Focus, presses: i32) -> DeviceState {
+    let mut control = App {
+        device_model: app.device_model,
+        // A copy for the presses to change.
+        device_state: app.device_state.clone(),
+        focus,
+        ..App::default()
+    };
+    // Every control's range is crossed well within this many presses.
+    for _ in 0..presses.unsigned_abs().min(1000) {
+        control.adjust_focused(presses.signum());
+    }
+    control.device_state
 }
 
 /// The JSON `--json` prints: identity and mute, and the settings in the
@@ -482,8 +536,9 @@ fn state_json(app: &App) -> Result<Value> {
         // A preset's own label, and how a load reads Monitor Mix: not settings.
         fields.remove("name");
         fields.remove("monitor_mix_is_mic_level");
-        // Saved on every model, but only some have one.
-        if !model.has_playback_mix() {
+        // Saved on every model, but only some have one, and the MV6 may
+        // not answer its read (#99): then it holds a default, not a value.
+        if !model.has_playback_mix() || playback_unread(app) {
             fields.remove("playback_mix");
         }
         // The preset file keeps EQ gains in tenths of a dB under `gain_db`;
@@ -777,6 +832,23 @@ mod tests {
             },
             ..App::default()
         };
+        let gain_tenths = |app: &App, amount| match amount {
+            Amount::To(db) => absolute_gain(app, db),
+            Amount::By(presses) => Ok(pressed(app, Focus::Gain, presses).gain_tenths),
+        };
+        let level = |_: &str, current, amount| match amount {
+            Amount::To(value) => absolute_level("--monitor-mix", value),
+            Amount::By(presses) => {
+                let app = App {
+                    device_state: DeviceState {
+                        monitor_mix: current,
+                        ..DeviceState::default()
+                    },
+                    ..App::default()
+                };
+                Ok(pressed(&app, Focus::MonitorMix, presses).monitor_mix)
+            }
+        };
         assert_eq!(
             gain_tenths(&app(DeviceModel::Mv7, 240), Amount::By(1)).unwrap(),
             255
@@ -804,11 +876,14 @@ mod tests {
 
     #[test]
     fn amounts_parse_as_values_or_steps() {
-        assert_eq!(parse_amount("24"), Ok(Amount::To(24.0)));
-        assert_eq!(parse_amount("19.5"), Ok(Amount::To(19.5)));
-        assert_eq!(parse_amount("+2"), Ok(Amount::By(2)));
-        assert_eq!(parse_amount("-1"), Ok(Amount::By(-1)));
-        for bad in ["", "+", "loud", "+1.5", "NaN", "inf", "--json"] {
+        let parsed = |text| parse_amount(text).ok();
+        assert_eq!(parsed("24"), Some(Amount::To(24.0)));
+        assert_eq!(parsed("19.5"), Some(Amount::To(19.5)));
+        assert_eq!(parsed("+2"), Some(Amount::By(2)));
+        assert_eq!(parsed("-1"), Some(Amount::By(-1)));
+        for bad in [
+            "", "+", "loud", "+1.5", "+-3", "++3", "NaN", "inf", "--json",
+        ] {
             assert!(parse_amount(bad).is_err(), "{bad}");
         }
     }
@@ -843,8 +918,8 @@ mod tests {
     }
 
     #[test]
-    fn the_first_refused_write_stops_the_run() {
-        // Gain Lock is only known from the readback: the mute goes out first.
+    fn a_refusal_known_from_the_readback_sends_nothing() {
+        // Gain Lock is read before any write: the mute doesn't go out either.
         let locked = DeviceState {
             mv6_gain_locked: true,
             ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
@@ -857,21 +932,27 @@ mod tests {
         };
         let (result, lines, packets) = run_on(&fake, &request);
         assert!(error_of(result).contains("Gain Lock"));
-        assert_eq!(lines, ["Mute → ON"], "the mute went out and says so");
-        assert_eq!(writes(&packets), 1);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(writes(&packets), 0);
+
+        // From Manual, toggling to Auto would leave no gain to set.
+        for mode in [ModeChoice::Toggle, ModeChoice::Auto] {
+            let fake = FakeDevice::new(DeviceModel::Mv6);
+            let request = Request {
+                mode: Some(mode),
+                gain: Some(Amount::By(1)),
+                ..Request::default()
+            };
+            let (result, lines, packets) = run_on(&fake, &request);
+            assert!(error_of(result).contains("Auto Level mode"), "{mode:?}");
+            assert!(lines.is_empty(), "{mode:?}: {lines:?}");
+            assert_eq!(writes(&packets), 0, "{mode:?}");
+        }
     }
 
     #[test]
     fn a_value_known_wrong_is_refused_before_anything_is_sent() {
         for (model, request) in [
-            (
-                DeviceModel::Mv6,
-                Request {
-                    mode: Some(ModeChoice::Auto),
-                    gain: Some(Amount::By(1)),
-                    ..Request::default()
-                },
-            ),
             (
                 DeviceModel::Mv7Plus,
                 Request {
@@ -1000,5 +1081,42 @@ mod tests {
             "{err}"
         );
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn an_mv6_that_doesnt_answer_its_playback_level_isnt_sent_one() {
+        let fake = FakeDevice::new(DeviceModel::Mv6);
+        fake.faults_mut(|faults| faults.refused_get = Some("PLAYBACK_LEVEL".into()));
+        let json = Request {
+            json: true,
+            ..Request::default()
+        };
+        let (result, _, _) = run_on(&fake, &json);
+        let shown = state_json(&result.expect("the rest reads")).expect("serializes");
+        assert!(shown["settings"].get("playback_mix").is_none(), "{shown}");
+        assert!(shown["settings"].get("monitor_mix").is_some());
+
+        for amount in [Amount::To(40.0), Amount::By(5)] {
+            let request = Request {
+                playback_mix: Some(amount),
+                ..Request::default()
+            };
+            let (result, _, packets) = run_on(&fake, &request);
+            let err = error_of(result);
+            assert!(
+                err.contains("didn't answer the Playback Level read"),
+                "{err}"
+            );
+            assert_eq!(writes(&packets), 0, "{amount:?}");
+        }
+
+        // Answered, it works as on the other models.
+        fake.faults_mut(|faults| faults.refused_get = None);
+        let request = Request {
+            playback_mix: Some(Amount::To(40.0)),
+            ..Request::default()
+        };
+        let (result, _, _) = run_on(&fake, &request);
+        assert_eq!(result.expect("written").device_state.playback_mix, 40);
     }
 }

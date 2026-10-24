@@ -49,7 +49,7 @@ The MV7 (PID `0x1012`) ignores everything above. Its vendor interface takes repo
 plus one ASCII line ending in `\n` (`micMute on`) and answers with a line (`micMute=on`).
 DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives in
 `protocol::mv7_text`; `device.rs` sends it via `send_text()`, and the binary
-`send_set()`/`send_get()` refuse to run on the MV7.
+`send_set()`/`send_get_past_strays()` refuse to run on the MV7.
 
 - `help` and `help <cmd>` on the device list commands and their syntax. They are safe to
   send; `bootDSP` and `setBlock` with unmapped data are not
@@ -66,8 +66,9 @@ DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives 
 - Map a new block by snapshotting `getBlock` before and after one change in MOTIV. MOTIV's
   exact command strings are in its bundled `ndl-addon.node` (`strings -a`), but that addon
   is shared with other Shure devices
-- MOTIV and shurectl share one command channel, and shurectl's mute poll sends `micMute`
-  every second. Quit MOTIV before testing against the MV7
+- MOTIV and shurectl share one command channel, and shurectl's live poll sends `micMute`,
+  `dspMode`, the gain and the Monitor Mix block every second (stopping after `micMute` when
+  it goes unanswered). Quit MOTIV before testing against the MV7
 
 ## Debugging on real hardware
 

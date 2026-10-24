@@ -24,7 +24,7 @@
 //!
 //! The original MV7 is the exception: it takes one ASCII command line per report
 //! and answers with a line of text (see `protocol::mv7_text`). Its commands go
-//! through `send_text()`; the binary `send_set()`/`send_get()` refuse to run on it.
+//! through `send_text()`; the binary `send_set()`/`send_get_past_strays()` refuse to run on it.
 //!
 //! # Sequence numbers
 //!
@@ -88,11 +88,15 @@ const READ_TIMEOUT_MS: i32 = 200;
 /// turn out slower than this, they are left queued and refresh shows stale values.
 const ACK_TIMEOUT_MS: i32 = 15;
 
+/// The most stray reports (`send_get_past_strays()`) one GET passes over;
+/// after that it has no answer.
+const STRAY_REPLIES_MAX: usize = 4;
+
 /// How long to wait for an MV7 reply. A mode change takes ~200 ms to answer,
 /// longer than a single read timeout, so waiting is bounded by time, not reads.
 const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// How long the mute poll waits for the MV7's `micMute` reply, as long as a
+/// How long the live poll waits for each MV7 reply, as long as a
 /// binary GET waits. The full `MV7_REPLY_TIMEOUT` every second would leave
 /// the TUI waiting on a mic that doesn't answer; a reply that comes later is
 /// drained before the next command. Unconfirmed on hardware whether `micMute`
@@ -221,6 +225,17 @@ fn same_devices<'a>(
         .collect()
 }
 
+/// What `ShureDevice::read_live()` read: each setting, or `None` without a
+/// usable answer.
+#[derive(Debug, Default, PartialEq)]
+pub struct Live {
+    pub muted: Option<bool>,
+    pub mode: Option<protocol::InputMode>,
+    pub gain_tenths: Option<u16>,
+    pub monitor_mix: Option<u8>,
+    pub playback_mix: Option<u8>,
+}
+
 /// A connected Shure USB microphone or interface.
 pub struct ShureDevice {
     transport: Box<dyn HidTransport>,
@@ -322,6 +337,11 @@ impl ShureDevice {
     /// serial, the one printed on the device (`--list`'s S/N) or the USB one,
     /// compared ignoring case. A path can change when the device is replugged
     /// or the computer restarts; a serial doesn't.
+    ///
+    /// The printed serial is only known by asking: when nothing matches the
+    /// path or USB serial, every Shure device is opened and sent a serial GET,
+    /// as `--list` does. On Linux, hidraw gives every open handle each input
+    /// report, so a TUI with one of them open receives that reply too.
     pub fn open_selected(selector: &str) -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
         if api
@@ -336,20 +356,27 @@ impl ShureDevice {
             .iter()
             .filter(|(info, _)| info.serial_number().is_some_and(same))
             .collect();
+        // Why a device couldn't be asked, for when nothing matches.
+        let mut open_error = None;
         if matches.is_empty() {
-            // The printed serial is only known by asking each device.
             matches = found
                 .iter()
-                .filter(|(info, model)| {
-                    Self::open_info(&api, info, *model)
-                        .ok()
-                        .and_then(|dev| dev.read_factory_serial())
-                        .is_some_and(|serial| same(&serial))
+                .filter(|(info, model)| match Self::open_info(&api, info, *model) {
+                    Ok(dev) => dev
+                        .read_factory_serial()
+                        .is_some_and(|serial| same(&serial)),
+                    Err(e) => {
+                        open_error.get_or_insert(e);
+                        false
+                    }
                 })
                 .collect();
         }
         match matches.as_slice() {
             [(info, model)] => Self::open_info(&api, info, *model),
+            [] if let Some(e) = open_error => Err(e.context(format!(
+                "No Shure device has the path or serial {selector}, and one couldn't be opened"
+            ))),
             [] => Err(anyhow!(
                 "No Shure device has the path or serial {selector}. Run --list to see them.\n\
                  Hint: {ACCESS_HINT}."
@@ -415,12 +442,6 @@ impl ShureDevice {
             let _ = self.transport.read_timeout(&mut buf, ACK_TIMEOUT_MS);
         }
         Ok(())
-    }
-
-    fn send_get(&self, get_packet: &[u8]) -> Result<Option<Reply>> {
-        self.ensure_binary_protocol()?;
-        self.write(get_packet)?;
-        Ok(self.read()?.and_then(|buf| parse_response(&buf)))
     }
 
     /// Send one MV7 command line and return its reply line (which may be
@@ -576,9 +597,46 @@ impl ShureDevice {
 
     /// [`Self::query`] for a GET that may go unanswered, as `need` says.
     fn query_as(&self, pkt: &[u8], need: Need, readback: &mut Readback) -> Result<()> {
-        let reply = self.send_get(pkt)?;
+        let reply = self.send_get_past_strays(pkt)?;
         readback.apply(self.model, pkt, reply.as_ref(), need);
         Ok(())
+    }
+
+    /// Send the binary GET `get` and read its answer, passing over reports that can't
+    /// be it: the late answer to a read that timed out or, on Linux, where hidraw gives
+    /// every open handle each report, another shurectl's (a running TUI's poll). Taken
+    /// as an answer, a stray makes every later GET of a readback take the one before
+    /// it, leaving one setting at its default.
+    ///
+    /// The live-poll GETs (mute, mode, gain, the monitor levels) are answered at the
+    /// address asked, so for those any other report is stray, one that doesn't parse
+    /// (an ack) included; for any other GET so is a reply at a live-poll address. When
+    /// every report read is stray, there is no answer, and the readback fails rather
+    /// than pass with a default. A stray between two other GETs can still shift those,
+    /// but never cost a setting the CLI or the poll steps from (a level jump from a
+    /// default). Whether every GET is answered at its own address is unconfirmed, so a
+    /// general check needs captures first.
+    fn send_get_past_strays(&self, get: &[u8]) -> Result<Option<Reply>> {
+        self.ensure_binary_protocol()?;
+        self.write(get)?;
+        let live_get = protocol::is_live_get(get);
+        for _ in 0..=STRAY_REPLIES_MAX {
+            let Some(report) = self.read()? else {
+                return Ok(None);
+            };
+            let reply = parse_response(&report);
+            let stray = match &reply {
+                Some(reply) => {
+                    !protocol::answers_at_its_address(get, reply)
+                        && (live_get || protocol::is_live_reply(reply))
+                }
+                None => live_get,
+            };
+            if !stray {
+                return Ok(reply);
+            }
+        }
+        Ok(None)
     }
 
     /// Fetch all 5 EQ band gain values. Used by the MVX2U Gen 1 and Gen 2 and MV6 Gen 2 readback.
@@ -599,6 +657,9 @@ impl ShureDevice {
 
     /// Fetch the complete device state by querying every feature for this model.
     pub fn get_state(&self) -> Result<Readback> {
+        // Input still queued (a late ack, or the reply to a mute read that
+        // timed out) would answer the first GET and shift every later one.
+        self.drain_input(&mut [0u8; PACKET_SIZE])?;
         let mut readback = Readback::default();
         readback.state.mute_btn_disabled = None;
         match self.model {
@@ -791,35 +852,110 @@ impl ShureDevice {
         Ok(())
     }
 
-    /// Read the mute state alone, for the TUI's mute poll, so a press of the
-    /// mic's mute button shows without a full readback. `Ok(None)` when the
-    /// device gave no usable answer (a timeout, a refusal, another reply); only
-    /// a HID failure is an error. On the binary models, input still queued from
-    /// earlier (a late ack) is discarded first, so it can't be read as the
-    /// answer or shift a later readback.
+    /// Read the mute state alone, for `--mute toggle` and `status`, without a
+    /// full readback. `Ok(None)` when the device gave no usable answer (a
+    /// timeout, a refusal, another reply); only a HID failure is an error. On
+    /// the binary models, input still queued from earlier (a late ack) is
+    /// discarded first, so it can't be read as the answer.
     pub fn read_mute(&self) -> Result<Option<bool>> {
-        let mut state = DeviceState::default();
-        let applied = match self.model {
-            DeviceModel::Mv7 => {
-                match self.send_text_within(&mv7_text::get_mute(), MV7_POLL_TIMEOUT) {
-                    Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
-                    Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
-                    Err(_) => false,
-                }
-            }
+        let read = match self.model {
+            DeviceModel::Mv7 => self.read_text_alone(&mv7_text::get_mute())?,
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
                 self.drain_input(&mut [0u8; PACKET_SIZE])?;
-                self.send_get(&cmd_get_mute(self.next_seq()))?
-                    .is_some_and(|reply| {
-                        protocol::is_mute_reply(&reply) && apply_reply(&reply, &mut state)
-                    })
+                self.read_alone(&cmd_get_mute(self.next_seq()))?
             }
         };
-        Ok(applied.then_some(state.muted))
+        Ok(read.map(|state| state.muted))
+    }
+
+    /// Read what a script can change (mute, mode, gain and the monitor
+    /// levels), each alone, for the TUI's poll, so a change made elsewhere
+    /// shows without a full readback: the mic's own button, `shurectl --gain`
+    /// from a Stream Deck, or MOTIV. Each is `None` without a usable answer;
+    /// only a HID failure is an error. Binary models discard queued input first.
+    pub fn read_live(&self) -> Result<Live> {
+        match self.model {
+            DeviceModel::Mv7 => self.read_live_mv7(),
+            // The Gen 1 balance and the Mic Level share an address, not a GET.
+            DeviceModel::Mvx2u => self.read_live_binary(cmd_get_mix),
+            DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => self.read_live_binary(cmd_get_mv6_mix),
+        }
+    }
+
+    /// The MV7's lines, each waiting at most 200 ms. The first that isn't
+    /// answered (MOTIV busy on the shared channel) ends this poll, so the UI
+    /// stalls for one line at most, not four.
+    fn read_live_mv7(&self) -> Result<Live> {
+        let mut live = Live::default();
+        let Some(read) = self.read_text_alone(&mv7_text::get_mute())? else {
+            return Ok(live);
+        };
+        live.muted = Some(read.muted);
+        let Some(read) = self.read_text_alone(&mv7_text::get_dsp_mode())? else {
+            return Ok(live);
+        };
+        live.mode = Some(read.mode);
+        let Some(read) = self.read_text_alone(&mv7_text::get_gain())? else {
+            return Ok(live);
+        };
+        live.gain_tenths = Some(read.gain_tenths);
+        live.monitor_mix = self
+            .read_text_alone(&mv7_text::get_monitor_mix())?
+            .map(|read| read.monitor_mix);
+        Ok(live)
+    }
+
+    fn read_live_binary(&self, monitor_mix: fn(u8) -> Vec<u8>) -> Result<Live> {
+        self.drain_input(&mut [0u8; PACKET_SIZE])?;
+        let read = |get: Vec<u8>| self.read_alone(&get);
+        let muted = read(cmd_get_mute(self.next_seq()))?.map(|s| s.muted);
+        let mode = read(cmd_get_mode(self.next_seq()))?.map(|s| s.mode);
+        let gain_tenths = read(cmd_get_gain(self.next_seq()))?.map(|s| s.gain_tenths);
+        let monitor_mix = read(monitor_mix(self.next_seq()))?.map(|s| s.monitor_mix);
+        let playback_mix = match self.model {
+            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => {
+                read(cmd_get_mv7_playback_mix(self.next_seq()))?.map(|s| s.playback_mix)
+            }
+            // The MV6's Playback Level GET is unconfirmed (#99): unanswered it
+            // would cost every poll a timeout. None on models without one.
+            DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mv7 => None,
+        };
+        Ok(Live {
+            muted,
+            mode,
+            gain_tenths,
+            monitor_mix,
+            playback_mix,
+        })
+    }
+
+    /// One binary GET, its reply applied to a fresh state only if it answers
+    /// at the address asked; another report (a late one) is ignored.
+    fn read_alone(&self, get: &[u8]) -> Result<Option<DeviceState>> {
+        let mut state = DeviceState::default();
+        let applied = self.send_get_past_strays(get)?.is_some_and(|reply| {
+            protocol::answers_at_its_address(get, &reply) && apply_reply(&reply, &mut state)
+        });
+        Ok(applied.then_some(state))
+    }
+
+    /// One MV7 command, waiting at most the poll's 200 ms, its reply applied to
+    /// a fresh state. Only losing the device is an error.
+    fn read_text_alone(&self, command: &mv7_text::TextCommand) -> Result<Option<DeviceState>> {
+        let mut state = DeviceState::default();
+        let applied = match self.send_text_within(command, MV7_POLL_TIMEOUT) {
+            Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
+            Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+            Err(_) => false,
+        };
+        Ok(applied.then_some(state))
     }
 
     /// Read just the factory serial number (the serial printed on the device,
@@ -838,8 +974,12 @@ impl ShureDevice {
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
-                let reply = self.send_get(&cmd_get_serial(self.next_seq())).ok()??;
-                apply_reply(&reply, &mut state)
+                let reply = self
+                    .send_get_past_strays(&cmd_get_serial(self.next_seq()))
+                    .ok()??;
+                // Another reply (another shurectl's) would apply to its own
+                // field and leave the serial unknown.
+                protocol::is_serial_reply(&reply) && apply_reply(&reply, &mut state)
             }
         };
         applied.then_some(state.factory_serial)
@@ -1324,6 +1464,9 @@ pub struct Readback {
     /// the TUI that is the status bar, since writing to stderr would garble
     /// the screen.
     pub skipped: Vec<String>,
+    /// The optional queries in `skipped`, as the GET packets sent, so a
+    /// caller can tell which setting went unread.
+    pub skipped_gets: Vec<Vec<u8>>,
     /// Required queries that got no usable reply.
     missing: Vec<String>,
     /// Replies applied to `state`. Zero means the device answered nothing.
@@ -1343,6 +1486,9 @@ impl Readback {
     /// Apply the reply, if any, to the binary GET `request` sent to `model`.
     fn apply(&mut self, model: DeviceModel, request: &[u8], reply: Option<&Reply>, need: Need) {
         let applied = reply.is_some_and(|reply| apply_reply(reply, &mut self.state));
+        if !applied && matches!(need, Need::Optional) {
+            self.skipped_gets.push(request.to_vec());
+        }
         self.record(applied, need, || match reply {
             Some(reply) => format!(
                 "{} in reply to {}",

@@ -33,7 +33,7 @@ Change the gate in the script, not in docs or CI.
 
 ```
 src/
-  main.rs       # Entry point, CLI args, one-shot commands, event loop, apply_action()
+  main.rs       # Entry point, CLI args, event loop, apply_action()
   app.rs        # App state: Tab, Focus, DeviceAction; DeviceState lives in protocol.rs
   cli.rs        # One-shot commands: --json, --mute, --preset, --mode, --gain, monitor levels
   device.rs     # hidapi wrapper: open device, send/receive HID reports
@@ -75,18 +75,24 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 (`r` does it on demand), so `apply_action()` stays the only writer. Only a
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
-**Mute poll:** `poll_mute()` reads the mute state every second (`read_mute()`: one GET, or
-`micMute` on the MV7) while connected, so a press of the mic's own mute button shows without
-`r`. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
+**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second
+(`read_live()`: one GET each, kept only when answered at the address asked,
+`answers_at_its_address()`; on the MV7 one text line each) while connected, so a change made
+elsewhere shows without `r`: the mic's own mute button, a script, MOTIV. Otherwise the next
+arrow key would step from a stale value and jump the level. A mode change re-reads everything.
+While the settings are unread only mute is announced (the rest would read as changes from
+defaults), and in Auto a gain change is kept but not announced. On the MV7 an unanswered
+`micMute` skips the poll's other lines; the MV6's unconfirmed Playback Level GET (#99) isn't
+polled. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
 allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. A
 mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
-(`recover_from_failure()`). It only reads. It ignores an unusable answer and marks the device
-disconnected on a `Disconnected` error. The binary models drain queued input before the GET. On
+(`recover_from_failure()`). The poll only reads. It ignores an unusable answer and marks the
+device disconnected on a `Disconnected` error. The binary models drain queued input first. On
 the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the
 press (tested 2026-10-23). Unconfirmed elsewhere: whether other models report a press, whether
-their mute GET reflects it, and whether the MV7 answers `micMute` within the poll's 200 ms. A
-key that writes mute pushes the next poll back a second, since whether a device applies a mute
-before acking it is unconfirmed.
+their GETs reflect changes made elsewhere, and whether the MV7 answers each line within the
+poll's 200 ms. Any write from the TUI pushes the next poll back a second (`send_from_tui()`),
+since whether a device applies a write before acking it is unconfirmed.
 
 ## Adding a New Command
 
@@ -245,8 +251,16 @@ rather than promoting a lower one.
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
   byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
-  left at its default (36 dB gain). `query_as()` with `Need::Optional` is for a GET unchecked
-  on that model's hardware or missing from some firmware. A new one's field is an `Option`
+  left at its default (36 dB gain). It drains queued input first, and
+  `send_get_past_strays()` passes over reports that can't be the GET's answer (a late reply,
+  or on Linux another shurectl's: hidraw gives every open handle each report). For a
+  live-poll GET (mute, mode, gain, the monitor levels), answered at its own address, that is
+  any other report; for other GETs, a reply at a live-poll address. When every report read
+  is stray, the GET has no answer and the readback fails rather than pass with a default.
+  Whether every GET is answered at its own address is unconfirmed, so a general check needs
+  captures first. `query_as()` with
+  `Need::Optional` is for a GET unchecked on that model's hardware or missing from some
+  firmware. A new one's field is an `Option`
   left `None`, as the Mute Button's is, so nothing shows, saves or writes a default.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
@@ -281,7 +295,7 @@ rather than promoting a lower one.
 - `firmware.rs` contacting Shure's firmware archive once at every non-demo start of a
   compared model, with no opt-out and no retry. The request names every compared model, so
   it says a supported Shure device is connected but not which
-- The MV7 bypassing `send_set()`/`send_get()` for its text shell
+- The MV7 bypassing `send_set()`/`send_get_past_strays()` for its text shell
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's
   possibly stale copy

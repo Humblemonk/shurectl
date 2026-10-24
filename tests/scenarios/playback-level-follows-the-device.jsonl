@@ -1,0 +1,4 @@
+{"scenario": "playback-level-follows-the-device", "models": ["mvx2u-gen2", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
+{"device": {"playback_mix": 30}}
+{"tick": 1000}
+{"expect": {"state": {"playback_mix": 30}, "status": "Playback Level → 30% (changed on the device)"}}

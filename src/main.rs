@@ -64,7 +64,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, DeviceAction, STATE_UNREAD_HINT};
 use cli::{Amount, ModeChoice, MuteAction};
-use device::ShureDevice;
+use device::{Live, ShureDevice};
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
 use protocol::{DeviceModel, InputMode, format_gain};
@@ -93,10 +93,10 @@ struct Cli {
     #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
     device: Option<String>,
 
-    /// Set mute state without launching the TUI.
-    /// toggle (default): flip current state. on: mute. off: unmute.
-    /// status: print the current state (on or off) without changing it.
+    /// Set or read the mute state without launching the TUI; toggle when no
+    /// action is given.
     #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION",
+          value_enum, ignore_case = true,
           conflicts_with_all = ["list", "demo"])]
     mute: Option<MuteAction>,
 
@@ -113,7 +113,8 @@ struct Cli {
     json: bool,
 
     /// Switch input mode without launching the TUI: auto, manual or toggle.
-    #[arg(long, value_enum, value_name = "MODE", conflicts_with_all = ["list", "demo"])]
+    #[arg(long, value_enum, ignore_case = true, value_name = "MODE",
+          conflicts_with_all = ["list", "demo"])]
     mode: Option<ModeChoice>,
 
     /// Set the gain in dB without launching the TUI (Manual mode, Gain Lock
@@ -446,7 +447,7 @@ fn run_event_loop(
 /// Event-loop state carried between `step()` calls.
 struct LoopState {
     last_presence_poll: Instant,
-    last_mute_poll: Instant,
+    last_live_poll: Instant,
     seen_back: bool,
     pending_scroll: Option<PendingScroll>,
 }
@@ -463,9 +464,41 @@ struct PendingScroll {
 }
 
 /// Write the pending wheel adjustment, if any.
-fn flush_scroll(app: &mut App, device: &mut Option<ShureDevice>, loop_state: &mut LoopState) {
+fn flush_scroll(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    loop_state: &mut LoopState,
+    now: Instant,
+) {
     if let Some(pending) = loop_state.pending_scroll.take() {
-        apply_action(app, device, pending.action, Some(pending.before));
+        send_from_tui(
+            app,
+            device,
+            pending.action,
+            Some(pending.before),
+            now,
+            loop_state,
+        );
+    }
+}
+
+/// Write an action from a key, click or wheel. The next live poll waits a
+/// second: whether a device applies a write before acking it is unconfirmed,
+/// so a poll straight after could read the old value and show it as changed
+/// on the device, and the next arrow key would step from it.
+fn send_from_tui(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    action: DeviceAction,
+    before: Option<protocol::DeviceState>,
+    now: Instant,
+    loop_state: &mut LoopState,
+) {
+    let mute = matches!(action, DeviceAction::SetMute(_));
+    loop_state.last_live_poll = now;
+    apply_action(app, device, action, before);
+    if mute {
+        note_unread(app);
     }
 }
 
@@ -473,7 +506,7 @@ impl LoopState {
     fn new(now: Instant) -> Self {
         Self {
             last_presence_poll: now,
-            last_mute_poll: now,
+            last_live_poll: now,
             seen_back: false,
             pending_scroll: None,
         }
@@ -533,7 +566,7 @@ fn step(
             (Some(pending), Some(Some(mouse::Target::Control(focus)))) if pending.focus == focus
         );
         if can_act && !same_control {
-            flush_scroll(app, device, loop_state);
+            flush_scroll(app, device, loop_state, now);
         }
         let before = can_act.then(|| app.device_state.clone());
         let action = match event {
@@ -570,40 +603,29 @@ fn step(
                     before,
                 });
             }
-            Some(action) => {
-                // Whether a device applies a mute before acking it is
-                // unconfirmed, so a poll straight after could read the old
-                // state and show it as changed on the device.
-                let mute = matches!(action, DeviceAction::SetMute(_));
-                if mute {
-                    loop_state.last_mute_poll = now;
-                }
-                apply_action(app, device, action, before);
-                if mute {
-                    note_unread(app);
-                }
-            }
+            Some(action) => send_from_tui(app, device, action, before, now, loop_state),
             None => {}
         }
     }
 
     let poll_due = now.duration_since(loop_state.last_presence_poll) >= PRESENCE_POLL_INTERVAL;
-    let mute_poll_due = now.duration_since(loop_state.last_mute_poll) >= MUTE_POLL_INTERVAL;
+    let live_poll_due = || now.duration_since(loop_state.last_live_poll) >= LIVE_POLL_INTERVAL;
     // A pending wheel write goes out before a poll, so if it fails, putting
-    // back its `before` state can't undo a mute change the poll just read.
+    // back its `before` state can't undo a change the poll just read.
     if loop_state.pending_scroll.as_ref().is_some_and(|pending| {
         !queued
             || app.should_quit
             || poll_due
-            || mute_poll_due
+            || live_poll_due()
             || now.duration_since(pending.started) >= SCROLL_FLUSH_INTERVAL
     }) {
-        flush_scroll(app, device, loop_state);
+        flush_scroll(app, device, loop_state, now);
     }
 
-    if mute_poll_due {
-        loop_state.last_mute_poll = now;
-        poll_mute(app, device);
+    // Asked again: the flush above pushes the live poll back.
+    if now.duration_since(loop_state.last_live_poll) >= LIVE_POLL_INTERVAL {
+        loop_state.last_live_poll = now;
+        poll_live(app, device);
     }
 
     if poll_due {
@@ -832,11 +854,11 @@ fn apply_action(
         DeviceAction::Refresh => refresh(app, device),
         DeviceAction::Reconnect => reconnect(app, device),
         DeviceAction::SetGain(gain_tenths) => {
-            app.set_ok(format!("Gain → {}", format_gain(*gain_tenths)));
+            app.set_ok(gain_line(*gain_tenths));
             send_if_connected(device, |d| d.set_gain(*gain_tenths))
         }
         DeviceAction::SetMode(mode) => {
-            app.set_ok(format!("Mode → {}", mode));
+            app.set_ok(mode_line(*mode));
             let state = &app.device_state;
             send_if_connected(device, |d| {
                 d.set_mode(
@@ -871,7 +893,7 @@ fn apply_action(
             send_if_connected(device, |d| d.set_auto_gain(gain))
         }
         DeviceAction::SetMute(m) => {
-            app.set_ok(format!("Mute → {}", if *m { "ON" } else { "OFF" }));
+            app.set_ok(mute_line(*m));
             send_if_connected(device, |d| d.set_mute(*m))
         }
         DeviceAction::SetPhantom(p) => {
@@ -990,15 +1012,11 @@ fn apply_action(
             send_if_connected(device, |d| d.set_mv6_gain_lock(*locked))
         }
         DeviceAction::SetMonitorMix(m) => {
-            app.set_ok(if app.device_model.has_playback_mix() {
-                format!("Mic Level → {m}%")
-            } else {
-                format!("Monitor Mix → {m}%")
-            });
+            app.set_ok(monitor_mix_line(app.device_model, *m));
             send_if_connected(device, |d| d.set_monitor_mix(*m))
         }
         DeviceAction::SetMv7PlaybackMix(m) => {
-            app.set_ok(format!("Playback Level → {m}%"));
+            app.set_ok(playback_mix_line(*m));
             send_if_connected(device, |d| d.set_mv7_playback_mix(*m))
         }
         // ── MV7+ exclusive actions ────────────────────────────────────────────
@@ -1305,7 +1323,7 @@ fn recover_from_failure(
         }
     };
     // A mute nothing could read back may or may not have landed. Show it as
-    // off: Muted over a live mic is the worse mistake, and the mute poll
+    // off: Muted over a live mic is the worse mistake, and the live poll
     // shows the real state once the device answers.
     let mute_unknown = matches!(action, DeviceAction::SetMute(_)) && read_back == Some(false);
     if mute_unknown {
@@ -1467,35 +1485,122 @@ fn mark_disconnected(app: &mut App, model: DeviceModel) {
     ));
 }
 
-/// How often the event loop reads the mic's mute state.
-const MUTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the event loop reads what a script can change (`poll_live()`).
+const LIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Read the mic's mute state and show it, so a press of its mute button (or
-/// another app muting it) shows without `r`. Nothing changes when the device
-/// gives no usable answer; the next poll asks again. A HID failure marks the
-/// device disconnected, as the presence poll does. Skipped in demo mode and
-/// while disconnected. It runs while the other settings are unread too, since
-/// mute can be written then and the screen should show the mic's real state.
-fn poll_mute(app: &mut App, device: &Option<ShureDevice>) {
+/// Read mute, mode, gain and the monitor levels (`read_live()`) and show any
+/// change, so one made elsewhere shows without `r`: the mic's own mute
+/// button, `shurectl --gain` from a Stream Deck, or MOTIV. Otherwise the next
+/// arrow key would step from a stale value and jump the level. A value the
+/// device gives no usable answer for stays as shown; the next poll asks again.
+/// A mode change re-reads everything, since it changes which controls apply
+/// (and on the MV7 resets EQ and compressor). A HID failure marks the device
+/// disconnected, as the presence poll does. Skipped in demo mode and while
+/// disconnected; it runs while the settings are unread too, since mute can be
+/// written then and the screen should show the mic's real state.
+fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     let Some(dev) = device.as_ref() else {
         return; // demo mode
     };
     if !app.device_connected {
         return;
     }
-    match dev.read_mute() {
-        Ok(Some(muted)) if muted != app.device_state.muted => {
-            app.device_state.muted = muted;
-            app.set_ok(format!(
-                "Mute → {} (changed on the device)",
-                if muted { "ON" } else { "OFF" }
-            ));
-            note_unread(app);
-        }
-        Err(e) if is_disconnect(&e) => mark_disconnected(app, dev.model),
-        // Anything else leaves the mute state unknown for now, not changed.
-        Ok(Some(_) | None) | Err(_) => {}
+    // While the settings are unread only mute is read: the rest would read as
+    // changes from defaults, and a GET the readback found unanswered would
+    // cost every poll a timeout.
+    let announce = !app.state_unread;
+    let read = if announce {
+        dev.read_live()
+    } else {
+        dev.read_mute().map(|muted| Live {
+            muted,
+            ..Live::default()
+        })
+    };
+    let live = match read {
+        Ok(live) => live,
+        Err(e) if is_disconnect(&e) => return mark_disconnected(app, dev.model),
+        // Anything else leaves the values unknown for now, not changed.
+        Err(_) => return,
+    };
+    let state = &mut app.device_state;
+    let mut changed = Vec::new();
+    if let Some(muted) = live.muted.filter(|muted| *muted != state.muted) {
+        state.muted = muted;
+        changed.push(mute_line(muted));
     }
+    let mode_before = state.mode;
+    if let Some(mode) = live.mode.filter(|mode| *mode != state.mode) {
+        state.mode = mode;
+        changed.extend(announce.then(|| mode_line(mode)));
+    }
+    if let Some(gain) = live.gain_tenths.filter(|gain| *gain != state.gain_tenths) {
+        state.gain_tenths = gain;
+        // In Auto Level the device sets its own gain, which some models may
+        // report as it moves (unconfirmed): kept, but not announced.
+        let manual = state.mode == InputMode::Manual;
+        changed.extend((announce && manual).then(|| gain_line(gain)));
+    }
+    // The MV7 stores 1% and 2% as 0%: reading 0% after setting them is no change.
+    let shown_mix = match app.device_model {
+        DeviceModel::Mv7 => protocol::mv7_text::monitor_mix_as_stored(state.monitor_mix),
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7Plus => state.monitor_mix,
+    };
+    if let Some(mix) = live.monitor_mix.filter(|mix| *mix != shown_mix) {
+        state.monitor_mix = mix;
+        changed.extend(announce.then(|| monitor_mix_line(app.device_model, mix)));
+    }
+    let state = &mut app.device_state;
+    if let Some(mix) = live.playback_mix.filter(|mix| *mix != state.playback_mix) {
+        state.playback_mix = mix;
+        changed.extend(announce.then(|| playback_mix_line(mix)));
+    }
+    if announce && app.device_state.mode != mode_before {
+        // A mode changed elsewhere changes which controls apply (and on the
+        // MV7 resets EQ and compressor): read everything again.
+        if let Err(e) = reload_state(app, dev) {
+            if is_disconnect(&e) {
+                return mark_disconnected(app, dev.model);
+            }
+            app.state_unread = true;
+            changed.push(format!("{e}. {STATE_UNREAD_HINT}"));
+        }
+    }
+    app.settle_focus(mode_before);
+    if changed.is_empty() {
+        return;
+    }
+    app.set_ok(format!("{} (changed on the device)", changed.join(", ")));
+    note_unread(app);
+}
+
+fn mute_line(muted: bool) -> String {
+    format!("Mute → {}", if muted { "ON" } else { "OFF" })
+}
+
+fn mode_line(mode: InputMode) -> String {
+    format!("Mode → {mode}")
+}
+
+fn gain_line(gain_tenths: u16) -> String {
+    format!("Gain → {}", format_gain(gain_tenths))
+}
+
+/// Monitor Mix is one balance on the MVX2U Gen 1 and MV7, the Mic Level elsewhere.
+fn monitor_mix_line(model: DeviceModel, mix: u8) -> String {
+    if model.has_playback_mix() {
+        format!("Mic Level → {mix}%")
+    } else {
+        format!("Monitor Mix → {mix}%")
+    }
+}
+
+fn playback_mix_line(mix: u8) -> String {
+    format!("Playback Level → {mix}%")
 }
 
 /// While the settings are unread, keep saying so after a mute, which still
@@ -1527,6 +1632,7 @@ fn skipped_note(skipped: &[String]) -> String {
 fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     let readback = dev.get_state()?;
     app.device_state = readback.state;
+    app.unread_gets = readback.skipped_gets;
     app.state_unread = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
@@ -2012,10 +2118,76 @@ mod tests {
         );
     }
 
+    /// The live poll only announces a change it can tell is one: while the
+    /// settings are unread it reads mute alone, since the screen holds
+    /// defaults, and in Auto Level the device moves its own gain (kept, not
+    /// announced).
+    #[test]
+    fn the_live_poll_keeps_quiet_where_a_change_isnt_one() {
+        let poll_after = |app_state: DeviceState, unread: bool| {
+            let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
+            let device = Some(fake.open());
+            let mut app = App {
+                device_model: DeviceModel::Mv6Gen2,
+                device_state: app_state,
+                state_unread: unread,
+                ..App::default()
+            };
+            app.set_ok("before");
+            poll_live(&mut app, &device);
+            app
+        };
+        let seeded = fake_hid::FakeDevice::seed_state(DeviceModel::Mv6Gen2);
+
+        // Unread: only mute is read, so the default 36 dB on screen isn't
+        // announced as a change on the device.
+        let app = poll_after(DeviceState::default(), true);
+        assert_eq!(app.device_state.gain_tenths, 360);
+        assert!(
+            !app.status_message.contains("Gain"),
+            "{}",
+            app.status_message
+        );
+
+        // Auto Level: a gain moving is the device's own.
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            gain_tenths: 100,
+            ..seeded.clone()
+        };
+        let fake = FakeDevice::with_state(DeviceModel::Mv6Gen2, auto.clone());
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            device_state: DeviceState {
+                gain_tenths: 300,
+                ..auto
+            },
+            ..App::default()
+        };
+        app.set_ok("before");
+        poll_live(&mut app, &Some(fake.open()));
+        assert_eq!(app.device_state.gain_tenths, 100);
+        assert_eq!(app.status_message, "before");
+
+        // Read and in Manual, it is announced.
+        let app = poll_after(
+            DeviceState {
+                gain_tenths: 300,
+                ..seeded
+            },
+            false,
+        );
+        assert!(
+            app.status_message.starts_with("Gain → 24"),
+            "{}",
+            app.status_message
+        );
+    }
+
     /// Finding of the 09e9569 review: a wheel adjustment still pending when the
     /// next key changed the screen took that key's change in with it.
     #[test]
-    fn a_mute_key_pushes_the_next_mute_poll_back() {
+    fn a_write_pushes_the_next_live_poll_back() {
         let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
         let mut device = Some(fake.open());
         let mut app = App {

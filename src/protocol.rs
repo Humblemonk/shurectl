@@ -1745,12 +1745,16 @@ const GET_LABELS: &[(GetCommand, &str)] = &[
     (cmd_get_serial, "Serial Number"),
 ];
 
+/// A binary GET's command and address, which tell GETs apart.
+fn get_address(get: &[u8]) -> Option<&[u8]> {
+    get.get(10..PREFIX_OFFSET + 3)
+}
+
 /// The UI name of the setting the binary GET `packet` reads on `model`, or
 /// `None` for a GET no label covers. Packets match by command and address.
 fn setting_label(model: DeviceModel, packet: &[u8]) -> Option<String> {
-    let address = |get: &[u8]| get.get(10..PREFIX_OFFSET + 3).map(<[u8]>::to_vec);
-    let wanted = address(packet)?;
-    let reads = |get: &[u8]| address(get).as_ref() == Some(&wanted);
+    let wanted = get_address(packet)?;
+    let reads = |get: &[u8]| get_address(get) == Some(wanted);
     if let Some((_, label)) = GET_LABELS.iter().find(|(get, _)| reads(&get(0))) {
         return Some((*label).to_string());
     }
@@ -2622,10 +2626,45 @@ fn decode_lp_string(value: &[u8]) -> Option<String> {
     )
 }
 
-/// Whether `reply` answers `cmd_get_mute()`, for the mute poll, which reads
-/// the mute state alone and must not take another setting's reply for it.
-pub fn is_mute_reply(reply: &Reply) -> bool {
-    reply.feat == FEAT_MUTE
+/// The addresses of the GETs the TUI's live poll sends (mute, mode, gain,
+/// the monitor levels), which are answered at the address asked.
+const LIVE_ADDRESSES: [[u8; 2]; 4] = [FEAT_MUTE, FEAT_AUTO, FEAT_GAIN, FEAT_MIX];
+
+/// Whether the binary GET `packet` is `cmd_get_mv7_playback_mix()`.
+pub fn is_playback_get(packet: &[u8]) -> bool {
+    get_address(packet)
+        .is_some_and(|wanted| get_address(&cmd_get_mv7_playback_mix(0)) == Some(wanted))
+}
+
+/// Whether `reply` carries the factory serial `cmd_get_serial()` asks for.
+pub fn is_serial_reply(reply: &Reply) -> bool {
+    reply.feat == FEAT_SERIAL
+}
+
+/// Whether `reply` is at a live-poll address (`LIVE_ADDRESSES`).
+pub fn is_live_reply(reply: &Reply) -> bool {
+    LIVE_ADDRESSES.contains(&reply.feat)
+}
+
+/// Whether the binary GET `get` asks at a live-poll address, so its answer
+/// comes back at that address and any other reply isn't it.
+pub fn is_live_get(get: &[u8]) -> bool {
+    get.get(PREFIX_OFFSET + 1..PREFIX_OFFSET + 3)
+        .is_some_and(|address| LIVE_ADDRESSES.iter().any(|live| live[..] == *address))
+}
+
+/// Whether `reply` answers the binary GET `get` at the address it asked, for
+/// the TUI's poll of mute, mode, gain and the monitor levels, which are
+/// answered there (their readback routes by that address). Whether every GET
+/// is, is unconfirmed. FEAT_MIX holds the Mic Level or balance and the
+/// Playback Level, told apart by the 0x03 prefix.
+pub fn answers_at_its_address(get: &[u8], reply: &Reply) -> bool {
+    let Some(&[prefix, hi, lo]) = get.get(PREFIX_OFFSET..PREFIX_OFFSET + 3) else {
+        return false;
+    };
+    reply.feat == [hi, lo]
+        && (reply.feat != FEAT_MIX
+            || (reply.prefix == PLAYBACK_MIX_PREFIX) == (prefix == PLAYBACK_MIX_PREFIX))
 }
 
 /// Apply a parsed [`Reply`] to `state`. Playback Mix shares FEAT_MIX with
@@ -3121,6 +3160,14 @@ pub mod mv7_text {
         TextCommand::named(MIC_MUTE, None)
     }
 
+    pub fn get_dsp_mode() -> TextCommand {
+        TextCommand::named(DSP_MODE, None)
+    }
+
+    pub fn get_monitor_mix() -> TextCommand {
+        TextCommand::block(BLOCK_MONITOR_MIX, None)
+    }
+
     pub fn get_serial() -> TextCommand {
         TextCommand::named(SERIAL_NUM, None)
     }
@@ -3130,11 +3177,11 @@ pub mod mv7_text {
         vec![
             get_mute(),
             get_gain(),
-            TextCommand::named(DSP_MODE, None),
+            get_dsp_mode(),
             TextCommand::named(LOCK, None),
             TextCommand::named(METER_MODE, None),
             TextCommand::named(DIM_MODE, None),
-            TextCommand::block(BLOCK_MONITOR_MIX, None),
+            get_monitor_mix(),
             TextCommand::block(BLOCK_COMPRESSOR, None),
             TextCommand::block(BLOCK_EQ, None),
             TextCommand::named(FW_VERSION, None),
@@ -3190,6 +3237,13 @@ pub mod mv7_text {
 
     pub fn set_eq(preset: EqPreset) -> TextCommand {
         TextCommand::block(BLOCK_EQ, Some(&format!("{:08X}", eq_value(preset))))
+    }
+
+    /// The Monitor Mix the MV7 reads back after `mix` is set: 1% and 2% sit
+    /// on the 0% floor of `MIX_CURVE`.
+    pub fn monitor_mix_as_stored(mix: u8) -> u8 {
+        let (playback, mic) = mix_words(mix);
+        mix_from_words(playback, mic)
     }
 
     /// Monitor mix: 0 = full mic, 100 = full playback. Values above 100 are clamped.
