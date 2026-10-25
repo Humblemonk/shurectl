@@ -698,6 +698,15 @@ impl ShureDevice {
                 format!("{reply:?} in reply to {:?}", command.line)
             });
         }
+        // The Limiter block is unconfirmed on hardware (see protocol.rs
+        // `mv7_text`): unanswered, only the Limiter stays unread.
+        let command = mv7_text::get_limiter();
+        readback.state.limiter_enabled = None;
+        let reply = self.send_text(&command)?;
+        let applied = mv7_text::apply_reply(&reply, &mut readback.state);
+        readback.record(applied, Need::Optional, || {
+            format!("{reply:?} in reply to {:?}", command.line)
+        });
         Ok(())
     }
 
@@ -1115,12 +1124,12 @@ impl ShureDevice {
 
     pub fn set_limiter(&self, enabled: bool) -> Result<()> {
         let pkt = match self.model {
+            DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_limiter(enabled)),
             DeviceModel::Mv7Plus => protocol::cmd_set_mv7_limiter(self.next_seq(), enabled),
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
-            | DeviceModel::Mv6Gen2
-            | DeviceModel::Mv7 => protocol::cmd_set_limiter(self.next_seq(), enabled),
+            | DeviceModel::Mv6Gen2 => protocol::cmd_set_limiter(self.next_seq(), enabled),
         };
         self.send_set(&pkt)
     }

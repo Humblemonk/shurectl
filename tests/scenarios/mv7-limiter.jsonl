@@ -1,0 +1,13 @@
+{"scenario": "mv7-limiter", "models": ["mv7"], "modes": ["fake"]}
+{"click_on": "Dynamics"}
+{"expect": {"focus": "Limiter"}}
+{"key": "Enter"}
+{"expect": {"status": "Limiter → ON", "text_sent": "setBlock 1F 00000001", "state": {"limiter_enabled": true}}}
+{"key": "Space"}
+{"expect": {"status": "Limiter → OFF", "text_sent": "setBlock 1F 00000000", "state": {"limiter_enabled": false}}}
+{"key": "Down"}
+{"expect": {"focus": "Compressor", "no_packets": true}}
+{"key": "Down"}
+{"expect": {"focus": "Limiter"}}
+{"key": "Up"}
+{"expect": {"focus": "Compressor"}}

@@ -234,7 +234,7 @@ fn features(model: DeviceModel) -> Vec<Feature> {
         ),
         set_feature(
             "LIMITER",
-            |s| cmd_set_limiter(0, s.limiter_enabled),
+            |s| cmd_set_limiter(0, s.limiter_enabled.unwrap_or_default()),
             Some(|s| json!(s.limiter_enabled)),
         ),
         set_feature(
@@ -1022,7 +1022,7 @@ mod tests {
             muted: true,
             phantom_power: true,
             monitor_mix: 50,
-            limiter_enabled: true,
+            limiter_enabled: Some(true),
             compressor: CompressorPreset::Medium,
             hpf: HpfFrequency::Hz150,
             eq_enabled: true,

@@ -66,6 +66,11 @@ DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives 
 - Map a new block by snapshotting `getBlock` before and after one change in MOTIV. MOTIV's
   exact command strings are in its bundled `ndl-addon.node` (`strings -a`), but that addon
   is shared with other Shure devices
+- Except the Limiter block (`1F`): its ID and values come from Shure's
+  `DSP-Settings-MV7.xml` (via schlarpc/shure-mv7-firmware-re), not a MOTIV snapshot, and
+  MOTIV's own limiter toggle changed no block shurectl reads (2026-09-25). Unconfirmed on
+  hardware, so its read is optional (`limiter_enabled` stays `None`) and a mic that doesn't
+  answer it still works
 - MOTIV and shurectl share one command channel, and shurectl's live poll sends `micMute`,
   `dspMode`, the gain and the Monitor Mix block every second (stopping after `micMute` when
   it goes unanswered). Quit MOTIV before testing against the MV7

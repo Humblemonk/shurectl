@@ -207,7 +207,7 @@ impl PresetSlot {
             }
             DeviceModel::Mv7 => {
                 slot.save_auto_position_and_tone(state);
-                slot.compressor = Some(SerCompressorPreset::from(state.compressor));
+                slot.save_limiter_and_compressor(state);
                 slot.eq_preset = Some(SerEqPreset::from(state.eq_preset));
                 slot.led_live_meter = Some(state.led_live_meter);
                 slot.led_night_mode = Some(state.led_night_mode);
@@ -241,9 +241,10 @@ impl PresetSlot {
         self.auto_tone = Some(SerAutoTone::from(state.auto_tone));
     }
 
-    /// Limiter and Compressor (MVX2U Gen 1 and Gen 2, MV7+).
+    /// Limiter and Compressor (MVX2U Gen 1 and Gen 2, MV7, MV7+). An unread
+    /// Limiter isn't saved.
     fn save_limiter_and_compressor(&mut self, state: &DeviceState) {
-        self.limiter_enabled = Some(state.limiter_enabled);
+        self.limiter_enabled = state.limiter_enabled;
         self.compressor = Some(SerCompressorPreset::from(state.compressor));
     }
 
@@ -276,7 +277,10 @@ impl PresetSlot {
         load_saved(&mut state.auto_tone, self.auto_tone.map(AutoTone::from));
         load_saved(&mut state.auto_gain, self.auto_gain.map(AutoGain::from));
         load_saved(&mut state.phantom_power, self.phantom_power);
-        load_saved(&mut state.limiter_enabled, self.limiter_enabled);
+        // An unread Limiter (MV7) stays unread, as the Mute Button does.
+        if let Some(enabled) = state.limiter_enabled.as_mut() {
+            load_saved(enabled, self.limiter_enabled);
+        }
         load_saved(
             &mut state.compressor,
             self.compressor.map(CompressorPreset::from),
@@ -1028,7 +1032,7 @@ mod tests {
             muted: true,
             phantom_power: true,
             monitor_mix: 50,
-            limiter_enabled: true,
+            limiter_enabled: Some(true),
             compressor: CompressorPreset::Medium,
             hpf: HpfFrequency::Hz75,
             eq_enabled: true,
@@ -1159,12 +1163,12 @@ mod tests {
             DeviceModel::Mv6Gen2,
         );
         let mut gen2_state = DeviceState {
-            limiter_enabled: true,
+            limiter_enabled: Some(true),
             compressor: CompressorPreset::Medium,
             ..DeviceState::default()
         };
         toml_roundtrip(&mv6).apply_to_device_state(&mut gen2_state);
-        assert!(gen2_state.limiter_enabled);
+        assert_eq!(gen2_state.limiter_enabled, Some(true));
         assert_eq!(gen2_state.compressor, CompressorPreset::Medium);
 
         // A summary leaves out what the preset didn't save.
@@ -1216,7 +1220,7 @@ mod tests {
         assert!(!target.muted);
         assert!(target.phantom_power);
         assert_eq!(target.monitor_mix, 50);
-        assert!(target.limiter_enabled);
+        assert_eq!(target.limiter_enabled, Some(true));
         assert_eq!(target.compressor, CompressorPreset::Medium);
         assert_eq!(target.hpf, HpfFrequency::Hz75);
         assert!(target.eq_enabled);

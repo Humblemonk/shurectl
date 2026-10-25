@@ -1287,6 +1287,7 @@ fn summary_rows(model: DeviceModel) -> &'static [SummaryRow] {
             R::ConfigLock,
             R::Tone,
             R::Eq,
+            R::Limiter,
             R::Compressor,
             R::LiveMeter,
             R::NightMode,
@@ -1319,7 +1320,10 @@ fn summary_auto_managed(model: DeviceModel, row: SummaryRow) -> bool {
             SummaryRow::Eq | SummaryRow::Hpf | SummaryRow::Limiter | SummaryRow::Compressor
         ),
         DeviceModel::Mvx2uGen2 => matches!(row, SummaryRow::Limiter | SummaryRow::Compressor),
-        DeviceModel::Mv7 => matches!(row, SummaryRow::Eq | SummaryRow::Compressor),
+        DeviceModel::Mv7 => matches!(
+            row,
+            SummaryRow::Eq | SummaryRow::Limiter | SummaryRow::Compressor
+        ),
         DeviceModel::Mv6 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => false,
     }
 }
@@ -1426,7 +1430,10 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
                 }
             }
         },
-        SummaryRow::Limiter => on_off(ds.limiter_enabled),
+        SummaryRow::Limiter => match ds.limiter_enabled {
+            Some(enabled) => on_off(enabled),
+            None => Span::styled("Unknown", Style::default().fg(C_WARN)),
+        },
         SummaryRow::Compressor => text(ds.compressor.to_string()),
         SummaryRow::Denoiser => {
             if ds.denoiser_enabled && model.has_denoiser_level() {
@@ -1985,12 +1992,29 @@ fn mute_btn_span(disabled: Option<bool>) -> Span<'static> {
 
 fn draw_limiter_card(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::Limiter);
+    let focused = app.focus == Focus::Limiter;
+    let title = "Limiter";
+    let status_label = "Status: ";
+    let Some(enabled) = app.device_state.limiter_enabled else {
+        // Only the MV7's optional read leaves it unread.
+        let card = StatusCard {
+            title,
+            status: vec![Line::from(vec![
+                Span::styled(status_label, Style::default().fg(C_DIM)),
+                Span::styled("Unknown", Style::default().fg(C_WARN)),
+            ])],
+            description: "Unavailable: its state could not be read.",
+            hint: "🔒 Unavailable",
+        };
+        draw_status_card(f, focused, card, area);
+        return;
+    };
     draw_toggle_card(
         f,
-        app.focus == Focus::Limiter,
-        "Limiter",
-        "Status: ",
-        app.device_state.limiter_enabled,
+        focused,
+        title,
+        status_label,
+        enabled,
         "Prevents clipping by capping the output level at 0 dBFS.",
         area,
     );
@@ -2740,9 +2764,8 @@ fn draw_dynamics_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let manual = app.device_state.mode == InputMode::Manual;
     let cards: &[CardFn] = match app.device_model {
         DeviceModel::Mvx2u => &[draw_limiter_card, draw_compressor_card, draw_hpf_card],
-        // The limiter MOTIV shows for the MV7 runs in the app, not on the mic,
-        // and the MV7 has no HPF; the compressor is its only dynamics control.
-        DeviceModel::Mv7 => &[draw_compressor_card],
+        // The MV7 has no HPF.
+        DeviceModel::Mv7 => &[draw_limiter_card, draw_compressor_card],
         // Gen 2 Auto mode has no Limiter or Compressor.
         DeviceModel::Mvx2uGen2 if !manual => {
             &[draw_denoiser_card, draw_popper_stopper_card, draw_hpf_card]

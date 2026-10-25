@@ -672,8 +672,10 @@ pub struct DeviceState {
     /// `has_playback_mix()`, where `monitor_mix` is the mic level. Same FEAT_MIX
     /// address as `monitor_mix`, with prefix=0x03 on the wire.
     pub playback_mix: u8,
-    /// Limiter. MVX2U Gen 1 and Gen 2, MV7+.
-    pub limiter_enabled: bool,
+    /// Limiter. MVX2U Gen 1 and Gen 2, MV7, MV7+. `None` until a readback reads
+    /// it, which only the MV7's optional read can leave it (unconfirmed on
+    /// hardware there): unknown, so it must not be shown, changed or saved.
+    pub limiter_enabled: Option<bool>,
     /// Compressor preset. MVX2U Gen 1 and Gen 2, MV7, MV7+.
     pub compressor: CompressorPreset,
     pub hpf: HpfFrequency,
@@ -778,7 +780,7 @@ impl Default for DeviceState {
             muted: false,
             phantom_power: false,
             monitor_mix: 0,
-            limiter_enabled: false,
+            limiter_enabled: Some(false),
             compressor: CompressorPreset::Off,
             hpf: HpfFrequency::Off,
             eq_enabled: false,
@@ -2724,7 +2726,7 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             if value.is_empty() {
                 return false;
             }
-            state.limiter_enabled = value[0] != 0;
+            state.limiter_enabled = Some(value[0] != 0);
             true
         }
         f if f == FEAT_COMP => {
@@ -3024,9 +3026,12 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
 ///   each block into pages 0x1xx and 0x2xx by itself, so only the base ID is written.
 ///
 /// Confirmed against firmware 0.0.52.0 (package 1.2.19) by probing the shell and
-/// against the command strings MOTIV Mix sends. The limiter MOTIV shows is host-side
-/// software, not a device setting. `bootDSP` and firmware commands are intentionally
-/// absent.
+/// against the command strings MOTIV Mix sends. The Limiter block (`1F`) is not:
+/// its ID and values come from Shure's `DSP-Settings-MV7.xml` and the block table
+/// decoded by schlarpc/shure-mv7-firmware-re, and nobody has read or written it
+/// on an MV7 (unconfirmed). Toggling MOTIV's limiter changed no block shurectl
+/// reads (2026-09-25), so MOTIV may limit in the app instead. `bootDSP` and
+/// firmware commands are intentionally absent.
 pub mod mv7_text {
     use super::{AutoTone, CompressorPreset, DeviceState, EqPreset, InputMode, MicPosition};
 
@@ -3057,6 +3062,8 @@ pub mod mv7_text {
 
     /// Compressor block: 0=Off, 1=Light, 2=Medium, 3=Heavy.
     const BLOCK_COMPRESSOR: &str = "19";
+    /// Limiter block: 0=Off, 1=On (unconfirmed on hardware, see the module docs).
+    const BLOCK_LIMITER: &str = "1F";
     /// Monitor mix block: two 32-bit linear gains, playback then mic.
     const BLOCK_MONITOR_MIX: &str = "22";
     /// EQ block: bit 0 = High Pass, bit 1 = Presence Boost.
@@ -3172,6 +3179,12 @@ pub mod mv7_text {
         TextCommand::named(SERIAL_NUM, None)
     }
 
+    /// Not in [`state_queries`]: an unanswered Limiter read must not fail the
+    /// readback, so `device.rs` sends it as an optional query.
+    pub fn get_limiter() -> TextCommand {
+        TextCommand::block(BLOCK_LIMITER, None)
+    }
+
     /// Every query needed for a full state readback.
     pub fn state_queries() -> Vec<TextCommand> {
         vec![
@@ -3230,6 +3243,10 @@ pub mod mv7_text {
         TextCommand::named(DIM_MODE, Some(on_off(enabled)))
     }
 
+    pub fn set_limiter(enabled: bool) -> TextCommand {
+        TextCommand::block(BLOCK_LIMITER, Some(&format!("{:08X}", u32::from(enabled))))
+    }
+
     pub fn set_compressor(preset: CompressorPreset) -> TextCommand {
         let value = u32::from(preset.as_byte());
         TextCommand::block(BLOCK_COMPRESSOR, Some(&format!("{value:08X}")))
@@ -3270,10 +3287,11 @@ pub mod mv7_text {
 
     /// The SETs, after the mode, that take the mic from `current` (read back
     /// after any mode change) to `target`, each with the setting's label for a
-    /// refusal message. Gain, compressor and EQ only apply in Manual, so they
-    /// are left out unless both are in Manual. Monitor Mix goes last and only
-    /// if `monitor_mix`. Values are compared as the commands that would set
-    /// them, so two gains or mixes the mic can't tell apart count as equal.
+    /// refusal message. Gain, compressor and EQ only apply in Manual, and the
+    /// Limiter is assumed to as well (unconfirmed), so they are left out unless
+    /// both are in Manual. Monitor Mix goes last and only if `monitor_mix`.
+    /// Values are compared as the commands that would set them, so two gains
+    /// or mixes the mic can't tell apart count as equal.
     pub fn setting_changes(
         current: &DeviceState,
         target: &DeviceState,
@@ -3288,6 +3306,12 @@ pub mod mv7_text {
         };
         if target.mode == InputMode::Manual && current.mode == InputMode::Manual {
             add("Gain", |state| set_gain(state.gain_tenths));
+            // Only when the mic's Limiter was read, so an unknown one isn't written.
+            if current.limiter_enabled.is_some() && target.limiter_enabled.is_some() {
+                add("Limiter", |state| {
+                    set_limiter(state.limiter_enabled.unwrap_or_default())
+                });
+            }
             add("Compressor", |state| set_compressor(state.compressor));
             add("EQ", |state| set_eq(state.eq_preset));
         }
@@ -3542,6 +3566,13 @@ pub mod mv7_text {
                 }
                 None => false,
             },
+            BLOCK_LIMITER => match parse_word(data) {
+                Some(value @ (0 | 1)) => {
+                    state.limiter_enabled = Some(value == 1);
+                    true
+                }
+                _ => false,
+            },
             BLOCK_MONITOR_MIX => {
                 let words = (
                     data.get(..WORD_HEX_LEN).and_then(parse_word),
@@ -3569,11 +3600,11 @@ pub mod mv7_text {
         use std::collections::BTreeMap;
 
         use super::{
-            BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_MONITOR_MIX, BLOCK_REPLY, DIM_MODE, DSP_MODE,
-            DSP_MODE_MANUAL, DSP_MODE_MAX, FAILED_REPLY, FW_VERSION, GAIN_UNIT, GET_BLOCK,
-            INPUT_GAIN, LOCK, LOCKED_REPLY, METER_MODE, MIC_MUTE, OFF, ON, SERIAL_NUM, SET_BLOCK,
-            parse_gain, set_compressor, set_dsp_mode, set_eq, set_gain, set_live_meter, set_lock,
-            set_monitor_mix, set_mute, set_night_mode, snap_gain,
+            BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_LIMITER, BLOCK_MONITOR_MIX, BLOCK_REPLY, DIM_MODE,
+            DSP_MODE, DSP_MODE_MANUAL, DSP_MODE_MAX, FAILED_REPLY, FW_VERSION, GAIN_UNIT,
+            GET_BLOCK, INPUT_GAIN, LOCK, LOCKED_REPLY, METER_MODE, MIC_MUTE, OFF, ON, SERIAL_NUM,
+            SET_BLOCK, parse_gain, set_compressor, set_dsp_mode, set_eq, set_gain, set_limiter,
+            set_live_meter, set_lock, set_monitor_mix, set_mute, set_night_mode, snap_gain,
         };
         use crate::protocol::DeviceState;
 
@@ -3601,6 +3632,10 @@ pub mod mv7_text {
                     set_monitor_mix(state.monitor_mix),
                 ] {
                     shell.store(&command.line);
+                }
+                // An unread Limiter is a mic that doesn't answer its block.
+                if let Some(enabled) = state.limiter_enabled {
+                    shell.store(&set_limiter(enabled).line);
                 }
                 shell
                     .values
@@ -3631,7 +3666,8 @@ pub mod mv7_text {
                     (GET_BLOCK, Some(id)) => self.block_reply(id),
                     (SET_BLOCK, Some(arg)) => match arg.split_once(' ') {
                         Some((id, data))
-                            if [BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_MONITOR_MIX].contains(&id) =>
+                            if [BLOCK_COMPRESSOR, BLOCK_LIMITER, BLOCK_EQ, BLOCK_MONITOR_MIX]
+                                .contains(&id) =>
                         {
                             self.values
                                 .insert(format!("{BLOCK_REPLY} {id}"), data.into());
@@ -3757,6 +3793,27 @@ pub mod mv7_text {
                 set_dsp_mode(InputMode::Auto, MicPosition::Far, AutoTone::Dark).line,
                 "dspMode 06"
             );
+        }
+
+        /// Block 1F and its values are from Shure's DSP-Settings-MV7.xml, not a
+        /// capture: nothing here proves the mic acts on them.
+        #[test]
+        fn limiter_roundtrip() {
+            assert_eq!(set_limiter(true).line, "setBlock 1F 00000001");
+            assert_eq!(set_limiter(false).line, "setBlock 1F 00000000");
+            assert_eq!(get_limiter().line, "getBlock 1F");
+            let mut state = DeviceState {
+                limiter_enabled: None,
+                ..DeviceState::default()
+            };
+            assert!(apply_reply("block 1F 00000001", &mut state));
+            assert_eq!(state.limiter_enabled, Some(true));
+            assert!(apply_reply("block 1F 00000000", &mut state));
+            assert_eq!(state.limiter_enabled, Some(false));
+            for unusable in ["block 1F 00000002", "block 1F Not valid"] {
+                assert!(!apply_reply(unusable, &mut state), "{unusable}");
+            }
+            assert_eq!(state.limiter_enabled, Some(false));
         }
 
         #[test]
@@ -4704,9 +4761,9 @@ mod tests {
     fn apply_response_limiter() {
         let mut state = DeviceState::default();
         let _ = apply_response(FEAT_LIMITER, &[0x01], &mut state);
-        assert!(state.limiter_enabled);
+        assert_eq!(state.limiter_enabled, Some(true));
         let _ = apply_response(FEAT_LIMITER, &[0x00], &mut state);
-        assert!(!state.limiter_enabled);
+        assert_eq!(state.limiter_enabled, Some(false));
     }
 
     #[test]

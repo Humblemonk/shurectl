@@ -100,6 +100,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
 | `dynamics-limiter-compressor` | MVX2U, MVX2U Gen 2, MV7+ | fake | Limiter toggles and sends LIMITER; Compressor cycles Off → Light → Medium → Heavy → Off |
+| `mv7-limiter` | MV7 | fake | The Limiter toggles and sends `setBlock 1F` (block from Shure's DSP settings file, unconfirmed on hardware); focus moves Limiter ↔ Compressor |
 | `dynamics-denoiser-popper` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | Clicking focuses without sending; Denoiser and Popper Stopper toggle and send |
 | `dynamics-hpf-cycle` | all but MV7 | fake | HPF cycles Off → 75 Hz → 150 Hz → Off and sends HPF |
 | `mute-button-setting` | MV6, MV6 Gen 2, MV7+ | fake, demo | Mute Button toggles between Works and Ignored and sends MUTE_BUTTON |

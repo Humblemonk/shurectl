@@ -202,7 +202,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Tone (Dark ↔ Natural ↔ Bright slider, 10% steps) | — | Auto | ✓ | Simple tone | — | ✓ |
 | EQ Preset (Flat / High Pass / Presence Boost / both) | — | — | — | — | Manual | — |
 | **Dynamics tab** | | | | | | |
-| Limiter | Manual | Manual | — | — | — | ✓ |
+| Limiter | Manual | Manual | — | — | Manual | ✓ |
 | Compressor (Off / Light / Medium / Heavy) | Manual | Manual | — | — | Manual | ✓ |
 | High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | ✓ | — | ✓ |
 | Denoiser | — | ✓ | ✓ | ✓, level 1–100% | — | ✓ |
@@ -229,8 +229,6 @@ firmware version), `--demo`, and the command-line options under [Scripting](#scr
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.
 - On the MVX2U Gen 1, the EQ also has a master enable and a per-band enable.
-- The limiter MOTIV shows for the MV7 is processing inside the MOTIV app, not a mic
-  setting, so shurectl does not offer it.
 - Factory Reset asks for confirmation, and the mic disconnects afterwards.
 
 </details>

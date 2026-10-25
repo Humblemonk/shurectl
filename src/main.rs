@@ -849,6 +849,10 @@ fn apply_action(
         app.report_unavailable_mute_button();
         return;
     }
+    if matches!(action, DeviceAction::SetLimiter(_)) && app.device_state.limiter_enabled.is_none() {
+        app.report_unavailable_limiter();
+        return;
+    }
     let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
@@ -1683,19 +1687,23 @@ fn refused_note(refused: &[String]) -> String {
     }
 }
 
-/// Status suffix for a saved Mute Button the load left alone because the
-/// device's couldn't be read (`PresetSlot::apply_to_device_state()`).
+/// Status suffix for a saved Mute Button or Limiter the load left alone
+/// because the device's couldn't be read (`PresetSlot::apply_to_device_state()`).
 fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceModel) -> String {
-    if !model.has_mute_button()
-        || slot.mute_btn_disabled.is_none()
-        || state.mute_btn_disabled.is_some()
+    let mut note = String::new();
+    if model.has_mute_button()
+        && slot.mute_btn_disabled.is_some()
+        && state.mute_btn_disabled.is_none()
     {
-        return String::new();
+        note.push_str(&match state.mute_button_needs_firmware(model) {
+            Some(firmware) => format!(" Mute Button not loaded: it needs firmware {firmware}+."),
+            None => " Mute Button not loaded: its state could not be read.".into(),
+        });
     }
-    match state.mute_button_needs_firmware(model) {
-        Some(firmware) => format!(" Mute Button not loaded: it needs firmware {firmware}+."),
-        None => " Mute Button not loaded: its state could not be read.".into(),
+    if slot.limiter_enabled.is_some() && state.limiter_enabled.is_none() {
+        note.push_str(" Limiter not loaded: its state could not be read.");
     }
+    note
 }
 
 /// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
@@ -1918,8 +1926,8 @@ fn write_limiter_and_compressor(
     slot: &PresetSlot,
     state: &protocol::DeviceState,
 ) -> Result<()> {
-    if slot.limiter_enabled.is_some() {
-        d.set_limiter(state.limiter_enabled)?;
+    if let (Some(_), Some(enabled)) = (slot.limiter_enabled, state.limiter_enabled) {
+        d.set_limiter(enabled)?;
     }
     if slot.compressor.is_some() {
         d.set_compressor(&state.compressor)?;
@@ -2396,6 +2404,67 @@ mod tests {
         assert_eq!(unread_note(&slot, &state, model), "");
     }
 
+    /// The MV7's Limiter block is unconfirmed on hardware: a mic that doesn't
+    /// answer it still reads back, and the Limiter alone stays unknown.
+    #[test]
+    fn unread_mv7_limiter_is_never_saved_loaded_or_written() {
+        let model = DeviceModel::Mv7;
+        let unanswered = DeviceState {
+            limiter_enabled: None,
+            ..FakeDevice::seed_state(model)
+        };
+        let fake = FakeDevice::with_state(model, unanswered);
+        let mut device = Some(fake.open());
+        let readback = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback");
+        assert_eq!(readback.state.limiter_enabled, None);
+        assert_eq!(readback.state.gain_tenths, 240);
+        assert_eq!(readback.skipped.len(), 1);
+        assert!(readback.skipped[0].contains("getBlock 1F"));
+
+        let saved = PresetSlot::from_device_state("Unknown limiter", &readback.state, model);
+        assert_eq!(saved.limiter_enabled, None);
+        let mut app = App {
+            device_model: model,
+            device_state: readback.state,
+            focus: app::Focus::Limiter,
+            ..App::default()
+        };
+        let start = fake.log_len();
+        assert!(app.toggle_focused().is_none());
+        assert_eq!(
+            app.status_message,
+            "Limiter unavailable: its state could not be read"
+        );
+        apply_action(&mut app, &mut device, DeviceAction::SetLimiter(true), None);
+        assert!(fake.log_since(start).is_empty());
+
+        let slot = PresetSlot {
+            limiter_enabled: Some(true),
+            ..saved
+        };
+        let write_monitor_mix = apply_preset_to_state(&slot, &mut app.device_state, model);
+        assert_eq!(app.device_state.limiter_enabled, None);
+        assert_eq!(
+            unread_note(&slot, &app.device_state, model),
+            " Limiter not loaded: its state could not be read."
+        );
+        apply_preset_to_device(&device, &slot, &app.device_state, model, write_monitor_mix)
+            .expect("load other settings");
+        assert!(!fake.log_since(start).iter().any(|packet| {
+            matches!(&packet.kind, fake_hid::PacketKind::Text { line, .. }
+                if line.starts_with("setBlock 1F"))
+        }));
+
+        // A mic that answers reads back and loads the Limiter like any setting.
+        let fake = FakeDevice::new(model);
+        let state = load_on_fake(&fake, &slot, DeviceState::default());
+        assert_eq!(state.limiter_enabled, Some(true));
+    }
+
     #[test]
     fn a_preset_leaves_settings_it_did_not_save_on_the_device() {
         // An MVX2U Gen 2 preset has no Mute Button or Denoiser level. The shown
@@ -2783,7 +2852,7 @@ mod tests {
             phantom_power: true,
             monitor_mix: 40,
             playback_mix: 60,
-            limiter_enabled: true,
+            limiter_enabled: Some(true),
             compressor: CompressorPreset::Medium,
             hpf: HpfFrequency::Hz75,
             eq_enabled: true,

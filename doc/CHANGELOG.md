@@ -24,6 +24,9 @@ device's state as JSON.
   read (unconfirmed on those models), `--playback-mix` is refused and `--json` leaves it out.
 - `--device` also takes the serial `--list` shows, which stays the same when a mic is
   replugged, unlike its path.
+- The MV7 has a Limiter on the Dynamics tab, in Manual mode. The setting comes from Shure's
+  DSP settings file and is unconfirmed on a real MV7. If the mic doesn't answer it, only the
+  Limiter shows as unavailable.
 
 ### Changed
 

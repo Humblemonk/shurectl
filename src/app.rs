@@ -264,6 +264,16 @@ impl App {
         }
     }
 
+    /// Refuse a Limiter change while its state is unread (only the MV7's
+    /// optional read leaves it so), and say why, as for the Mute Button.
+    pub fn report_unavailable_limiter(&mut self) {
+        if self.state_unread {
+            self.set_err(STATE_UNREAD_HINT);
+            return;
+        }
+        self.set_err(LIMITER_UNREAD);
+    }
+
     // ── Tab navigation ────────────────────────────────────────────────────────
 
     /// Returns true when a tab does not exist on this model at all (Reverb
@@ -438,9 +448,8 @@ impl App {
                 InputMode::Manual => Focus::EqBandSelect,
             },
             (Tab::Dynamics, DeviceModel::Mv6 | DeviceModel::Mv6Gen2) => Focus::Denoiser,
-            (Tab::Dynamics, DeviceModel::Mv7Plus) => Focus::Limiter,
+            (Tab::Dynamics, DeviceModel::Mv7Plus | DeviceModel::Mv7) => Focus::Limiter,
             (Tab::Dynamics, DeviceModel::Mvx2u) => Focus::Limiter,
-            (Tab::Dynamics, DeviceModel::Mv7) => Focus::Compressor,
             (Tab::Dynamics, DeviceModel::Mvx2uGen2) => match self.device_state.mode {
                 InputMode::Auto => Focus::Denoiser,
                 InputMode::Manual => Focus::Limiter,
@@ -686,7 +695,8 @@ impl App {
 
             // ── MV7 EQ, Dynamics, LED ─────────────────────────────────────────
             (Tab::Eq, _, DeviceModel::Mv7, _) => Focus::EqPreset,
-            (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Compressor,
+            (Tab::Dynamics, Focus::Limiter, DeviceModel::Mv7, _) => Focus::Compressor,
+            (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Limiter,
             (Tab::Led, Focus::LedLiveMeter, DeviceModel::Mv7, _) => Focus::LedNightMode,
             (Tab::Led, _, DeviceModel::Mv7, _) => Focus::LedLiveMeter,
 
@@ -929,6 +939,7 @@ impl App {
 
             // ── MV7 EQ, Dynamics, LED reverse ─────────────────────────────────
             (Tab::Eq, _, DeviceModel::Mv7, _) => Focus::EqPreset,
+            (Tab::Dynamics, Focus::Compressor, DeviceModel::Mv7, _) => Focus::Limiter,
             (Tab::Dynamics, _, DeviceModel::Mv7, _) => Focus::Compressor,
             (Tab::Led, Focus::LedNightMode, DeviceModel::Mv7, _) => Focus::LedLiveMeter,
             (Tab::Led, _, DeviceModel::Mv7, _) => Focus::LedNightMode,
@@ -1274,8 +1285,12 @@ impl App {
                 ))
             }
             Focus::Limiter => {
-                self.device_state.limiter_enabled = !self.device_state.limiter_enabled;
-                Some(DeviceAction::SetLimiter(self.device_state.limiter_enabled))
+                let Some(enabled) = self.device_state.limiter_enabled else {
+                    self.report_unavailable_limiter();
+                    return None;
+                };
+                self.device_state.limiter_enabled = Some(!enabled);
+                Some(DeviceAction::SetLimiter(!enabled))
             }
             Focus::Compressor => {
                 self.device_state.compressor = self.device_state.compressor.cycle_next();
@@ -1514,6 +1529,9 @@ pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — p
 
 /// Status for a Mute Button change refused because its state wasn't read.
 const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";
+
+/// Status for a Limiter change refused because its state wasn't read.
+const LIMITER_UNREAD: &str = "Limiter unavailable: its state could not be read";
 
 /// Commands to send to the device, produced by App but executed by main.
 #[derive(Debug)]
