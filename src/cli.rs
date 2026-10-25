@@ -375,7 +375,7 @@ fn without_tui_hints(status: &str) -> String {
 }
 
 /// Whether the last readback went without the Playback Level, an optional
-/// read on the MV6 only (#99).
+/// read on the MV6 (#99) and MV7+.
 fn playback_unread(app: &App) -> bool {
     app.unread_gets
         .iter()
@@ -414,7 +414,7 @@ fn check_writes(request: &Request, app: &App) -> Result<()> {
     if request.playback_mix.is_some() && playback_unread(app) {
         bail!(
             "--playback-mix: the {} didn't answer the Playback Level read, so it isn't \
-             changed (that setting is unconfirmed on this model, #99).",
+             changed (that read is unconfirmed on this model).",
             app.device_model.display_name()
         );
     }
@@ -536,8 +536,8 @@ fn state_json(app: &App) -> Result<Value> {
         // A preset's own label, and how a load reads Monitor Mix: not settings.
         fields.remove("name");
         fields.remove("monitor_mix_is_mic_level");
-        // Saved on every model, but only some have one, and the MV6 may
-        // not answer its read (#99): then it holds a default, not a value.
+        // Saved on every model, but only some have one, and the MV6 and
+        // MV7+ may not answer its read: then it holds a default, not a value.
         if !model.has_playback_mix() || playback_unread(app) {
             fields.remove("playback_mix");
         }
@@ -1084,8 +1084,14 @@ mod tests {
     }
 
     #[test]
-    fn an_mv6_that_doesnt_answer_its_playback_level_isnt_sent_one() {
-        let fake = FakeDevice::new(DeviceModel::Mv6);
+    fn an_mv6_or_mv7_plus_that_doesnt_answer_its_playback_level_isnt_sent_one() {
+        for model in [DeviceModel::Mv6, DeviceModel::Mv7Plus] {
+            playback_level_unanswered_on(model);
+        }
+    }
+
+    fn playback_level_unanswered_on(model: DeviceModel) {
+        let fake = FakeDevice::new(model);
         fake.faults_mut(|faults| faults.refused_get = Some("PLAYBACK_LEVEL".into()));
         let json = Request {
             json: true,

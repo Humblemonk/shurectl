@@ -647,6 +647,23 @@ impl ShureDevice {
         Ok(())
     }
 
+    /// Read the Playback Level. Its reply is told from Mic Level's only by the
+    /// echoed prefix 0x03, captured on the MV6 Gen 2 and MVX2U Gen 2 (which reads
+    /// it in its getters slice). Unconfirmed on the MV6 (#99) and inferred on the
+    /// MV7+ from its LED replies: there a reply that doesn't echo it is passed
+    /// over as a stray, and the read must not then stop every write.
+    fn query_playback_mix(&self, readback: &mut Readback) -> Result<()> {
+        let need = match self.model {
+            DeviceModel::Mv6 | DeviceModel::Mv7Plus => Need::Optional,
+            // The MVX2U Gen 1 and MV7 have none and never call this.
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7 => Need::Required,
+        };
+        self.query_as(&cmd_get_mv7_playback_mix(self.next_seq()), need, readback)
+    }
+
     /// Send each getter and apply its reply to `readback`.
     fn run_getters(&self, getters: &[fn(u8) -> Vec<u8>], readback: &mut Readback) -> Result<()> {
         for getter in getters {
@@ -754,19 +771,7 @@ impl ShureDevice {
             cmd_get_mv6_mix,
         ];
         self.run_getters(getters, readback)?;
-
-        // Captured on the MV6 Gen 2, unconfirmed on the MV6 (see
-        // DeviceModel::has_playback_mix()), where an unanswered GET must not
-        // stop every write.
-        let playback_mix = cmd_get_mv7_playback_mix(self.next_seq());
-        match self.model {
-            DeviceModel::Mv6 => self.query_as(&playback_mix, Need::Optional, readback)?,
-            DeviceModel::Mvx2u
-            | DeviceModel::Mvx2uGen2
-            | DeviceModel::Mv6Gen2
-            | DeviceModel::Mv7
-            | DeviceModel::Mv7Plus => self.query(&playback_mix, readback)?,
-        }
+        self.query_playback_mix(readback)?;
 
         let getters: &[fn(u8) -> Vec<u8>] = &[
             cmd_get_mv6_mute_btn_disable,
@@ -817,9 +822,9 @@ impl ShureDevice {
         )?;
         let mute_button_note = (readback.skipped.len() > skipped_before_mute_button)
             .then_some(skipped_before_mute_button);
+        self.query(&cmd_get_mv6_mix(self.next_seq()), readback)?; // Mic Level (prefix=0x00)
+        self.query_playback_mix(readback)?;
         let getters: &[fn(u8) -> Vec<u8>] = &[
-            cmd_get_mv6_mix, // Mic Level (prefix=0x00)
-            cmd_get_mv7_playback_mix,
             cmd_get_mv7_reverb_output,
             cmd_get_mv7_reverb_type,
             cmd_get_mv7_reverb_intensity,

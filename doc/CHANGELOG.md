@@ -20,8 +20,8 @@ device's state as JSON.
 - `--mode auto|manual|toggle`, `--gain`, `--monitor-mix` and `--playback-mix` change those
   settings without the TUI, to a value or by `+N`/`-N` steps like the arrow keys. They can
   be combined, and each is refused with the reason where the TUI wouldn't make the change,
-  such as gain in Auto Level mode. On an MV6 that doesn't answer its Playback Level read
-  (unconfirmed on that model), `--playback-mix` is refused and `--json` leaves it out.
+  such as gain in Auto Level mode. On an MV6 or MV7+ that doesn't answer its Playback Level
+  read (unconfirmed on those models), `--playback-mix` is refused and `--json` leaves it out.
 - `--device` also takes the serial `--list` shows, which stays the same when a mic is
   replugged, unlike its path.
 
