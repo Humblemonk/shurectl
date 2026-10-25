@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::app::{App, DeviceAction, Focus};
 use crate::device::ShureDevice;
 use crate::presets::{self, PresetSlot};
-use crate::protocol::{self, DeviceState, InputMode};
+use crate::protocol::{DeviceState, InputMode};
 
 /// Mute action for the `--mute` flag.
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
@@ -374,14 +374,6 @@ fn without_tui_hints(status: &str) -> String {
         .replace(crate::READ_BACK_NOTE, "The device was read back.")
 }
 
-/// Whether the last readback went without the Playback Level, an optional
-/// read on the MV6 (#99) and MV7+.
-fn playback_unread(app: &App) -> bool {
-    app.unread_gets
-        .iter()
-        .any(|get| protocol::is_playback_get(get))
-}
-
 /// Refuse what is wrong whatever the device's settings, before even reading
 /// them: an absolute value out of range for the model, or a Playback Level it
 /// lacks. Steps can't fail; they stop at the ends.
@@ -411,7 +403,7 @@ fn check_values(request: &Request, app: &App) -> Result<()> {
 /// asking `offers()` before each, as `write()` will. So `--mode toggle --gain
 /// 30` from Manual, or anything with `--gain` under Gain Lock, changes nothing.
 fn check_writes(request: &Request, app: &App) -> Result<()> {
-    if request.playback_mix.is_some() && playback_unread(app) {
+    if request.playback_mix.is_some() && app.playback_unread() {
         bail!(
             "--playback-mix: the {} didn't answer the Playback Level read, so it isn't \
              changed (that read is unconfirmed on this model).",
@@ -538,7 +530,7 @@ fn state_json(app: &App) -> Result<Value> {
         fields.remove("monitor_mix_is_mic_level");
         // Saved on every model, but only some have one, and the MV6 and
         // MV7+ may not answer its read: then it holds a default, not a value.
-        if !model.has_playback_mix() || playback_unread(app) {
+        if !model.has_playback_mix() || app.playback_unread() {
             fields.remove("playback_mix");
         }
         // The preset file keeps EQ gains in tenths of a dB under `gain_db`;

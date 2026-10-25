@@ -264,6 +264,23 @@ impl App {
         }
     }
 
+    /// Whether the last readback went without the Playback Level, an optional
+    /// read on the MV6 (#99) and MV7+: its field then holds a default.
+    pub fn playback_unread(&self) -> bool {
+        self.unread_gets
+            .iter()
+            .any(|get| crate::protocol::is_playback_get(get))
+    }
+
+    /// Refuse a Playback Level change while its state is unread, and say why.
+    pub fn report_unavailable_playback(&mut self) {
+        if self.state_unread {
+            self.set_err(STATE_UNREAD_HINT);
+            return;
+        }
+        self.set_err(PLAYBACK_UNREAD);
+    }
+
     /// Refuse a Limiter change while its state is unread (only the MV7's
     /// optional read leaves it so), and say why, as for the Mute Button.
     pub fn report_unavailable_limiter(&mut self) {
@@ -1051,6 +1068,11 @@ impl App {
                 Some(DeviceAction::SetMonitorMix(self.device_state.monitor_mix))
             }
             Focus::PlaybackMix => {
+                // Unread, it holds a default: a step would write from that.
+                if self.playback_unread() {
+                    self.report_unavailable_playback();
+                    return None;
+                }
                 let m = &mut self.device_state.playback_mix;
                 if delta > 0 {
                     *m = (*m + 1).min(100);
@@ -1529,6 +1551,9 @@ pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — p
 
 /// Status for a Mute Button change refused because its state wasn't read.
 const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";
+
+/// Status for a Playback Level change refused because its state wasn't read.
+const PLAYBACK_UNREAD: &str = "Playback Level unavailable: its state could not be read";
 
 /// Status for a Limiter change refused because its state wasn't read.
 const LIMITER_UNREAD: &str = "Limiter unavailable: its state could not be read";

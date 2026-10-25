@@ -54,6 +54,10 @@ device's state as JSON.
   running alongside. That shifted every answer after it and left the last setting read (the
   MV7+'s serial number, say) at its default. Found in review and on the fake device; not seen
   on hardware.
+- On an MV6 or MV7+ that doesn't answer its Playback Level read, the TUI shows it as Unknown
+  and leaves it alone: arrow keys, the wheel and preset loads don't change it, and the live
+  poll doesn't ask for it. Before, it showed 0%, and an arrow key wrote from there. Found in
+  review; not seen on hardware.
 
 Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired these.
 

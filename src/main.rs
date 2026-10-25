@@ -853,6 +853,10 @@ fn apply_action(
         app.report_unavailable_limiter();
         return;
     }
+    if matches!(action, DeviceAction::SetMv7PlaybackMix(_)) && app.playback_unread() {
+        app.report_unavailable_playback();
+        return;
+    }
     let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
@@ -1131,7 +1135,19 @@ fn apply_action(
             }
         }
         DeviceAction::LoadPreset(i) => {
-            if let Some(slot) = &app.presets[*i].clone() {
+            if let Some(saved) = &app.presets[*i] {
+                // An unread Playback Level (MV6, MV7+) stays unread: a preset's
+                // 0 means "not saved", so neither the screen nor the device
+                // gets it. Cloned so the stored preset keeps its value.
+                let playback_skipped = app.playback_unread() && saved.playback_mix > 0;
+                let slot = &PresetSlot {
+                    playback_mix: if app.playback_unread() {
+                        0
+                    } else {
+                        saved.playback_mix
+                    },
+                    ..saved.clone()
+                };
                 let write_monitor_mix =
                     apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 apply_preset_to_device(
@@ -1143,10 +1159,15 @@ fn apply_action(
                 )
                 .and_then(|refused| {
                     let message = format!(
-                        "Loaded \"{}\".{}{}",
+                        "Loaded \"{}\".{}{}{}",
                         slot.name,
                         refused_note(&refused),
-                        unread_note(slot, &app.device_state, app.device_model)
+                        unread_note(slot, &app.device_state, app.device_model),
+                        if playback_skipped {
+                            " Playback Level not loaded: its state could not be read."
+                        } else {
+                            ""
+                        }
                     );
                     if refused.is_empty() {
                         app.set_ok(message);
@@ -1514,7 +1535,7 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     // cost every poll a timeout.
     let announce = !app.state_unread;
     let read = if announce {
-        dev.read_live()
+        dev.read_live(!app.playback_unread())
     } else {
         dev.read_mute().map(|muted| Live {
             muted,
@@ -2402,6 +2423,73 @@ mod tests {
             .state;
         assert_eq!(state.mute_btn_disabled, Some(false));
         assert_eq!(unread_note(&slot, &state, model), "");
+    }
+
+    /// An unread Playback Level (the MV6's and MV7+'s optional read) holds a
+    /// default: the TUI must not step from it, write it, load it or poll it.
+    #[test]
+    fn unread_playback_level_is_never_stepped_loaded_or_polled() {
+        let model = DeviceModel::Mv7Plus;
+        let fake = FakeDevice::new(model);
+        fake.faults_mut(|faults| faults.refused_get = Some("PLAYBACK_LEVEL".into()));
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: model,
+            device_connected: true,
+            focus: app::Focus::PlaybackMix,
+            ..App::default()
+        };
+        reload_state(&mut app, device.as_ref().expect("device")).expect("the rest reads");
+        assert!(app.playback_unread());
+        let shown = app.device_state.playback_mix;
+
+        let start = fake.log_len();
+        assert!(app.adjust_focused(1).is_none());
+        assert_eq!(app.device_state.playback_mix, shown);
+        assert_eq!(
+            app.status_message,
+            "Playback Level unavailable: its state could not be read"
+        );
+        apply_action(
+            &mut app,
+            &mut device,
+            DeviceAction::SetMv7PlaybackMix(40),
+            None,
+        );
+        let writes_playback = |packets: &[fake_hid::Packet]| {
+            packets.iter().any(|packet| {
+                matches!(&packet.kind, fake_hid::PacketKind::Set { feature, .. }
+                    if feature == "PLAYBACK_LEVEL")
+            })
+        };
+        assert!(fake.log_since(start).is_empty());
+
+        let slot = PresetSlot {
+            playback_mix: 60,
+            ..PresetSlot::from_device_state("Saved", &app.device_state, model)
+        };
+        app.presets[0] = Some(slot);
+        apply_action(&mut app, &mut device, DeviceAction::LoadPreset(0), None);
+        assert!(!writes_playback(&fake.log_since(start)));
+        assert_eq!(app.device_state.playback_mix, shown);
+        assert!(
+            app.status_message
+                .ends_with(" Playback Level not loaded: its state could not be read."),
+            "{}",
+            app.status_message
+        );
+        // The stored preset keeps its value for a device that answers.
+        assert_eq!(
+            app.presets[0].as_ref().map(|slot| slot.playback_mix),
+            Some(60)
+        );
+
+        let start = fake.log_len();
+        poll_live(&mut app, &device);
+        assert!(!fake.log_since(start).iter().any(|packet| {
+            matches!(&packet.kind, fake_hid::PacketKind::Get { feature }
+                if feature == "PLAYBACK_LEVEL")
+        }));
     }
 
     /// The MV7's Limiter block is unconfirmed on hardware: a mic that doesn't

@@ -120,6 +120,9 @@ pub struct Faults {
     /// GET replies to hold back until just before the next GET's, as a reply
     /// that missed its GET's read arrives.
     pub late_replies: usize,
+    /// MV7 command line left without any reply, as a mic that ignores it,
+    /// until cleared.
+    pub unanswered_line: Option<String>,
 }
 
 type ValueOf = Box<dyn Fn(&DeviceState) -> Vec<u8>>;
@@ -564,6 +567,16 @@ impl FakeState {
             return;
         }
         let line = String::from_utf8_lossy(&text).into_owned();
+        if self.faults.unanswered_line.as_deref() == Some(line.as_str()) {
+            self.log.push(Packet {
+                raw: text,
+                kind: PacketKind::Text {
+                    line,
+                    reply: String::new(),
+                },
+            });
+            return;
+        }
         let reply = if self.faults.refuse > 0 {
             self.faults.refuse -= 1;
             mv7_text::FAILED_REPLY.to_string()
@@ -1073,7 +1086,7 @@ mod tests {
         for model in MODELS {
             let seeded = distinct_state(model);
             let fake = FakeDevice::with_state(model, seeded.clone());
-            let live = fake.open().read_live().expect("no HID failure");
+            let live = fake.open().read_live(true).expect("no HID failure");
             assert_eq!(live.muted, Some(seeded.muted), "{model:?}");
             assert_eq!(live.mode, Some(seeded.mode), "{model:?}");
             assert_eq!(live.gain_tenths, Some(seeded.gain_tenths), "{model:?}");
@@ -1087,7 +1100,7 @@ mod tests {
             // value stays unknown, the rest are still read, except on the MV7,
             // where an unanswered first line skips the poll's others.
             fake.faults_mut(|faults| faults.refuse = 1);
-            let live = fake.open().read_live().expect("no HID failure");
+            let live = fake.open().read_live(true).expect("no HID failure");
             assert_eq!(live.muted, None, "{model:?}");
             let gain = (model != DeviceModel::Mv7).then_some(seeded.gain_tenths);
             assert_eq!(live.gain_tenths, gain, "{model:?}");
@@ -1252,6 +1265,19 @@ mod tests {
             }
             assert_eq!(readback.state.factory_serial, "FAKE0001", "{model:?}");
         }
+    }
+
+    /// The MV7's Limiter block is an optional read (unconfirmed on hardware):
+    /// a mic that ignores it entirely must still read back everything else.
+    #[test]
+    fn silent_mv7_limiter_read_leaves_the_rest_readable() {
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        fake.faults_mut(|faults| faults.unanswered_line = Some("getBlock 1F".into()));
+        let readback = fake.open().get_state().expect("the rest reads back");
+        assert_eq!(readback.state.limiter_enabled, None);
+        assert_eq!(readback.state.gain_tenths, 240);
+        assert_eq!(readback.skipped.len(), 1);
+        assert!(readback.skipped[0].contains("getBlock 1F"));
     }
 
     #[test]

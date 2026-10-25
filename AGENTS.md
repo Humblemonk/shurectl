@@ -83,8 +83,9 @@ arrow key would step from a stale value and jump the level. A mode change re-rea
 While the settings are unread only mute is announced (the rest would read as changes from
 defaults), and in Auto a gain change is kept but not announced. On the MV7 an unanswered
 `micMute` skips the poll's other lines; the MV6's unconfirmed Playback Level GET (#99) isn't
-polled. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
-allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. A
+polled, nor one the last readback found unanswered (`App::playback_unread()`, MV7+). It runs
+while the other settings are unread too: mute is a fixed write (`ActionKind`), allowed before
+a readback in the TUI and CLI, because refusing it would leave the mic live. A
 mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
 (`recover_from_failure()`). The poll only reads. It ignores an unusable answer and marks the
 device disconnected on a `Disconnected` error. The binary models drain queued input first. On

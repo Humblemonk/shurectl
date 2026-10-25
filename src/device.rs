@@ -700,9 +700,14 @@ impl ShureDevice {
         }
         // The Limiter block is unconfirmed on hardware (see protocol.rs
         // `mv7_text`): unanswered, only the Limiter stays unread.
+        // No reply at all is unusable too; only a disconnect fails the readback.
         let command = mv7_text::get_limiter();
         readback.state.limiter_enabled = None;
-        let reply = self.send_text(&command)?;
+        let reply = match self.send_text(&command) {
+            Ok(reply) => reply,
+            Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+            Err(_) => String::new(),
+        };
         let applied = mv7_text::apply_reply(&reply, &mut readback.state);
         readback.record(applied, Need::Optional, || {
             format!("{reply:?} in reply to {:?}", command.line)
@@ -891,15 +896,17 @@ impl ShureDevice {
     /// shows without a full readback: the mic's own button, `shurectl --gain`
     /// from a Stream Deck, or MOTIV. Each is `None` without a usable answer;
     /// only a HID failure is an error. Binary models discard queued input first.
-    pub fn read_live(&self) -> Result<Live> {
+    /// `playback` is false while the last readback found the Playback Level
+    /// unanswered: polling it would cost every poll a timeout.
+    pub fn read_live(&self, playback: bool) -> Result<Live> {
         match self.model {
             DeviceModel::Mv7 => self.read_live_mv7(),
             // The Gen 1 balance and the Mic Level share an address, not a GET.
-            DeviceModel::Mvx2u => self.read_live_binary(cmd_get_mix),
+            DeviceModel::Mvx2u => self.read_live_binary(cmd_get_mix, playback),
             DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
-            | DeviceModel::Mv7Plus => self.read_live_binary(cmd_get_mv6_mix),
+            | DeviceModel::Mv7Plus => self.read_live_binary(cmd_get_mv6_mix, playback),
         }
     }
 
@@ -926,7 +933,7 @@ impl ShureDevice {
         Ok(live)
     }
 
-    fn read_live_binary(&self, monitor_mix: fn(u8) -> Vec<u8>) -> Result<Live> {
+    fn read_live_binary(&self, monitor_mix: fn(u8) -> Vec<u8>, playback: bool) -> Result<Live> {
         self.drain_input(&mut [0u8; PACKET_SIZE])?;
         let read = |get: Vec<u8>| self.read_alone(&get);
         let muted = read(cmd_get_mute(self.next_seq()))?.map(|s| s.muted);
@@ -934,9 +941,10 @@ impl ShureDevice {
         let gain_tenths = read(cmd_get_gain(self.next_seq()))?.map(|s| s.gain_tenths);
         let monitor_mix = read(monitor_mix(self.next_seq()))?.map(|s| s.monitor_mix);
         let playback_mix = match self.model {
-            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => {
+            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus if playback => {
                 read(cmd_get_mv7_playback_mix(self.next_seq()))?.map(|s| s.playback_mix)
             }
+            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => None,
             // The MV6's Playback Level GET is unconfirmed (#99): unanswered it
             // would cost every poll a timeout. None on models without one.
             DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mv7 => None,
