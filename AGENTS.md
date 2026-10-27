@@ -22,9 +22,9 @@ scripts/check.sh                # verification gate; CI runs the same script
 Run `scripts/check.sh` before calling any change complete. It runs clippy and
 `cargo build`, both `--all-targets --features probe,qa`, then `cargo fmt --check`,
 `cargo test` and the end-to-end scenarios, and any warning fails it, test code included.
-Change the gate in the script, not in docs or CI.
+Change the gate in the script, not in docs or CI. Without `--features probe,qa`, clippy
+skips `shurectl-probe` and the `--qa` harness.
 
-- Without `--features probe,qa`, clippy skips `shurectl-probe` and the `--qa` harness.
 - CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2% actual):
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared
   helper; don't raise the threshold.
@@ -50,8 +50,7 @@ src/
 tests/
   e2e.rs        # Runs tests/scenarios/*.jsonl through `shurectl --qa` per model; PTY smoke
   scenarios/    # One JSON-lines file per scenario
-  fixtures/     # Older preset files, preset-loads.golden (main.rs `preset_loads_match_golden`),
-                #   firmware-archive.json (a recorded archive reply, firmware.rs tests)
+  fixtures/     # Older preset files, preset-loads.golden, firmware-archive.json (see Testing)
 ```
 
 **Control flow:** key event → `step()` → `handle_key()` → `DeviceAction` → `apply_action()`
@@ -75,29 +74,20 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 (`r` does it on demand), so `apply_action()` stays the only writer. Only a
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
-**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second
-(`read_live()`: one GET each, kept only when answered at the address asked,
-`answers_at_its_address()`; on the MV7 one text line each) while connected, so a change made
-elsewhere shows without `r`: the mic's own mute button, a script, MOTIV. Otherwise the next
-arrow key would step from a stale value and jump the level. A mode change re-reads everything.
-While the settings are unread only mute is announced (the rest would read as changes from
-defaults), and in Auto a gain change is kept but not announced. On the MV7 an unanswered
-`micMute` skips the poll's other lines; the MV6's unconfirmed Playback Level GET (#99) isn't
-polled. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
-allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. A
-mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
-(`recover_from_failure()`). The poll only reads. It ignores an unusable answer and marks the
-device disconnected on a `Disconnected` error. The binary models drain queued input first. On
-the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the
-press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed from
-the command line showed in a running TUI, and the next arrow key stepped from the new gain
-(tested 2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button press
-still showed (tested 2026-10-25). On the MV7+, a gain change from the command line showed
-within about a second (reported by mike-callahan, 2026-10-27). Unconfirmed elsewhere: whether
-other models report a press, whether their GETs reflect changes made elsewhere, and whether the
-MV7 answers each line within the poll's 200 ms. Any write from the TUI pushes the next poll
-back a second (`send_from_tui()`), since whether a device applies a write before acking it is
-unconfirmed.
+**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second while
+connected (`read_live()`: one GET each, kept only when `answers_at_its_address()`; on the MV7
+one text line each), so a change made elsewhere (the mic's mute button, a script, MOTIV) shows
+without `r`, and the next arrow key doesn't step from a stale value and jump the level. It only
+reads: the binary models drain queued input first, an unusable answer is ignored, and a
+`Disconnected` error marks the device disconnected. A mode change re-reads everything. It runs
+while the other settings are unread too, announcing only mute then (the rest would read as
+changes from defaults); in Auto a gain change is kept but not announced. Mute is a fixed write
+(`ActionKind`), allowed before a readback in the TUI and CLI, because refusing it would leave
+the mic live; a mute whose outcome nothing could read back shows as OFF, never Muted over a
+live mic (`recover_from_failure()`). On the MV7 an unanswered `micMute` skips the poll's other
+lines; the MV6's unconfirmed Playback Level GET (#99) isn't polled. Any write from the TUI
+pushes the next poll back a second (`send_from_tui()`), since whether a device applies a write
+before acking it is unconfirmed. Hardware results: `.claude/rules/protocol.md`.
 
 ## Adding a New Command
 
@@ -142,9 +132,8 @@ don't add another, or a flag that repeats one. Every write goes through `apply_a
 
 A user owns one device but reads one readme, one help overlay, and one set of screenshots.
 If "Gain Lock" on the Gen 2 is "Lock" on the MV6, the docs stop matching reality. Divergence
-is also the largest maintenance cost here: `ui.rs` has a `draw_main_left_*` variant per
-model and mode plus a `DeviceModel` match in `draw_info_tab()`, and `app.rs` matches on
-`DeviceModel` in `reset_focus_for_tab()`, `focus_next()` and `focus_prev()`.
+is also the largest maintenance cost here: every model-specific branch is one more
+`DeviceModel` match to keep in step (listed in step 4 below).
 
 **The rule:** any control that exists on more than one model has identical label, units,
 value formatting, keybinding, and position relative to its neighbours on all of them. Only
@@ -190,11 +179,12 @@ Shared across all models unless the hardware makes it impossible:
 
 1. Do other models have this capability under a different vendor name? Use the existing
    shurectl name and control. Vendor naming stops at `protocol.rs`.
-2. Can an existing shared helper render it? Extend the helper.
+2. Can an existing shared helper render it? Extend the helper (see Drawing helpers above).
 3. A per-model `draw_*` fork, if genuinely required, keeps its siblings' block order,
    borders and spacing; don't start it by copying one and tweaking strings.
-4. Update every `DeviceModel` match (focus fns, `draw_main_left()`, `summary_rows()`,
-   `draw_info_tab()`, preset serialization), then check `--demo` on all six models.
+4. Update every `DeviceModel` match (`reset_focus_for_tab()`, `focus_next()`, `focus_prev()`,
+   the `draw_main_left_*` variants, `summary_rows()`, `draw_info_tab()`, preset
+   serialization), then check `--demo` on all six models.
 
 ## Rust Rules
 
@@ -224,8 +214,7 @@ Shared across all models unless the hardware makes it impossible:
 | Preset save or load changes (`presets.rs`, `apply_binary_preset()`, `load_mv7_preset()`) | `preset_loads_match_golden` loads every preset source on every model, checks its rules (see the test) and compares the SETs with `tests/fixtures/preset-loads.golden`. For an intended change, rerun with `UPDATE_GOLDEN=1` and read the diff |
 | `main()` / CLI args | No tests |
 
-Performance is not a concern (~100 ms input-driven tick). No benchmarks unless a specific
-bottleneck has been identified.
+Performance is not a concern (~100 ms input-driven tick); benchmark only a bottleneck found.
 
 ## Review
 
@@ -253,21 +242,18 @@ rather than promoting a lower one.
 **Regression traps.** Check every diff that touches these:
 
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
-  can shift every later GET by one packet (481dc76). Replies route by address. The prefix
-  byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2, MVX2U Gen 2
-  and MV7+ (a MOTIV capture on firmware 1.6, checked 2026-10-27).
+  can shift every later GET by one packet (481dc76). Replies route by address; the prefix
+  byte routes only FEAT_MIX 0x03 (Playback Mix; evidence in `.claude/rules/protocol.md`).
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
   left at its default (36 dB gain). It drains queued input first, and
   `send_get_past_strays()` passes over reports that can't be the GET's answer (a late reply,
-  or on Linux another shurectl's: hidraw gives every open handle each report). For a
-  live-poll GET (mute, mode, gain, the monitor levels), answered at its own address, that is
-  any other report; for other GETs, a reply at a live-poll address. When every report read
-  is stray, the GET has no answer and the readback fails rather than pass with a default.
-  Whether every GET is answered at its own address is unconfirmed, so a general check needs
-  captures first. `query_as()` with
-  `Need::Optional` is for a GET unchecked on that model's hardware or missing from some
-  firmware. A new one's field is an `Option`
-  left `None`, as the Mute Button's is, so nothing shows, saves or writes a default.
+  or on Linux another shurectl's: hidraw gives every open handle each report): any other
+  report for a live-poll GET, a reply at a live-poll address for the rest. A GET that reads
+  only strays has no answer, and the readback fails rather than pass with a default. Whether
+  every GET is answered at its own address is unconfirmed, so a general check needs captures
+  first. `query_as()` with `Need::Optional` is for a GET unchecked on that model's hardware
+  or missing from some firmware; its field is an `Option` left `None`, as the Mute Button's
+  is, so nothing shows, saves or writes a default.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must
@@ -289,8 +275,7 @@ rather than promoting a lower one.
 - **Stale prose**: when a capability moves between models, update the doc comments, help
   overlay, status strings, Info tab and readme row too. Most "tidy" commits fix this.
 - **Hardware claims**: a diff that states or copies a claim about device behaviour with
-  neither its evidence nor "unconfirmed" (see **Workflow**). Copying an older claim counts:
-  check where it came from before repeating it.
+  neither its evidence nor "unconfirmed" (see **Workflow**). Check a copied claim's source.
 
 **Intentional, don't flag:**
 
@@ -309,10 +294,9 @@ rather than promoting a lower one.
   `phantom_power = false`, even from a model without it; nothing records which model saved them
 - `fake_hid.rs` agreeing with `protocol.rs` by construction: it proves sequencing and
   routing, never that a packet is right. Don't cite it as protocol evidence
-- A read confirmed only on a device's current firmware being required. shurectl supports
-  the latest firmware Shure ships for each device, not older releases (maintainer decision
-  2026-10-27), so "may fail on older firmware" isn't a finding. The MV7+ Mute Button's
-  handling of firmware before 1.4.0 (2.14.0) predates this
+- A read confirmed only on a device's current firmware being required: shurectl supports only
+  the latest firmware Shure ships (maintainer decision 2026-10-27), so "may fail on older
+  firmware" isn't a finding. The MV7+ Mute Button's pre-1.4.0 handling (2.14.0) predates this
 
 ## Workflow
 
@@ -328,15 +312,13 @@ rather than promoting a lower one.
   body.
 - Review a change that touches device writes, readback, presets or a release in a session
   that didn't write it: give it the diff, the intent and the hardware results, not the
-  author's conclusions about whether the code is right. Pick the effort by the worst
-  severity (see **Review**) the diff could cause, never by its size; when two rows fit, take
-  the higher. Levels are Claude Code's `/code-review` ones; other agents use their nearest
-  equivalent. Never `xhigh`, `max` or `ultra`: they cost too much for what they add here.
+  author's conclusions about whether the code is right. Pick the `/code-review` level (other
+  agents: nearest equivalent) by the worst severity under **Review** the diff could cause,
+  never by its size, and the higher when two fit. Never `xhigh`, `max` or `ultra`: too costly.
   - Docs- or test-only: skip the review.
   - `low`: no write, readback or preset path touched (rendering, mouse, meter, CLI output).
-  - `medium`: device writes, readback, the live poll or presets: anything a P1 could come
-    from.
-  - `high`: anything a P0 could come from: packet bytes or addresses in `protocol.rs`, reply
+  - `medium`: device writes, readback, the live poll or presets: where a P1 could come from.
+  - `high`: where a P0 could come from: packet bytes or addresses in `protocol.rs`, reply
     routing or a `getters` slice, the mute, gain, level or 48V write paths, the Gain Lock
     order in `apply_binary_preset()`, `recover_from_failure()`. Also a release, over every
     commit since the last tag.

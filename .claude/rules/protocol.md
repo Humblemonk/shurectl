@@ -52,6 +52,15 @@ CRC-16/ANSI covers 0x11 up to the CRC
   unasked when mute or gain change on the mic itself. Whether it does so without that
   subscription is unknown. shurectl doesn't subscribe, and `send_get_past_strays()` passes
   over such a report anyway. Don't send `07 02 0x` without a capture of what it changes
+- **Live poll on hardware** (`read_live()`; the design is under Live poll in `AGENTS.md`): on
+  the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows
+  the press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed
+  from the command line showed in a running TUI, and the next arrow key stepped from the new
+  gain (tested 2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button
+  press still showed (tested 2026-10-25). On the MV7+, a gain change from the command line
+  showed within about a second (reported by mike-callahan, 2026-10-27). Unconfirmed
+  elsewhere: whether other models report a press, whether their GETs reflect changes made
+  elsewhere, and whether the MV7 answers each line within the poll's 200 ms
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
 
 ## Original MV7: text shell, not binary packets
