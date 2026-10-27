@@ -328,5 +328,15 @@ rather than promoting a lower one.
   body.
 - Review a change that touches device writes, readback, presets or a release in a session
   that didn't write it: give it the diff, the intent and the hardware results, not the
-  author's conclusions about whether the code is right. Docs- or test-only changes can skip
-  this.
+  author's conclusions about whether the code is right. Pick the effort by the worst
+  severity (see **Review**) the diff could cause, never by its size; when two rows fit, take
+  the higher. Levels are Claude Code's `/code-review` ones; other agents use their nearest
+  equivalent. Never `xhigh`, `max` or `ultra`: they cost too much for what they add here.
+  - Docs- or test-only: skip the review.
+  - `low`: no write, readback or preset path touched (rendering, mouse, meter, CLI output).
+  - `medium`: device writes, readback, the live poll or presets: anything a P1 could come
+    from.
+  - `high`: anything a P0 could come from: packet bytes or addresses in `protocol.rs`, reply
+    routing or a `getters` slice, the mute, gain, level or 48V write paths, the Gain Lock
+    order in `apply_binary_preset()`, `recover_from_failure()`. Also a release, over every
+    commit since the last tag.
