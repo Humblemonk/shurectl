@@ -172,7 +172,7 @@ pub struct App {
     /// Writes based on it are refused until a refresh reads the device.
     pub state_unread: bool,
     /// The optional GETs the last readback got no usable answer to, such as
-    /// the MV6's and MV7+'s unconfirmed Playback Level: their fields hold defaults.
+    /// the MV6's unconfirmed Playback Level (#99): their fields hold defaults.
     pub unread_gets: Vec<Vec<u8>>,
     pub help_visible: bool,
     /// Which device model is connected. Drives which controls are shown.
@@ -265,7 +265,7 @@ impl App {
     }
 
     /// Whether the last readback went without the Playback Level, an optional
-    /// read on the MV6 (#99) and MV7+: its field then holds a default.
+    /// read on the MV6 only (#99): its field then holds a default.
     pub fn playback_unread(&self) -> bool {
         self.unread_gets
             .iter()

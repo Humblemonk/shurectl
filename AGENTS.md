@@ -83,20 +83,21 @@ arrow key would step from a stale value and jump the level. A mode change re-rea
 While the settings are unread only mute is announced (the rest would read as changes from
 defaults), and in Auto a gain change is kept but not announced. On the MV7 an unanswered
 `micMute` skips the poll's other lines; the MV6's unconfirmed Playback Level GET (#99) isn't
-polled, nor one the last readback found unanswered (`App::playback_unread()`, MV7+). It runs
-while the other settings are unread too: mute is a fixed write (`ActionKind`), allowed before
-a readback in the TUI and CLI, because refusing it would leave the mic live. A
+polled. It runs while the other settings are unread too: mute is a fixed write (`ActionKind`),
+allowed before a readback in the TUI and CLI, because refusing it would leave the mic live. A
 mute whose outcome nothing could read back shows as OFF, never Muted over a live mic
 (`recover_from_failure()`). The poll only reads. It ignores an unusable answer and marks the
 device disconnected on a `Disconnected` error. The binary models drain queued input first. On
 the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows the
-press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed from the
-command line showed in a running TUI, and the next arrow key stepped from the new gain (tested
-2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button press still showed
-(tested 2026-10-25). Unconfirmed elsewhere: whether other models report a press, whether their GETs
-reflect changes made elsewhere, and whether the MV7 answers each line within the poll's 200 ms.
-Any write from the TUI pushes the next poll back a second (`send_from_tui()`), since whether a
-device applies a write before acking it is unconfirmed.
+press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed from
+the command line showed in a running TUI, and the next arrow key stepped from the new gain
+(tested 2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button press
+still showed (tested 2026-10-25). On the MV7+, a gain change from the command line showed
+within about a second (reported by mike-callahan, 2026-10-27). Unconfirmed elsewhere: whether
+other models report a press, whether their GETs reflect changes made elsewhere, and whether the
+MV7 answers each line within the poll's 200 ms. Any write from the TUI pushes the next poll
+back a second (`send_from_tui()`), since whether a device applies a write before acking it is
+unconfirmed.
 
 ## Adding a New Command
 
@@ -253,7 +254,8 @@ rather than promoting a lower one.
 
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
   can shift every later GET by one packet (481dc76). Replies route by address. The prefix
-  byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2 and MVX2U Gen 2.
+  byte routes only FEAT_MIX 0x03 (Playback Mix), confirmed on the MV6 Gen 2, MVX2U Gen 2
+  and MV7+ (a MOTIV capture on firmware 1.6, checked 2026-10-27).
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
   left at its default (36 dB gain). It drains queued input first, and
   `send_get_past_strays()` passes over reports that can't be the GET's answer (a late reply,

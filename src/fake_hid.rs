@@ -1086,7 +1086,7 @@ mod tests {
         for model in MODELS {
             let seeded = distinct_state(model);
             let fake = FakeDevice::with_state(model, seeded.clone());
-            let live = fake.open().read_live(true).expect("no HID failure");
+            let live = fake.open().read_live().expect("no HID failure");
             assert_eq!(live.muted, Some(seeded.muted), "{model:?}");
             assert_eq!(live.mode, Some(seeded.mode), "{model:?}");
             assert_eq!(live.gain_tenths, Some(seeded.gain_tenths), "{model:?}");
@@ -1100,7 +1100,7 @@ mod tests {
             // value stays unknown, the rest are still read, except on the MV7,
             // where an unanswered first line skips the poll's others.
             fake.faults_mut(|faults| faults.refuse = 1);
-            let live = fake.open().read_live(true).expect("no HID failure");
+            let live = fake.open().read_live().expect("no HID failure");
             assert_eq!(live.muted, None, "{model:?}");
             let gain = (model != DeviceModel::Mv7).then_some(seeded.gain_tenths);
             assert_eq!(live.gain_tenths, gain, "{model:?}");
@@ -1284,6 +1284,8 @@ mod tests {
     fn refused_required_get_still_fails_readback() {
         for (model, feature, label) in [
             (DeviceModel::Mv7Plus, "GAIN", "Gain"),
+            // Required on the MV7+: its echo of prefix 0x03 is captured.
+            (DeviceModel::Mv7Plus, "PLAYBACK_LEVEL", "Playback Level"),
             (DeviceModel::Mv6, "MUTE_BUTTON", "Mute Button"),
             (DeviceModel::Mv6Gen2, "MUTE_BUTTON", "Mute Button"),
         ] {
@@ -1353,8 +1355,9 @@ mod tests {
     /// The acks each model sends after a CONFIRM (`fake_wire::acks_after_confirm`).
     /// The MV7+ SET echo parses as a reply, so leaving it unread misplaces a
     /// later GET's value rather than just delaying it; the Gen 2's don't parse.
+    /// The MV7+ sends the two in either order; the fake sends the ack first.
     #[test]
-    fn acks_after_confirm_match_the_hardware_order() {
+    fn acks_after_confirm_match_the_hardware() {
         let mute = |model| {
             let fake = FakeDevice::new(model);
             let key = fake.0.borrow().key_of("MUTE").expect("MUTE");
@@ -1373,7 +1376,7 @@ mod tests {
             );
         }
         let echo = parsed(&mute(DeviceModel::Mv7Plus));
-        assert_eq!(echo[0], None, "the CONFIRM ack comes first");
+        assert_eq!(echo[0], None, "the fake sends the CONFIRM ack first");
         let mut state = DeviceState::default();
         let reply = echo[1].as_ref().expect("the SET echo parses as a reply");
         assert!(apply_reply(reply, &mut state) && state.muted);

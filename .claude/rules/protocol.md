@@ -30,7 +30,11 @@ CRC-16/ANSI covers 0x11 up to the CRC
   default values. `DeviceModel::reports_after_confirm()` sets how many `send_set()` discards.
   The MVX2U Gen 1, MV6 and MV6 Gen 2 are assumed to send two as well, unchecked on hardware.
   Some settings send only one (Gen 2 mute), which costs one `ACK_TIMEOUT_MS` wait. That
-  timeout is 15 ms on every model, measured only on the Gen 2 (acks in ≤3 ms). If a user
+  timeout is 15 ms on every model, measured on the Gen 2 (acks in ≤3 ms). On the MV7+ (a
+  MOTIV capture on firmware 1.6, mike-callahan) the two are the CONFIRM ack and a SET echo
+  carrying the value, in either order, and LED-page SETs sometimes send the ack alone (20 of
+  52). They came 9–12 ms after the CONFIRM, at most 19 ms, so the 15 ms wait for each can
+  leave one queued; every readback and live poll drains queued input first. If a user
   reports stale values after a preset load or refresh, write the current value back with
   SET + CONFIRM and time and count the reports that arrive: too few acks is harmless, too
   slow or too many is the bug
@@ -39,8 +43,15 @@ CRC-16/ANSI covers 0x11 up to the CRC
   and writes into `DeviceState`. The address → field mapping is documented inline in
   `protocol.rs`. `apply_reply()` tells Playback Mix (FEAT_MIX, prefix 0x03) from Monitor Mix
   by the reply's prefix byte (`buf[13]`). That echo is confirmed on the MV6 Gen 2 and MVX2U
-  Gen 2 (capture of MOTIV Mix) and inferred on the MV7+ from its LED replies; it is unchecked
-  on the MV6 and MVX2U Gen 1, so don't route anything else by prefix without a capture
+  Gen 2 (capture of MOTIV Mix) and on the MV7+ (MOTIV capture on firmware 1.6: all 106
+  replies at FEAT_MIX echo their request's prefix, among them a Playback Level of 99 read
+  while the Mic Level was 100). It is unchecked on the MV6 and MVX2U Gen 1, so don't route
+  anything else by prefix without a capture
+- **MOTIV subscribes, shurectl polls:** on the MV7+ capture, MOTIV first sends a `07 02 0x`
+  packet per feature (acked `0c 02 0x`), then never polls; the mic sends `04 02 02` echoes
+  unasked when mute or gain change on the mic itself. Whether it does so without that
+  subscription is unknown. shurectl doesn't subscribe, and `send_get_past_strays()` passes
+  over such a report anyway. Don't send `07 02 0x` without a capture of what it changes
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
 
 ## Original MV7: text shell, not binary packets

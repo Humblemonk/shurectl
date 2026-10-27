@@ -1004,7 +1004,7 @@ fn draw_monitor_levels(f: &mut UiFrame, app: &App, area: Rect) {
             Paragraph::new(Span::styled(label, Style::default().fg(label_color))),
             label_area,
         );
-        // An unread Playback Level (MV6, MV7+) holds a default: never draw it as a level.
+        // An unread Playback Level (MV6, #99) holds a default: never draw it as a level.
         if focus == Focus::PlaybackMix && app.playback_unread() {
             f.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -3463,31 +3463,29 @@ mod tests {
     /// The Info tab's Capabilities list is static text, so it can't read
     /// `mute_button_firmware()`; check that it names the same firmware.
     /// An unread Playback Level holds a default, so it shows as Unknown, never
-    /// as a level, at 120x40 and 80x24, on both models whose read is optional.
+    /// as a level, at 120x40 and 80x24, on the MV6, whose read is optional.
     #[test]
     fn unread_playback_level_shows_unknown() {
-        for model in [DeviceModel::Mv6, DeviceModel::Mv7Plus] {
-            let app = App {
-                device_model: model,
-                device_state: crate::protocol::DeviceState {
-                    mode: InputMode::Manual,
-                    playback_mix: 0,
-                    ..crate::protocol::DeviceState::default()
-                },
-                unread_gets: vec![crate::protocol::cmd_get_mv7_playback_mix(0)],
-                ..App::default()
-            };
-            for (width, height) in [(120, 40), MIN_SIZE] {
-                let (text, _) = render_text(draw, &app, width, height);
-                let row = text
-                    .lines()
-                    .find(|line| line.contains("Playback Level"))
-                    .unwrap_or_default();
-                assert!(
-                    row.contains("Unknown") && !row.contains('%'),
-                    "{model:?} at {width}x{height}: {row:?}"
-                );
-            }
+        let app = App {
+            device_model: DeviceModel::Mv6,
+            device_state: crate::protocol::DeviceState {
+                mode: InputMode::Manual,
+                playback_mix: 0,
+                ..crate::protocol::DeviceState::default()
+            },
+            unread_gets: vec![crate::protocol::cmd_get_mv7_playback_mix(0)],
+            ..App::default()
+        };
+        for (width, height) in [(120, 40), MIN_SIZE] {
+            let (text, _) = render_text(draw, &app, width, height);
+            let row = text
+                .lines()
+                .find(|line| line.contains("Playback Level"))
+                .unwrap_or_default();
+            assert!(
+                row.contains("Unknown") && !row.contains('%'),
+                "{width}x{height}: {row:?}"
+            );
         }
     }
 

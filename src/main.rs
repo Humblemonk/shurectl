@@ -1136,7 +1136,7 @@ fn apply_action(
         }
         DeviceAction::LoadPreset(i) => {
             if let Some(saved) = &app.presets[*i] {
-                // An unread Playback Level (MV6, MV7+) stays unread: a preset's
+                // An unread Playback Level (MV6) stays unread: a preset's
                 // 0 means "not saved", so neither the screen nor the device
                 // gets it. Cloned so the stored preset keeps its value.
                 let playback_skipped = app.playback_unread() && saved.playback_mix > 0;
@@ -1535,7 +1535,7 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     // cost every poll a timeout.
     let announce = !app.state_unread;
     let read = if announce {
-        dev.read_live(!app.playback_unread())
+        dev.read_live()
     } else {
         dev.read_mute().map(|muted| Live {
             muted,
@@ -2425,11 +2425,11 @@ mod tests {
         assert_eq!(unread_note(&slot, &state, model), "");
     }
 
-    /// An unread Playback Level (the MV6's and MV7+'s optional read) holds a
-    /// default: the TUI must not step from it, write it, load it or poll it.
+    /// An unread Playback Level (the MV6's optional read, #99) holds a
+    /// default: the TUI must not step from it, write it or load it.
     #[test]
-    fn unread_playback_level_is_never_stepped_loaded_or_polled() {
-        let model = DeviceModel::Mv7Plus;
+    fn unread_playback_level_is_never_stepped_or_loaded() {
+        let model = DeviceModel::Mv6;
         let fake = FakeDevice::new(model);
         fake.faults_mut(|faults| faults.refused_get = Some("PLAYBACK_LEVEL".into()));
         let mut device = Some(fake.open());
@@ -2483,13 +2483,6 @@ mod tests {
             app.presets[0].as_ref().map(|slot| slot.playback_mix),
             Some(60)
         );
-
-        let start = fake.log_len();
-        poll_live(&mut app, &device);
-        assert!(!fake.log_since(start).iter().any(|packet| {
-            matches!(&packet.kind, fake_hid::PacketKind::Get { feature }
-                if feature == "PLAYBACK_LEVEL")
-        }));
     }
 
     /// The MV7's Limiter block is unconfirmed on hardware: a mic that doesn't

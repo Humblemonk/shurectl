@@ -169,7 +169,8 @@
 //! Playback Level, shared with every model that has `has_playback_mix()`:
 //!   Playback Level:   [0x01, 0x86]  — 1 byte, prefix=0x03, 0–100%
 //!                                     SAME feature address as Mic Level but prefix=0x03.
-//!                                     Both GET and SET use prefix=0x03. GET framing is standard
+//!                                     Both GET and SET use prefix=0x03, and replies echo it
+//!                                     (MV7+ capture, firmware 1.6). GET framing is standard
 //!                                     (HDR_CONSTANT=0x03); SET uses HDR_CONSTANT=0x00.
 //!
 //! MV7+ exclusive:
@@ -407,7 +408,9 @@ impl DeviceModel {
     /// must be read and discarded, or every later GET reads one of them instead
     /// of its own reply and the state readback lags behind by that many packets.
     ///
-    /// - MV7+: a CONFIRM ack (`09 00 00`) and a SET echo (`04 02 02`).
+    /// - MV7+ (MOTIV capture, firmware 1.6): a CONFIRM ack (`09 00 00`) and a SET
+    ///   echo (`04 02 02`, or `04 02 01` for the lock class), in either order.
+    ///   LED-page SETs sometimes send the ack alone, which costs one ack timeout.
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`) and a CONFIRM
     ///   ack (`09 00 00`).
     /// - MVX2U Gen 1, MV6 and MV6 Gen 2: assumed to match (same binary protocol),
@@ -591,6 +594,13 @@ const MV6_GEN2_FEAT_TONE_MODE: [u8; 2] = [0x02, 0x05];
 // cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix). Every model with
 // `has_playback_mix()` shares it; MOTIV calls the two FEAT_MIX channels Mic Level
 // and Playback Level.
+//
+// Also in mike-callahan's MV7+ captures (firmware 1.6, re-read 2026-10-27), unused
+// here and of unknown meaning: FEAT_GAIN with prefix 0x01, which MOTIV subscribes
+// to and reads as 0x2710 (10000) throughout; lock-class 0x00 0x21 (prefix 0x00),
+// subscribed and read as 0x00. MOTIV reads the firmware version at lock-class
+// 0x00 0x04 as bytes (00 01 00 06 ... on 1.6), where shurectl reads text at
+// FEAT_FIRMWARE.
 
 /// Reverb effect on headphone/speaker output. 0=off, 1=on.
 const MV7_FEAT_REVERB_OUTPUT: [u8; 2] = [0x03, 0x82];
@@ -1612,9 +1622,9 @@ pub const PREFIX_OFFSET: usize = 13;
 /// FEAT_MIX prefix for Playback Mix. Monitor Mix uses 0x00 (0x01 on the Gen 1).
 const PLAYBACK_MIX_PREFIX: u8 = 0x03;
 
-/// One device reply. The device echoes the request's prefix byte (checked on the
-/// MV6 Gen 2 and MVX2U Gen 2, and in the MV7+ LED captures), which is the only thing telling
-/// Playback Mix apart from Monitor Mix.
+/// One device reply. The device echoes the request's prefix byte (captured on the
+/// MV6 Gen 2, MVX2U Gen 2 and MV7+), which is the only thing telling Playback Mix
+/// apart from Monitor Mix.
 #[derive(Debug, PartialEq)]
 pub struct Reply {
     pub prefix: u8,
@@ -1939,10 +1949,12 @@ pub mod fake_wire {
     /// for the SET it confirmed (`None` for a CONFIRM with no SET before it).
     /// `DeviceModel::reports_after_confirm()` says how many `send_set()` reads.
     ///
-    /// - MV7+ (checked on hardware): the CONFIRM ack (`09 00 00`), then an echo
-    ///   of the SET (`04 02 02` and its address; `04 02 01` for the lock class).
-    ///   The fake assumes the echo carries the SET's value too. It parses as a
-    ///   reply, so an echo left unread is decoded by a later GET.
+    /// - MV7+ (MOTIV capture, firmware 1.6): the CONFIRM ack (`09 00 00`) and an
+    ///   echo of the SET (`04 02 02` and its address and value; `04 02 01` for
+    ///   the lock class), in either order (echo first 71 times, ack first 47).
+    ///   LED-page SETs sometimes send the ack alone (20 of 52). Both came within
+    ///   19 ms of the CONFIRM. The fake sends the ack first. The echo parses as
+    ///   a reply, so one left unread is decoded by a later GET.
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`), then the
     ///   CONFIRM ack.
     /// - MVX2U Gen 1, MV6 and MV6 Gen 2: unchecked; the fake assumes the MV7+
@@ -2671,7 +2683,9 @@ pub fn answers_at_its_address(get: &[u8], reply: &Reply) -> bool {
 
 /// Apply a parsed [`Reply`] to `state`. Playback Mix shares FEAT_MIX with
 /// Monitor Mix and is told apart by its prefix; everything else goes by address.
-/// The MV7+ echo of prefix 0x03 is inferred from its LED replies, not checked.
+/// The echo is captured on the MV6 Gen 2, MVX2U Gen 2 and MV7+ (a MOTIV capture on
+/// firmware 1.6: every reply at FEAT_MIX echoes its request's prefix, including a
+/// Playback Level of 99 read while the Mic Level was 100); unchecked on the MV6.
 #[must_use]
 pub fn apply_reply(reply: &Reply, state: &mut DeviceState) -> bool {
     if reply.feat == FEAT_MIX && reply.prefix == PLAYBACK_MIX_PREFIX {
@@ -5786,7 +5800,50 @@ mod tests {
     }
 
     #[test]
-    fn factory_reset_matches_mvx2u_gen2_capture() {
+    fn mv7_plus_monitor_levels_match_capture() {
+        // MOTIV on the MV7+ (firmware 1.6, mike-callahan's capture for #51, frames
+        // #1092-#1117): a Mic Level read, then Playback Level reads around a
+        // Playback Level change. Each reply echoes its request's prefix.
+        let mic_get = [
+            0x01, 0x10, 0x11, 0x22, 0xd5, 0x03, 0x08, 0x08, 0x70, 0x08, 0x01, 0x02, 0x02, 0x00,
+            0x01, 0x86, 0x90, 0x39,
+        ];
+        assert_eq!(cmd_get_mv6_mix(0xd5), captured(&mic_get));
+        let playback_get = [
+            0x01, 0x10, 0x11, 0x22, 0xd8, 0x03, 0x08, 0x08, 0x70, 0x08, 0x01, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x43, 0x24,
+        ];
+        assert_eq!(cmd_get_mv7_playback_mix(0xd8), captured(&playback_get));
+
+        let reply = |bytes: &[u8]| parse_response(&captured(bytes)).expect("captured reply parses");
+        // Mic Level 99, then Playback Level 100 (before the change) and 99 (after).
+        let mic = reply(&[
+            0x01, 0x11, 0x11, 0x22, 0x0a, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x00,
+            0x01, 0x86, 0x63, 0x6c, 0x88,
+        ]);
+        let playback_before = reply(&[
+            0x01, 0x11, 0x11, 0x22, 0x0d, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x64, 0xad, 0xc2,
+        ]);
+        let playback_after = reply(&[
+            0x01, 0x11, 0x11, 0x22, 0x10, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x63, 0xb2, 0xae,
+        ]);
+        assert!(answers_at_its_address(&mic_get, &mic));
+        assert!(answers_at_its_address(&playback_get, &playback_before));
+        assert!(!answers_at_its_address(&mic_get, &playback_before));
+        assert!(!answers_at_its_address(&playback_get, &mic));
+
+        let mut state = DeviceState::default();
+        assert!(apply_reply(&mic, &mut state));
+        assert!(apply_reply(&playback_before, &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (99, 100));
+        assert!(apply_reply(&playback_after, &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (99, 99));
+    }
+
+    #[test]
+    fn factory_reset_matches_captures() {
         // MOTIV Mix's Reset to defaults on the MVX2U Gen 2 (firmware 1.2.0.6),
         // sequence 0x72: the whole packet, CRC and padding included.
         let reset = [
@@ -5794,6 +5851,13 @@ mod tests {
             0x00, 0x22, 0x01, 0x39, 0xd2,
         ];
         assert_eq!(cmd_factory_reset(0x72), captured(&reset));
+        // The same on the MV7+ (firmware 1.6, mike-callahan's capture), sequence
+        // 0x7e; no CONFIRM follows and the mic re-enumerates.
+        let reset = [
+            0x01, 0x11, 0x11, 0x22, 0x7e, 0x00, 0x08, 0x09, 0x70, 0x09, 0x02, 0x02, 0x01, 0x00,
+            0x00, 0x22, 0x01, 0xf5, 0xc3,
+        ];
+        assert_eq!(cmd_factory_reset(0x7e), captured(&reset));
     }
 
     // ── MV7+ LED protocol tests ───────────────────────────────────────────────
