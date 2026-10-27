@@ -3460,8 +3460,6 @@ mod tests {
         DeviceModel::Mv7Plus,
     ];
 
-    /// The Info tab's Capabilities list is static text, so it can't read
-    /// `mute_button_firmware()`; check that it names the same firmware.
     /// An unread Playback Level holds a default, so it shows as Unknown, never
     /// as a level, at 120x40 and 80x24, on the MV6, whose read is optional.
     #[test]
@@ -3489,6 +3487,8 @@ mod tests {
         }
     }
 
+    /// The Info tab's Capabilities list is static text, so it can't read
+    /// `mute_button_firmware()`; check that it names the same firmware.
     #[test]
     fn info_tab_names_the_mute_button_firmware() {
         for model in MODELS {

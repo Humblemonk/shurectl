@@ -5802,8 +5802,11 @@ mod tests {
     #[test]
     fn mv7_plus_monitor_levels_match_capture() {
         // MOTIV on the MV7+ (firmware 1.6, mike-callahan's capture for #51, frames
-        // #1092-#1117): a Mic Level read, then Playback Level reads around a
-        // Playback Level change. Each reply echoes its request's prefix.
+        // #1092-#1117): a Mic Level read (99), then Playback Level reads around a
+        // Playback Level change. Each reply echoes its request's prefix. Between
+        // them MOTIV set the Mic Level to 100 (#1096, not included here), so the
+        // last read, Playback Level 99, came while the Mic Level was 100: the
+        // example the docs cite.
         let mic_get = [
             0x01, 0x10, 0x11, 0x22, 0xd5, 0x03, 0x08, 0x08, 0x70, 0x08, 0x01, 0x02, 0x02, 0x00,
             0x01, 0x86, 0x90, 0x39,

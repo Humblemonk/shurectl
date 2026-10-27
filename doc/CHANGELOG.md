@@ -30,6 +30,9 @@ device's state as JSON.
 
 ### Changed
 
+- On the MV7+, the readback now checks that the Playback Level reply really is the Playback
+  Level, as confirmed on firmware 1.6. If shurectl can't read your MV7+, update its firmware
+  in MOTIV first.
 - Mute works before the device's settings have been read, in the TUI and with `--mute`, and
   the TUI keeps reading the mute state then (a press of the mic's own button shows on the MV6
   Gen 2, tested under Linux; unconfirmed on other models), with the status still saying the

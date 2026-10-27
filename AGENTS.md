@@ -309,6 +309,10 @@ rather than promoting a lower one.
   `phantom_power = false`, even from a model without it; nothing records which model saved them
 - `fake_hid.rs` agreeing with `protocol.rs` by construction: it proves sequencing and
   routing, never that a packet is right. Don't cite it as protocol evidence
+- A read confirmed only on a device's current firmware being required. shurectl supports
+  the latest firmware Shure ships for each device, not older releases (maintainer decision
+  2026-10-27), so "may fail on older firmware" isn't a finding. The MV7+ Mute Button's
+  handling of firmware before 1.4.0 (2.14.0) predates this
 
 ## Workflow
 
