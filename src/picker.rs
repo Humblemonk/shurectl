@@ -66,6 +66,11 @@ impl Picker {
         self.status_is_error = false;
     }
 
+    pub fn set_ok(&mut self, message: impl Into<String>) {
+        self.status = message.into();
+        self.status_is_error = false;
+    }
+
     pub fn set_err(&mut self, message: impl Into<String>) {
         self.status = message.into();
         self.status_is_error = true;

@@ -1011,23 +1011,17 @@ impl ShureDevice {
     /// the serial, for the device picker. `None` on the MV7, which has no
     /// name, when none is set, or when the device doesn't answer.
     pub fn read_device_name(&self) -> Option<String> {
-        match self.model {
-            DeviceModel::Mv7 => None,
-            DeviceModel::Mvx2u
-            | DeviceModel::Mvx2uGen2
-            | DeviceModel::Mv6
-            | DeviceModel::Mv6Gen2
-            | DeviceModel::Mv7Plus => {
-                let reply = self
-                    .send_get_past_strays(&cmd_get_device_name(self.next_seq()))
-                    .ok()??;
-                let mut state = DeviceState::default();
-                let applied =
-                    protocol::is_device_name_reply(&reply) && apply_reply(&reply, &mut state);
-                let unset = state.device_name.is_empty() || state.device_name == "Unknown";
-                (applied && !unset).then_some(state.device_name)
-            }
+        // Also keeps the MV7's text shell away from the binary GET.
+        if !self.model.has_device_rename() {
+            return None;
         }
+        let reply = self
+            .send_get_past_strays(&cmd_get_device_name(self.next_seq()))
+            .ok()??;
+        let mut state = DeviceState::default();
+        let applied = protocol::is_device_name_reply(&reply) && apply_reply(&reply, &mut state);
+        let unset = state.device_name.is_empty() || state.device_name == "Unknown";
+        (applied && !unset).then_some(state.device_name)
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────

@@ -213,6 +213,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Read before the device picker can enter the TUI, since a bad preset file
+    // is reported on stderr.
+    let presets = presets::load_all_presets();
     // Entered early only for the device picker; startup warnings print first otherwise.
     let mut tui = None;
     let (mut device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
@@ -225,11 +228,16 @@ fn main() -> Result<()> {
         };
         (None, true, Some(model))
     } else {
+        let found = if cli.device.is_none() {
+            device::list_devices()
+        } else {
+            Vec::new()
+        };
         let open_result = if let Some(ref selector) = cli.device {
             ShureDevice::open_selected(selector)
-        } else if device::list_devices().len() > 1 {
+        } else if found.len() > 1 {
             let tui = tui.insert(Tui::enter()?);
-            match pick_device(&mut tui.terminal)? {
+            match pick_device(&mut tui.terminal, found)? {
                 Some(device) => Ok(device),
                 None => return Ok(()),
             }
@@ -258,13 +266,14 @@ fn main() -> Result<()> {
 
     load_initial_state(&mut app, device.as_ref());
 
-    app.presets = presets::load_all_presets();
+    app.presets = presets;
 
     let _meter_stream = if !demo_mode {
         match start_meter(Arc::clone(&app.peak_window)) {
             MeterStatus::Running(s) => Some(s),
             MeterStatus::Failed(e) => {
                 app.set_err(format!("Meter unavailable: {e}"));
+                app.meter_unavailable = true;
                 None
             }
         }
@@ -273,7 +282,14 @@ fn main() -> Result<()> {
     };
 
     let mut tui = match tui {
-        Some(tui) => tui,
+        Some(tui) => {
+            // Keys pressed while the picker's choice was opened and read were
+            // meant for the picker, not the screen that replaces it.
+            while event::poll(Duration::ZERO)? {
+                event::read()?;
+            }
+            tui
+        }
         None => Tui::enter()?,
     };
 
@@ -317,8 +333,9 @@ impl Tui {
 /// as `--list` does, and a device that won't open says why and stays listed.
 fn pick_device(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    found: Vec<device::DeviceInfo>,
 ) -> Result<Option<ShureDevice>> {
-    let mut picker = picker::Picker::new(picker_rows());
+    let mut picker = picker::Picker::new(picker_rows(found));
     loop {
         let mut rows = Vec::new();
         let mut fits = true;
@@ -352,22 +369,33 @@ fn pick_device(
         };
         match command {
             Some(picker::Command::Open(index)) => {
+                // Stays on screen while the device's settings are read, which
+                // can take a few seconds.
+                picker.set_ok(format!(
+                    "Opening {}…",
+                    picker.rows[index].model.display_name()
+                ));
+                terminal.draw(|f| {
+                    ui::draw_picker(f, &picker);
+                })?;
                 match ShureDevice::open_path(&picker.rows[index].path) {
                     Ok(device) => return Ok(Some(device)),
                     Err(e) => picker.set_err(one_line(&e)),
                 }
             }
-            Some(picker::Command::Rescan) => picker.set_rows(picker_rows()),
+            Some(picker::Command::Rescan) => {
+                picker.set_rows(picker_rows(device::list_devices()));
+            }
             Some(picker::Command::Quit) => return Ok(None),
             None => {}
         }
     }
 }
 
-/// Every connected device, labelled with its printed serial and its name,
-/// each read by opening it once, as `--list` does.
-fn picker_rows() -> Vec<picker::PickerRow> {
-    device::list_devices()
+/// The devices `found`, labelled with their printed serials and names, each
+/// read by opening the device once, as `--list` does.
+fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
+    found
         .into_iter()
         .map(|found| {
             let usb_serial = (found.serial != device::UNKNOWN_SERIAL).then_some(found.serial);

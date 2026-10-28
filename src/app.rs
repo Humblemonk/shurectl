@@ -207,6 +207,9 @@ pub struct App {
     pub latest_firmware: Option<LatestFirmware>,
     /// The gain check, while it listens and then its result until closed.
     pub gain_check: Option<GainCheck>,
+    /// True when the meter's capture stream couldn't start, so a gain check
+    /// would hear nothing.
+    pub meter_unavailable: bool,
 }
 
 impl Default for App {
@@ -236,6 +239,7 @@ impl Default for App {
             meter_clock: None,
             latest_firmware: None,
             gain_check: None,
+            meter_unavailable: false,
         }
     }
 }
@@ -382,6 +386,10 @@ impl App {
             self.set_err("Gain check needs the device connected.");
         } else if self.state_unread {
             self.set_err(STATE_UNREAD_HINT);
+        } else if self.meter_unavailable {
+            self.set_err("Gain check needs the level meter, which couldn't start.");
+        } else if self.device_state.muted {
+            self.set_err("Gain check needs the mic unmuted.");
         } else {
             self.gain_check = Some(GainCheck::Listening(Listening::new(
                 self.device_state.gain_tenths,
@@ -397,8 +405,8 @@ impl App {
     }
 
     /// Feed the running gain check the meter's peak at `now`, and keep its
-    /// result once it is done. A check stops when its result could no longer
-    /// apply: the device gone or unread (their own status says so), or out of
+    /// result once it is done. A check stops, saying so, when its result could
+    /// no longer apply: the device gone or unread, the mic muted, or out of
     /// Manual mode, which also closes a result. A gain change while it listens
     /// starts it over, since the loudest peak would otherwise mix two gains.
     pub fn sample_gain_check(&mut self, now: Instant) {
@@ -416,7 +424,14 @@ impl App {
             return;
         };
         if !self.device_connected || self.state_unread {
+            // Added to the status that says why, which is kept.
             self.gain_check = None;
+            self.status_message.push_str(" Gain check stopped.");
+            return;
+        }
+        if self.device_state.muted {
+            self.gain_check = None;
+            self.set_ok("Gain check stopped: the mic is muted.");
             return;
         }
         if listening.gain_tenths != self.device_state.gain_tenths {
@@ -2559,6 +2574,25 @@ mod tests {
                 assert_ne!(app.focus, Focus::GainCheck, "{model:?} Auto");
             }
         }
+    }
+
+    /// A check that would hear nothing useful is refused with the reason.
+    #[test]
+    fn a_gain_check_is_refused_when_it_would_hear_nothing() {
+        let mut app = App::default();
+        app.device_state.mode = InputMode::Manual;
+        app.meter_unavailable = true;
+        app.toggle_gain_check();
+        assert!(app.gain_check.is_none());
+        assert!(app.status_is_error && app.status_message.contains("level meter"));
+        app.meter_unavailable = false;
+        app.device_state.muted = true;
+        app.toggle_gain_check();
+        assert!(app.gain_check.is_none());
+        assert_eq!(app.status_message, "Gain check needs the mic unmuted.");
+        app.device_state.muted = false;
+        app.toggle_gain_check();
+        assert!(app.gain_check_listening().is_some());
     }
 
     #[test]
