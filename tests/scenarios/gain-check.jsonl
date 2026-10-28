@@ -1,0 +1,36 @@
+{"scenario": "gain-check", "models": "all", "modes": ["fake"]}
+{"expect": {"focus": "Mode", "screen_contains": "Summary"}}
+{"key": "g"}
+{"expect": {"screen_contains": ["Gain check", "Speak normally", "Time left     10 s", "Aiming for    -12.0 dBFS", "[Esc] cancel"], "screen_not_contains": "Summary", "no_packets": true}}
+{"tick": 600}
+{"meter": -18}
+{"tick": 400}
+{"expect": {"screen_contains": ["Time left     9 s", "Loudest yet   -18.0 dBFS"]}}
+{"tick": 9000}
+{"expect": {"screen_contains": ["Loudest peak  -18.0 dBFS", "Try Gain      30 dB", "Now           24 dB", "[g] check again  [Esc] close"], "state": {"gain_tenths": 240}}}
+{"device": {"gain_tenths": 300}}
+{"tick": 1000}
+{"expect": {"screen_contains": ["Try Gain      30 dB", "Now           30 dB", "Set. Check again to confirm."]}}
+{"key": "Esc"}
+{"expect": {"screen_contains": "Summary", "screen_not_contains": "Loudest peak"}}
+{"key": "g"}
+{"tick": 10000}
+{"expect": {"screen_contains": ["Loudest peak  ---", "Heard nothing."]}}
+{"key": "g"}
+{"key": "g"}
+{"expect": {"status": "Gain check cancelled.", "screen_contains": "Summary"}}
+{"key": "g"}
+{"key": "Esc"}
+{"expect": {"status": "Gain check cancelled.", "screen_contains": "Summary"}}
+{"key": "g"}
+{"tick": 3000}
+{"expect": {"screen_contains": "Time left     7 s"}}
+{"key": "Down", "repeat": 2}
+{"expect": {"focus": "Gain"}}
+{"key": "Right"}
+{"expect": {"screen_contains": "Time left     10 s"}}
+{"device": {"mode": "Auto"}}
+{"tick": 1000}
+{"expect": {"status": "Gain check stopped: the device left Manual mode.", "screen_contains": "Summary", "screen_not_contains": "Time left"}}
+{"key": "g"}
+{"expect": {"status": "Gain check works in Manual mode; in Auto Level the device sets its own gain.", "status_is_error": true, "screen_contains": "Summary"}}

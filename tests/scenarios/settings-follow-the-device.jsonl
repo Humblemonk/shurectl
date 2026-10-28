@@ -1,0 +1,14 @@
+{"scenario": "settings-follow-the-device", "models": "all", "modes": ["fake"]}
+{"expect": {"state": {"gain_tenths": 240, "mode": "Manual"}}}
+{"device": {"gain_tenths": 120}}
+{"tick": 1000}
+{"expect": {"state": {"gain_tenths": 120}, "status": "Gain → 12", "screen_contains": "12"}}
+{"device": {"monitor_mix": 60}}
+{"tick": 1000}
+{"expect": {"state": {"monitor_mix": 60}, "status": "→ 60% (changed on the device)"}}
+{"device": {"gain_tenths": 90, "monitor_mix": 30}}
+{"tick": 1000}
+{"expect": {"state": {"gain_tenths": 90, "monitor_mix": 30}, "status": "(changed on the device)"}}
+{"device": {"mode": "Auto"}}
+{"tick": 1000}
+{"expect": {"state": {"mode": "Auto"}, "status": "Mode → Auto Level"}}

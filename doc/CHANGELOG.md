@@ -6,6 +6,77 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.15.0 — 2026-10-24
+
+Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the
+device's state as JSON. A gain check helps set your gain, and with several devices connected
+you pick which one to open.
+
+### Added
+
+- Gain check: in Manual mode, select the Level meter on the Main tab (it comes after Gain)
+  and press `Enter`, or press `g`, then speak normally for 10 seconds. The Summary makes way
+  for a Gain check card: a countdown, then your loudest peak and a gain to try, aiming for
+  peaks around -12 dBFS, or that the gain looks right. It changes nothing itself: set the
+  gain with the arrow keys while the card shows it beside the suggestion, then check again.
+  `Esc` closes it. It listens through the level meter, so the Shure needs to be your
+  system's default input. It assumes a gain change moves your peaks by the same number of
+  dB, which is unconfirmed on hardware, and the compressor and limiter change that.
+- With more than one device connected, shurectl asks which one to open, showing each one's
+  model, device name and serial, instead of starting in demo mode. Use `↑`/`↓` and `Enter`,
+  or click a device twice. A device that can't be opened (MOTIV holding it, say) shows why.
+  `--device` with the serial it shows skips the question.
+
+- `--json` prints the device's state as one line of JSON: its model, mute, firmware, serial
+  and device name, and its settings with the names and values a preset file uses (EQ gains
+  in dB). When the device can't be opened or read, or a change fails, it prints
+  `{"error": …}` and exits with status 1.
+- `--mode auto|manual|toggle`, `--gain`, `--monitor-mix` and `--playback-mix` change those
+  settings without the TUI, to a value or by `+N`/`-N` steps like the arrow keys. They can
+  be combined, and each is refused with the reason where the TUI wouldn't make the change,
+  such as gain in Auto Level mode. On an MV6 that doesn't answer its Playback Level read
+  (unconfirmed on that model), `--playback-mix` is refused and `--json` leaves it out.
+- `--device` also takes the serial `--list` shows, which stays the same when a mic is
+  replugged, unlike its path.
+- The MV7 has a Limiter on the Dynamics tab, in Manual mode. The setting comes from Shure's
+  DSP settings file and is unconfirmed on a real MV7. If the mic doesn't answer it, only the
+  Limiter shows as unavailable.
+
+### Changed
+
+- On the MV7+, the readback now checks that the Playback Level reply really is the Playback
+  Level, as confirmed on firmware 1.6. If shurectl can't read your MV7+, update its firmware
+  in MOTIV first.
+- Mute works before the device's settings have been read, in the TUI and with `--mute`, and
+  the TUI keeps reading the mute state then (a press of the mic's own button shows on the MV6
+  Gen 2, tested under Linux; unconfirmed on other models), with the status still saying the
+  settings aren't read. Other changes still wait for a readback. A mute the device can't
+  confirm shows as OFF, never as Muted while the mic may be live.
+- `--mute on` and `--mute off` send one command without reading the device first, and
+  `--mute toggle` and `--mute status` read only the mute state.
+- The TUI follows mode, gain, Monitor Mix and Playback Level as it follows mute: changed from
+  a script, a Stream Deck or MOTIV, each shows within a second, and a mode change re-reads
+  every setting. Before, the next arrow key stepped from the old value. Tested on the MVX2U
+  Gen 2 and MV6 Gen 2; unconfirmed on other models.
+- `--mute` and `--preset` now make their change the same way the TUI does. A preset load
+  the device partly refuses exits with status 1.
+
+### Fixed
+
+- `--mute` and `--preset` no longer act on the connected device when given with `--demo` or
+  `--list`; the combination is refused.
+- A readback (`r`, a reconnect, or the start of a command-line run) no longer takes a report
+  meant for something else as an answer: one left over from earlier (an extra ack after a
+  write, the late reply to a read that timed out), or, on Linux, a reply to a shurectl
+  running alongside. That shifted every answer after it and left the last setting read (the
+  MV7+'s serial number, say) at its default. Found in review and on the fake device; not seen
+  on hardware.
+- On an MV6 that doesn't answer its Playback Level read, the TUI shows it as Unknown and
+  leaves it alone: arrow keys, the wheel and preset loads don't change it. Before, it showed
+  0%, and an arrow key wrote from there. Found in review; not seen on hardware.
+
+Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired these.
+
 ## 2.14.2 — 2026-10-23
 
 Mute follows the mic's own button, and presets leave mute alone.

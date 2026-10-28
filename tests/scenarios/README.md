@@ -59,6 +59,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | --- | --- | --- | --- |
 | `mute-toggle` | all but MV7 | fake, demo | Enter and Space toggle Mute, send MUTE, and show `● ON` in the error colour |
 | `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is |
+| `settings-follow-the-device` | all | fake | Gain, Monitor Mix and mode changed elsewhere (a script, MOTIV) show within a second, several at once in one status |
+| `playback-level-follows-the-device` | MVX2U Gen 2, MV6 Gen 2, MV7+ | fake | A Playback Level changed elsewhere shows within a second (not polled on the MV6, whose GET is unconfirmed, #99) |
 | `mute-poll-finds-the-device-gone` | all | fake | Unplugged at 0.5 s, the device shows as disconnected by the mute poll at 1 s, before the 2 s presence poll |
 | `gain-adjust` | all but MV7 | fake | ←/→ step gain by 1 dB and send GAIN |
 | `gain-limits-60db` | MVX2U, MVX2U Gen 2 | fake | Gain clamps at 0 and 60 dB |
@@ -98,6 +100,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
 | `dynamics-limiter-compressor` | MVX2U, MVX2U Gen 2, MV7+ | fake | Limiter toggles and sends LIMITER; Compressor cycles Off → Light → Medium → Heavy → Off |
+| `mv7-limiter` | MV7 | fake | The Limiter toggles and sends `setBlock 1F` (block from Shure's DSP settings file, unconfirmed on hardware); focus moves Limiter ↔ Compressor |
 | `dynamics-denoiser-popper` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | Clicking focuses without sending; Denoiser and Popper Stopper toggle and send |
 | `dynamics-hpf-cycle` | all but MV7 | fake | HPF cycles Off → 75 Hz → 150 Hz → Off and sends HPF |
 | `mute-button-setting` | MV6, MV6 Gen 2, MV7+ | fake, demo | Mute Button toggles between Works and Ignored and sends MUTE_BUTTON |
@@ -134,10 +137,11 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `refused-command-stays-connected` | all | fake | A refused GET fails `r`'s readback without marking the device disconnected; the reconnect reads it again |
 | `write-failed-keeps-screen` | all | fake | When a write fails (I/O error), Mute and Gain keep showing what the device has |
 | `mv7-rejected-write-keeps-screen` | MV7 | fake | A Mode, Mute or Gain change the MV7 rejects is undone on screen, and the mic stays connected |
-| `readback-failed-reconnect-refuses-writes` | all | fake | If a reconnect can't read the device, writes are refused and the screen kept until `r` succeeds |
+| `readback-failed-reconnect-refuses-writes` | all | fake | If a reconnect can't read the device, writes other than mute are refused and the screen kept until `r` succeeds; mute still goes through and follows the mic, and the status keeps saying the settings aren't read |
+| `mv7-unconfirmed-mute-shows-off` | mv7 | fake | A mute the MV7 neither confirms nor lets be read back shows as OFF with the state called unknown, never as Muted over a live mic |
 | `readback-unanswered-get-keeps-state` | all | fake | A GET left without a usable reply during `r` keeps that setting, not resetting gain to 36 dB |
-| `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` refuses the shifted readback and the reconnect reads EQ band 5's gain |
-| `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | **Known bug.** After one ack too many, `r` should still read the serial number |
+| `readback-extra-ack-keeps-eq-band-5` | MVX2U Gen 2 | fake | After one ack too many, `r` reads EQ band 5's gain the first time: the readback drains queued input first |
+| `readback-extra-ack-keeps-serial` | MV6, MV7+ | fake | After one ack too many, `r` still reads the serial number: the readback drains queued input first |
 | `mute-poll-clears-extra-ack` | MV6, MV7+ | fake | After one ack too many, the next mute poll discards it, so a later `r` reads the serial number |
 
 The fake fault `{"device":{"refused_get":"MUTE_BUTTON"}}` answers that feature's GETs with an unknown address, as `refuse` does, until cleared with `{"device":{"refused_get":null}}`.

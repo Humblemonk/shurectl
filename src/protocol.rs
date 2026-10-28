@@ -169,7 +169,8 @@
 //! Playback Level, shared with every model that has `has_playback_mix()`:
 //!   Playback Level:   [0x01, 0x86]  — 1 byte, prefix=0x03, 0–100%
 //!                                     SAME feature address as Mic Level but prefix=0x03.
-//!                                     Both GET and SET use prefix=0x03. GET framing is standard
+//!                                     Both GET and SET use prefix=0x03, and replies echo it
+//!                                     (MV7+ capture, firmware 1.6). GET framing is standard
 //!                                     (HDR_CONSTANT=0x03); SET uses HDR_CONSTANT=0x00.
 //!
 //! MV7+ exclusive:
@@ -407,7 +408,9 @@ impl DeviceModel {
     /// must be read and discarded, or every later GET reads one of them instead
     /// of its own reply and the state readback lags behind by that many packets.
     ///
-    /// - MV7+: a CONFIRM ack (`09 00 00`) and a SET echo (`04 02 02`).
+    /// - MV7+ (MOTIV capture, firmware 1.6): a CONFIRM ack (`09 00 00`) and a SET
+    ///   echo (`04 02 02`, or `04 02 01` for the lock class), in either order.
+    ///   LED-page SETs sometimes send the ack alone, which costs one ack timeout.
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`) and a CONFIRM
     ///   ack (`09 00 00`).
     /// - MVX2U Gen 1, MV6 and MV6 Gen 2: assumed to match (same binary protocol),
@@ -591,6 +594,13 @@ const MV6_GEN2_FEAT_TONE_MODE: [u8; 2] = [0x02, 0x05];
 // cmd_get_mv7_playback_mix / cmd_set_mv7_playback_mix). Every model with
 // `has_playback_mix()` shares it; MOTIV calls the two FEAT_MIX channels Mic Level
 // and Playback Level.
+//
+// Also in mike-callahan's MV7+ captures (firmware 1.6, re-read 2026-10-27), unused
+// here and of unknown meaning: FEAT_GAIN with prefix 0x01, which MOTIV subscribes
+// to and reads as 0x2710 (10000) throughout; lock-class 0x00 0x21 (prefix 0x00),
+// subscribed and read as 0x00. MOTIV reads the firmware version at lock-class
+// 0x00 0x04 as bytes (00 01 00 06 ... on 1.6), where shurectl reads text at
+// FEAT_FIRMWARE.
 
 /// Reverb effect on headphone/speaker output. 0=off, 1=on.
 const MV7_FEAT_REVERB_OUTPUT: [u8; 2] = [0x03, 0x82];
@@ -672,8 +682,10 @@ pub struct DeviceState {
     /// `has_playback_mix()`, where `monitor_mix` is the mic level. Same FEAT_MIX
     /// address as `monitor_mix`, with prefix=0x03 on the wire.
     pub playback_mix: u8,
-    /// Limiter. MVX2U Gen 1 and Gen 2, MV7+.
-    pub limiter_enabled: bool,
+    /// Limiter. MVX2U Gen 1 and Gen 2, MV7, MV7+. `None` until a readback reads
+    /// it, which only the MV7's optional read can leave it (unconfirmed on
+    /// hardware there): unknown, so it must not be shown, changed or saved.
+    pub limiter_enabled: Option<bool>,
     /// Compressor preset. MVX2U Gen 1 and Gen 2, MV7, MV7+.
     pub compressor: CompressorPreset,
     pub hpf: HpfFrequency,
@@ -778,7 +790,7 @@ impl Default for DeviceState {
             muted: false,
             phantom_power: false,
             monitor_mix: 0,
-            limiter_enabled: false,
+            limiter_enabled: Some(false),
             compressor: CompressorPreset::Off,
             hpf: HpfFrequency::Off,
             eq_enabled: false,
@@ -1610,9 +1622,9 @@ pub const PREFIX_OFFSET: usize = 13;
 /// FEAT_MIX prefix for Playback Mix. Monitor Mix uses 0x00 (0x01 on the Gen 1).
 const PLAYBACK_MIX_PREFIX: u8 = 0x03;
 
-/// One device reply. The device echoes the request's prefix byte (checked on the
-/// MV6 Gen 2 and MVX2U Gen 2, and in the MV7+ LED captures), which is the only thing telling
-/// Playback Mix apart from Monitor Mix.
+/// One device reply. The device echoes the request's prefix byte (captured on the
+/// MV6 Gen 2, MVX2U Gen 2 and MV7+), which is the only thing telling Playback Mix
+/// apart from Monitor Mix.
 #[derive(Debug, PartialEq)]
 pub struct Reply {
     pub prefix: u8,
@@ -1745,12 +1757,16 @@ const GET_LABELS: &[(GetCommand, &str)] = &[
     (cmd_get_serial, "Serial Number"),
 ];
 
+/// A binary GET's command and address, which tell GETs apart.
+fn get_address(get: &[u8]) -> Option<&[u8]> {
+    get.get(10..PREFIX_OFFSET + 3)
+}
+
 /// The UI name of the setting the binary GET `packet` reads on `model`, or
 /// `None` for a GET no label covers. Packets match by command and address.
 fn setting_label(model: DeviceModel, packet: &[u8]) -> Option<String> {
-    let address = |get: &[u8]| get.get(10..PREFIX_OFFSET + 3).map(<[u8]>::to_vec);
-    let wanted = address(packet)?;
-    let reads = |get: &[u8]| address(get).as_ref() == Some(&wanted);
+    let wanted = get_address(packet)?;
+    let reads = |get: &[u8]| get_address(get) == Some(wanted);
     if let Some((_, label)) = GET_LABELS.iter().find(|(get, _)| reads(&get(0))) {
         return Some((*label).to_string());
     }
@@ -1933,10 +1949,12 @@ pub mod fake_wire {
     /// for the SET it confirmed (`None` for a CONFIRM with no SET before it).
     /// `DeviceModel::reports_after_confirm()` says how many `send_set()` reads.
     ///
-    /// - MV7+ (checked on hardware): the CONFIRM ack (`09 00 00`), then an echo
-    ///   of the SET (`04 02 02` and its address; `04 02 01` for the lock class).
-    ///   The fake assumes the echo carries the SET's value too. It parses as a
-    ///   reply, so an echo left unread is decoded by a later GET.
+    /// - MV7+ (MOTIV capture, firmware 1.6): the CONFIRM ack (`09 00 00`) and an
+    ///   echo of the SET (`04 02 02` and its address and value; `04 02 01` for
+    ///   the lock class), in either order (echo first 71 times, ack first 47).
+    ///   LED-page SETs sometimes send the ack alone (20 of 52). Both came within
+    ///   19 ms of the CONFIRM. The fake sends the ack first. The echo parses as
+    ///   a reply, so one left unread is decoded by a later GET.
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`), then the
     ///   CONFIRM ack.
     /// - MVX2U Gen 1, MV6 and MV6 Gen 2: unchecked; the fake assumes the MV7+
@@ -2622,15 +2640,57 @@ fn decode_lp_string(value: &[u8]) -> Option<String> {
     )
 }
 
-/// Whether `reply` answers `cmd_get_mute()`, for the mute poll, which reads
-/// the mute state alone and must not take another setting's reply for it.
-pub fn is_mute_reply(reply: &Reply) -> bool {
-    reply.feat == FEAT_MUTE
+/// The addresses of the GETs the TUI's live poll sends (mute, mode, gain,
+/// the monitor levels), which are answered at the address asked.
+const LIVE_ADDRESSES: [[u8; 2]; 4] = [FEAT_MUTE, FEAT_AUTO, FEAT_GAIN, FEAT_MIX];
+
+/// Whether the binary GET `packet` is `cmd_get_mv7_playback_mix()`.
+pub fn is_playback_get(packet: &[u8]) -> bool {
+    get_address(packet)
+        .is_some_and(|wanted| get_address(&cmd_get_mv7_playback_mix(0)) == Some(wanted))
+}
+
+/// Whether `reply` carries the factory serial `cmd_get_serial()` asks for.
+pub fn is_serial_reply(reply: &Reply) -> bool {
+    reply.feat == FEAT_SERIAL
+}
+
+/// Whether `reply` carries the device name `cmd_get_device_name()` asks for.
+pub fn is_device_name_reply(reply: &Reply) -> bool {
+    reply.feat == FEAT_DEVICE_NAME
+}
+
+/// Whether `reply` is at a live-poll address (`LIVE_ADDRESSES`).
+pub fn is_live_reply(reply: &Reply) -> bool {
+    LIVE_ADDRESSES.contains(&reply.feat)
+}
+
+/// Whether the binary GET `get` asks at a live-poll address, so its answer
+/// comes back at that address and any other reply isn't it.
+pub fn is_live_get(get: &[u8]) -> bool {
+    get.get(PREFIX_OFFSET + 1..PREFIX_OFFSET + 3)
+        .is_some_and(|address| LIVE_ADDRESSES.iter().any(|live| live[..] == *address))
+}
+
+/// Whether `reply` answers the binary GET `get` at the address it asked, for
+/// the TUI's poll of mute, mode, gain and the monitor levels, which are
+/// answered there (their readback routes by that address). Whether every GET
+/// is, is unconfirmed. FEAT_MIX holds the Mic Level or balance and the
+/// Playback Level, told apart by the 0x03 prefix.
+pub fn answers_at_its_address(get: &[u8], reply: &Reply) -> bool {
+    let Some(&[prefix, hi, lo]) = get.get(PREFIX_OFFSET..PREFIX_OFFSET + 3) else {
+        return false;
+    };
+    reply.feat == [hi, lo]
+        && (reply.feat != FEAT_MIX
+            || (reply.prefix == PLAYBACK_MIX_PREFIX) == (prefix == PLAYBACK_MIX_PREFIX))
 }
 
 /// Apply a parsed [`Reply`] to `state`. Playback Mix shares FEAT_MIX with
 /// Monitor Mix and is told apart by its prefix; everything else goes by address.
-/// The MV7+ echo of prefix 0x03 is inferred from its LED replies, not checked.
+/// The echo is captured on the MV6 Gen 2, MVX2U Gen 2 and MV7+ (a MOTIV capture on
+/// firmware 1.6: every reply at FEAT_MIX echoes its request's prefix, including a
+/// Playback Level of 99 read while the Mic Level was 100); unchecked on the MV6.
 #[must_use]
 pub fn apply_reply(reply: &Reply, state: &mut DeviceState) -> bool {
     if reply.feat == FEAT_MIX && reply.prefix == PLAYBACK_MIX_PREFIX {
@@ -2685,7 +2745,7 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
             if value.is_empty() {
                 return false;
             }
-            state.limiter_enabled = value[0] != 0;
+            state.limiter_enabled = Some(value[0] != 0);
             true
         }
         f if f == FEAT_COMP => {
@@ -2985,9 +3045,12 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
 ///   each block into pages 0x1xx and 0x2xx by itself, so only the base ID is written.
 ///
 /// Confirmed against firmware 0.0.52.0 (package 1.2.19) by probing the shell and
-/// against the command strings MOTIV Mix sends. The limiter MOTIV shows is host-side
-/// software, not a device setting. `bootDSP` and firmware commands are intentionally
-/// absent.
+/// against the command strings MOTIV Mix sends. The Limiter block (`1F`) is not:
+/// its ID and values come from Shure's `DSP-Settings-MV7.xml` and the block table
+/// decoded by schlarpc/shure-mv7-firmware-re, and nobody has read or written it
+/// on an MV7 (unconfirmed). Toggling MOTIV's limiter changed no block shurectl
+/// reads (2026-09-25), so MOTIV may limit in the app instead. `bootDSP` and
+/// firmware commands are intentionally absent.
 pub mod mv7_text {
     use super::{AutoTone, CompressorPreset, DeviceState, EqPreset, InputMode, MicPosition};
 
@@ -3018,6 +3081,8 @@ pub mod mv7_text {
 
     /// Compressor block: 0=Off, 1=Light, 2=Medium, 3=Heavy.
     const BLOCK_COMPRESSOR: &str = "19";
+    /// Limiter block: 0=Off, 1=On (unconfirmed on hardware, see the module docs).
+    const BLOCK_LIMITER: &str = "1F";
     /// Monitor mix block: two 32-bit linear gains, playback then mic.
     const BLOCK_MONITOR_MIX: &str = "22";
     /// EQ block: bit 0 = High Pass, bit 1 = Presence Boost.
@@ -3121,8 +3186,22 @@ pub mod mv7_text {
         TextCommand::named(MIC_MUTE, None)
     }
 
+    pub fn get_dsp_mode() -> TextCommand {
+        TextCommand::named(DSP_MODE, None)
+    }
+
+    pub fn get_monitor_mix() -> TextCommand {
+        TextCommand::block(BLOCK_MONITOR_MIX, None)
+    }
+
     pub fn get_serial() -> TextCommand {
         TextCommand::named(SERIAL_NUM, None)
+    }
+
+    /// Not in [`state_queries`]: an unanswered Limiter read must not fail the
+    /// readback, so `device.rs` sends it as an optional query.
+    pub fn get_limiter() -> TextCommand {
+        TextCommand::block(BLOCK_LIMITER, None)
     }
 
     /// Every query needed for a full state readback.
@@ -3130,11 +3209,11 @@ pub mod mv7_text {
         vec![
             get_mute(),
             get_gain(),
-            TextCommand::named(DSP_MODE, None),
+            get_dsp_mode(),
             TextCommand::named(LOCK, None),
             TextCommand::named(METER_MODE, None),
             TextCommand::named(DIM_MODE, None),
-            TextCommand::block(BLOCK_MONITOR_MIX, None),
+            get_monitor_mix(),
             TextCommand::block(BLOCK_COMPRESSOR, None),
             TextCommand::block(BLOCK_EQ, None),
             TextCommand::named(FW_VERSION, None),
@@ -3183,6 +3262,10 @@ pub mod mv7_text {
         TextCommand::named(DIM_MODE, Some(on_off(enabled)))
     }
 
+    pub fn set_limiter(enabled: bool) -> TextCommand {
+        TextCommand::block(BLOCK_LIMITER, Some(&format!("{:08X}", u32::from(enabled))))
+    }
+
     pub fn set_compressor(preset: CompressorPreset) -> TextCommand {
         let value = u32::from(preset.as_byte());
         TextCommand::block(BLOCK_COMPRESSOR, Some(&format!("{value:08X}")))
@@ -3190,6 +3273,13 @@ pub mod mv7_text {
 
     pub fn set_eq(preset: EqPreset) -> TextCommand {
         TextCommand::block(BLOCK_EQ, Some(&format!("{:08X}", eq_value(preset))))
+    }
+
+    /// The Monitor Mix the MV7 reads back after `mix` is set: 1% and 2% sit
+    /// on the 0% floor of `MIX_CURVE`.
+    pub fn monitor_mix_as_stored(mix: u8) -> u8 {
+        let (playback, mic) = mix_words(mix);
+        mix_from_words(playback, mic)
     }
 
     /// Monitor mix: 0 = full mic, 100 = full playback. Values above 100 are clamped.
@@ -3216,10 +3306,11 @@ pub mod mv7_text {
 
     /// The SETs, after the mode, that take the mic from `current` (read back
     /// after any mode change) to `target`, each with the setting's label for a
-    /// refusal message. Gain, compressor and EQ only apply in Manual, so they
-    /// are left out unless both are in Manual. Monitor Mix goes last and only
-    /// if `monitor_mix`. Values are compared as the commands that would set
-    /// them, so two gains or mixes the mic can't tell apart count as equal.
+    /// refusal message. Gain, compressor and EQ only apply in Manual, and the
+    /// Limiter is assumed to as well (unconfirmed), so they are left out unless
+    /// both are in Manual. Monitor Mix goes last and only if `monitor_mix`.
+    /// Values are compared as the commands that would set them, so two gains
+    /// or mixes the mic can't tell apart count as equal.
     pub fn setting_changes(
         current: &DeviceState,
         target: &DeviceState,
@@ -3234,6 +3325,12 @@ pub mod mv7_text {
         };
         if target.mode == InputMode::Manual && current.mode == InputMode::Manual {
             add("Gain", |state| set_gain(state.gain_tenths));
+            // Only when the mic's Limiter was read, so an unknown one isn't written.
+            if current.limiter_enabled.is_some() && target.limiter_enabled.is_some() {
+                add("Limiter", |state| {
+                    set_limiter(state.limiter_enabled.unwrap_or_default())
+                });
+            }
             add("Compressor", |state| set_compressor(state.compressor));
             add("EQ", |state| set_eq(state.eq_preset));
         }
@@ -3488,6 +3585,13 @@ pub mod mv7_text {
                 }
                 None => false,
             },
+            BLOCK_LIMITER => match parse_word(data) {
+                Some(value @ (0 | 1)) => {
+                    state.limiter_enabled = Some(value == 1);
+                    true
+                }
+                _ => false,
+            },
             BLOCK_MONITOR_MIX => {
                 let words = (
                     data.get(..WORD_HEX_LEN).and_then(parse_word),
@@ -3515,11 +3619,11 @@ pub mod mv7_text {
         use std::collections::BTreeMap;
 
         use super::{
-            BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_MONITOR_MIX, BLOCK_REPLY, DIM_MODE, DSP_MODE,
-            DSP_MODE_MANUAL, DSP_MODE_MAX, FAILED_REPLY, FW_VERSION, GAIN_UNIT, GET_BLOCK,
-            INPUT_GAIN, LOCK, LOCKED_REPLY, METER_MODE, MIC_MUTE, OFF, ON, SERIAL_NUM, SET_BLOCK,
-            parse_gain, set_compressor, set_dsp_mode, set_eq, set_gain, set_live_meter, set_lock,
-            set_monitor_mix, set_mute, set_night_mode, snap_gain,
+            BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_LIMITER, BLOCK_MONITOR_MIX, BLOCK_REPLY, DIM_MODE,
+            DSP_MODE, DSP_MODE_MANUAL, DSP_MODE_MAX, FAILED_REPLY, FW_VERSION, GAIN_UNIT,
+            GET_BLOCK, INPUT_GAIN, LOCK, LOCKED_REPLY, METER_MODE, MIC_MUTE, OFF, ON, SERIAL_NUM,
+            SET_BLOCK, parse_gain, set_compressor, set_dsp_mode, set_eq, set_gain, set_limiter,
+            set_live_meter, set_lock, set_monitor_mix, set_mute, set_night_mode, snap_gain,
         };
         use crate::protocol::DeviceState;
 
@@ -3547,6 +3651,10 @@ pub mod mv7_text {
                     set_monitor_mix(state.monitor_mix),
                 ] {
                     shell.store(&command.line);
+                }
+                // An unread Limiter is a mic that doesn't answer its block.
+                if let Some(enabled) = state.limiter_enabled {
+                    shell.store(&set_limiter(enabled).line);
                 }
                 shell
                     .values
@@ -3577,7 +3685,8 @@ pub mod mv7_text {
                     (GET_BLOCK, Some(id)) => self.block_reply(id),
                     (SET_BLOCK, Some(arg)) => match arg.split_once(' ') {
                         Some((id, data))
-                            if [BLOCK_COMPRESSOR, BLOCK_EQ, BLOCK_MONITOR_MIX].contains(&id) =>
+                            if [BLOCK_COMPRESSOR, BLOCK_LIMITER, BLOCK_EQ, BLOCK_MONITOR_MIX]
+                                .contains(&id) =>
                         {
                             self.values
                                 .insert(format!("{BLOCK_REPLY} {id}"), data.into());
@@ -3703,6 +3812,27 @@ pub mod mv7_text {
                 set_dsp_mode(InputMode::Auto, MicPosition::Far, AutoTone::Dark).line,
                 "dspMode 06"
             );
+        }
+
+        /// Block 1F and its values are from Shure's DSP-Settings-MV7.xml, not a
+        /// capture: nothing here proves the mic acts on them.
+        #[test]
+        fn limiter_roundtrip() {
+            assert_eq!(set_limiter(true).line, "setBlock 1F 00000001");
+            assert_eq!(set_limiter(false).line, "setBlock 1F 00000000");
+            assert_eq!(get_limiter().line, "getBlock 1F");
+            let mut state = DeviceState {
+                limiter_enabled: None,
+                ..DeviceState::default()
+            };
+            assert!(apply_reply("block 1F 00000001", &mut state));
+            assert_eq!(state.limiter_enabled, Some(true));
+            assert!(apply_reply("block 1F 00000000", &mut state));
+            assert_eq!(state.limiter_enabled, Some(false));
+            for unusable in ["block 1F 00000002", "block 1F Not valid"] {
+                assert!(!apply_reply(unusable, &mut state), "{unusable}");
+            }
+            assert_eq!(state.limiter_enabled, Some(false));
         }
 
         #[test]
@@ -4650,9 +4780,9 @@ mod tests {
     fn apply_response_limiter() {
         let mut state = DeviceState::default();
         let _ = apply_response(FEAT_LIMITER, &[0x01], &mut state);
-        assert!(state.limiter_enabled);
+        assert_eq!(state.limiter_enabled, Some(true));
         let _ = apply_response(FEAT_LIMITER, &[0x00], &mut state);
-        assert!(!state.limiter_enabled);
+        assert_eq!(state.limiter_enabled, Some(false));
     }
 
     #[test]
@@ -5675,7 +5805,53 @@ mod tests {
     }
 
     #[test]
-    fn factory_reset_matches_mvx2u_gen2_capture() {
+    fn mv7_plus_monitor_levels_match_capture() {
+        // MOTIV on the MV7+ (firmware 1.6, mike-callahan's capture for #51, frames
+        // #1092-#1117): a Mic Level read (99), then Playback Level reads around a
+        // Playback Level change. Each reply echoes its request's prefix. Between
+        // them MOTIV set the Mic Level to 100 (#1096, not included here), so the
+        // last read, Playback Level 99, came while the Mic Level was 100: the
+        // example the docs cite.
+        let mic_get = [
+            0x01, 0x10, 0x11, 0x22, 0xd5, 0x03, 0x08, 0x08, 0x70, 0x08, 0x01, 0x02, 0x02, 0x00,
+            0x01, 0x86, 0x90, 0x39,
+        ];
+        assert_eq!(cmd_get_mv6_mix(0xd5), captured(&mic_get));
+        let playback_get = [
+            0x01, 0x10, 0x11, 0x22, 0xd8, 0x03, 0x08, 0x08, 0x70, 0x08, 0x01, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x43, 0x24,
+        ];
+        assert_eq!(cmd_get_mv7_playback_mix(0xd8), captured(&playback_get));
+
+        let reply = |bytes: &[u8]| parse_response(&captured(bytes)).expect("captured reply parses");
+        // Mic Level 99, then Playback Level 100 (before the change) and 99 (after).
+        let mic = reply(&[
+            0x01, 0x11, 0x11, 0x22, 0x0a, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x00,
+            0x01, 0x86, 0x63, 0x6c, 0x88,
+        ]);
+        let playback_before = reply(&[
+            0x01, 0x11, 0x11, 0x22, 0x0d, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x64, 0xad, 0xc2,
+        ]);
+        let playback_after = reply(&[
+            0x01, 0x11, 0x11, 0x22, 0x10, 0x03, 0x08, 0x09, 0x70, 0x09, 0x03, 0x02, 0x02, 0x03,
+            0x01, 0x86, 0x63, 0xb2, 0xae,
+        ]);
+        assert!(answers_at_its_address(&mic_get, &mic));
+        assert!(answers_at_its_address(&playback_get, &playback_before));
+        assert!(!answers_at_its_address(&mic_get, &playback_before));
+        assert!(!answers_at_its_address(&playback_get, &mic));
+
+        let mut state = DeviceState::default();
+        assert!(apply_reply(&mic, &mut state));
+        assert!(apply_reply(&playback_before, &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (99, 100));
+        assert!(apply_reply(&playback_after, &mut state));
+        assert_eq!((state.monitor_mix, state.playback_mix), (99, 99));
+    }
+
+    #[test]
+    fn factory_reset_matches_captures() {
         // MOTIV Mix's Reset to defaults on the MVX2U Gen 2 (firmware 1.2.0.6),
         // sequence 0x72: the whole packet, CRC and padding included.
         let reset = [
@@ -5683,6 +5859,13 @@ mod tests {
             0x00, 0x22, 0x01, 0x39, 0xd2,
         ];
         assert_eq!(cmd_factory_reset(0x72), captured(&reset));
+        // The same on the MV7+ (firmware 1.6, mike-callahan's capture), sequence
+        // 0x7e; no CONFIRM follows and the mic re-enumerates.
+        let reset = [
+            0x01, 0x11, 0x11, 0x22, 0x7e, 0x00, 0x08, 0x09, 0x70, 0x09, 0x02, 0x02, 0x01, 0x00,
+            0x00, 0x22, 0x01, 0xf5, 0xc3,
+        ];
+        assert_eq!(cmd_factory_reset(0x7e), captured(&reset));
     }
 
     // ── MV7+ LED protocol tests ───────────────────────────────────────────────

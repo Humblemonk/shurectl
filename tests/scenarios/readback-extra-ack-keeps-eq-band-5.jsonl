@@ -8,4 +8,4 @@
 {"key": "Up"}
 {"wheel": "down", "at": [100, 20]}
 {"key": "r"}
-{"expect": {"status": "Reconnected to Shure MVX2U Gen 2 — state loaded.", "status_is_error": false, "connected": true, "screen_contains": "Gain: -1.0 dB"}}
+{"expect": {"status": "State refreshed from device.", "status_is_error": false, "connected": true, "screen_contains": "Gain: -1.0 dB"}}

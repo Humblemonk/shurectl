@@ -17,24 +17,32 @@
 //!   shurectl --demo mv7        # Demo MV7 without a device
 //!   shurectl --demo mv7plus    # Demo MV7+ without a device
 //!   shurectl --list            # List detected devices and exit
-//!   shurectl --device PATH     # Open a specific device by HID path
+//!   shurectl --device SERIAL   # Open a specific device by serial or HID path
 //!   shurectl --mute            # Toggle mute (no TUI)
 //!   shurectl --mute on         # Mute (no TUI)
 //!   shurectl --mute off        # Unmute (no TUI)
 //!   shurectl --mute status     # Print on/off (no TUI)
 //!   shurectl --preset 1        # Load preset slot 1 (no TUI)
+//!   shurectl --mode toggle     # Switch Auto Level / Manual (no TUI)
+//!   shurectl --gain +1         # Gain one step up; or a value in dB (no TUI)
+//!   shurectl --monitor-mix 40  # Monitor Mix or Mic Level, 0-100 or +N/-N (no TUI)
+//!   shurectl --playback-mix 40 # Playback Level, 0-100 or +N/-N (no TUI)
+//!   shurectl --json            # Print the state as JSON (no TUI)
 
 mod app;
+mod cli;
 mod device;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod fake_hid;
 mod firmware;
+mod gain_check;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod harness;
 mod meter;
 mod mouse;
+mod picker;
 mod presets;
 mod protocol;
 mod ui;
@@ -43,55 +51,25 @@ use std::io;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use clap::Parser;
+use anyhow::Result;
+use clap::{CommandFactory, Parser};
 use crossterm::{
     cursor::Show,
     event::{
         self, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        MouseEvent, MouseEventKind,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend, layout::Position};
 
 use app::{App, DeviceAction, STATE_UNREAD_HINT};
-use device::ShureDevice;
+use cli::{Amount, ModeChoice, MuteAction};
+use device::{Live, ShureDevice};
 use meter::{MeterStatus, start_meter};
 use presets::PresetSlot;
 use protocol::{DeviceModel, InputMode, format_gain};
-
-/// Mute action for the `--mute` flag.
-#[derive(Debug, Clone, PartialEq)]
-enum MuteAction {
-    /// Flip the current mute state.
-    Toggle,
-    /// Mute the microphone.
-    On,
-    /// Unmute the microphone.
-    Off,
-    /// Print the current state (`on` or `off`) without changing it.
-    Status,
-}
-
-impl std::str::FromStr for MuteAction {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "toggle" => Ok(MuteAction::Toggle),
-            "on" => Ok(MuteAction::On),
-            "off" => Ok(MuteAction::Off),
-            "status" => Ok(MuteAction::Status),
-            other => {
-                anyhow::bail!(
-                    "unknown mute action \"{other}\". Valid options: toggle, on, off, status"
-                )
-            }
-        }
-    }
-}
 
 #[derive(Parser)]
 #[command(
@@ -110,28 +88,61 @@ struct Cli {
     #[arg(long, short)]
     list: bool,
 
-    /// Open a specific device by its HID path.
-    /// Without this flag, the only detected device is opened (error if multiple found).
-    /// Use --list to see available paths.
-    #[arg(long, short = 'D')]
+    /// Open a specific device by its HID path or its serial, as --list shows
+    /// them. Without this flag, the only detected device is opened; with
+    /// several, the TUI asks which, and the other commands need this flag.
+    /// A path can change when the device is replugged; a serial doesn't.
+    #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
     device: Option<String>,
 
-    /// Set mute state without launching the TUI.
-    /// toggle (default): flip current state. on: mute. off: unmute.
-    /// status: print the current state (on or off) without changing it.
-    #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION")]
+    /// Set or read the mute state without launching the TUI; toggle when no
+    /// action is given.
+    #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION",
+          value_enum, ignore_case = true,
+          conflicts_with_all = ["list", "demo"])]
     mute: Option<MuteAction>,
 
     /// Load a saved preset slot (1-4) onto the device without launching the TUI.
-    #[arg(long, short = 'p', value_name = "SLOT", conflicts_with = "mute",
+    #[arg(long, short = 'p', value_name = "SLOT",
+          conflicts_with_all = ["mute", "mode", "gain", "monitor_mix", "playback_mix", "list", "demo"],
           value_parser = clap::value_parser!(u8).range(1..=presets::PRESET_COUNT as i64))]
     preset: Option<u8>,
+
+    /// Print the device's settings as one line of JSON and exit: the model,
+    /// mute, firmware and serial, and the settings as a preset saves them.
+    /// With other options, print it after their changes.
+    #[arg(long, conflicts_with_all = ["list", "demo"])]
+    json: bool,
+
+    /// Switch input mode without launching the TUI: auto, manual or toggle.
+    #[arg(long, value_enum, ignore_case = true, value_name = "MODE",
+          conflicts_with_all = ["list", "demo"])]
+    mode: Option<ModeChoice>,
+
+    /// Set the gain in dB without launching the TUI (Manual mode, Gain Lock
+    /// off), or move it +N/-N steps, as the arrow keys do.
+    #[arg(long, value_name = "DB_OR_STEPS", allow_hyphen_values = true,
+          value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
+    gain: Option<Amount>,
+
+    /// Set Monitor Mix (the Mic Level on models with a Playback Level), 0-100,
+    /// or move it +N/-N, without launching the TUI.
+    #[arg(long, value_name = "PERCENT_OR_STEPS", allow_hyphen_values = true,
+          value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
+    monitor_mix: Option<Amount>,
+
+    /// Set the Playback Level, 0-100, or move it +N/-N, without launching the
+    /// TUI. On models with a Playback Level.
+    #[arg(long, value_name = "PERCENT_OR_STEPS", allow_hyphen_values = true,
+          value_parser = cli::parse_amount, conflicts_with_all = ["list", "demo"])]
+    playback_mix: Option<Amount>,
 
     /// Maintainers only: drive the app headlessly with JSON lines on stdin and
     /// stdout, for tests/e2e.rs and agent QA. Needs --demo MODEL or
     /// --fake-device MODEL; never opens real hardware.
     #[cfg(feature = "qa")]
-    #[arg(long, conflicts_with_all = ["device", "list", "mute", "preset"])]
+    #[arg(long, conflicts_with_all = ["device", "list", "mute", "preset", "json", "mode", "gain",
+                                      "monitor_mix", "playback_mix"])]
     qa: bool,
 
     /// With --qa: run against a fake device of this model, which logs every
@@ -154,13 +165,23 @@ fn main() -> Result<()> {
         return harness::run_qa(parse_demo_model(model)?, fake);
     }
 
-    if let Some(action) = cli.mute {
-        let path = cli.device.as_deref();
-        return cmd_mute(action, path);
-    }
-
-    if let Some(slot_number) = cli.preset {
-        return cmd_preset(slot_number.into(), cli.device.as_deref());
+    let one_shot = cli::Request {
+        device: cli.device.as_deref(),
+        json: cli.json,
+        mute: cli.mute,
+        preset: cli.preset,
+        mode: cli.mode,
+        gain: cli.gain,
+        monitor_mix: cli.monitor_mix,
+        playback_mix: cli.playback_mix,
+    };
+    if one_shot.is_one_shot() {
+        if let Err(e) = cli::check(&one_shot) {
+            Cli::command()
+                .error(clap::error::ErrorKind::ArgumentConflict, e)
+                .exit();
+        }
+        return cli::run(&one_shot);
     }
 
     if cli.list {
@@ -192,6 +213,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Read before the device picker can enter the TUI, since a bad preset file
+    // is reported on stderr.
+    let presets = presets::load_all_presets();
+    // Entered early only for the device picker; startup warnings print first otherwise.
+    let mut tui = None;
     let (mut device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
         let model = match parse_demo_model(model_str) {
             Ok(m) => m,
@@ -202,9 +228,23 @@ fn main() -> Result<()> {
         };
         (None, true, Some(model))
     } else {
-        let open_result = if let Some(ref path) = cli.device {
-            ShureDevice::open_path(path)
+        let found = if cli.device.is_none() {
+            device::list_devices()
         } else {
+            Vec::new()
+        };
+        let open_result = if let Some(ref selector) = cli.device {
+            ShureDevice::open_selected(selector)
+        } else if let [only] = found.as_slice() {
+            ShureDevice::open_path(&only.path)
+        } else if found.len() > 1 {
+            let tui = tui.insert(Tui::enter()?);
+            match pick_device(&mut tui.terminal, found)? {
+                Some(device) => Ok(device),
+                None => return Ok(()),
+            }
+        } else {
+            // None found: open() says so, with the access hint.
             ShureDevice::open()
         };
         match open_result {
@@ -229,13 +269,14 @@ fn main() -> Result<()> {
 
     load_initial_state(&mut app, device.as_ref());
 
-    app.presets = presets::load_all_presets();
+    app.presets = presets;
 
     let _meter_stream = if !demo_mode {
         match start_meter(Arc::clone(&app.peak_window)) {
             MeterStatus::Running(s) => Some(s),
             MeterStatus::Failed(e) => {
-                app.set_err(format!("Meter unavailable: {e}"));
+                app.add_status(&format!("Meter unavailable: {e}"), true);
+                app.meter_unavailable = true;
                 None
             }
         }
@@ -243,26 +284,182 @@ fn main() -> Result<()> {
         None
     };
 
-    install_terminal_restore_hook();
-    enable_raw_mode()?;
-    let cleanup = TerminalCleanup;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableClickCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut tui = match tui {
+        Some(tui) => {
+            // Keys pressed while the picker's choice was opened and read were
+            // meant for the picker, not the screen that replaces it; a quit
+            // key among them still quits.
+            let mut quit = false;
+            while event::poll(Duration::ZERO)? {
+                if let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press
+                {
+                    quit |= is_quit_key(key.code, key.modifiers);
+                }
+            }
+            if quit {
+                return Ok(());
+            }
+            tui
+        }
+        None => Tui::enter()?,
+    };
 
     let latest_firmware =
         (!demo_mode && firmware::is_compared(device_model)).then(firmware::spawn_check);
-    let result = run_event_loop(&mut terminal, &mut app, &mut device, latest_firmware);
+    let result = run_event_loop(&mut tui.terminal, &mut app, &mut device, latest_firmware);
 
-    drop(terminal);
-    drop(cleanup);
+    drop(tui);
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
     }
 
     Ok(())
+}
+
+/// The terminal in raw mode on the alternate screen with clicks captured,
+/// put back when dropped.
+struct Tui {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    // Dropped after `terminal`, as the fields are declared.
+    _cleanup: TerminalCleanup,
+}
+
+impl Tui {
+    fn enter() -> Result<Self> {
+        install_terminal_restore_hook();
+        enable_raw_mode()?;
+        let cleanup = TerminalCleanup;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableClickCapture)?;
+        Ok(Self {
+            terminal: Terminal::new(CrosstermBackend::new(stdout))?,
+            _cleanup: cleanup,
+        })
+    }
+}
+
+/// Show the device picker until a device opens, or `None` when the user
+/// quits. Nothing is written: listing reads each device's serial and name,
+/// as `--list` does, and a device that won't open says why and stays listed.
+fn pick_device(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    found: Vec<device::DeviceInfo>,
+) -> Result<Option<ShureDevice>> {
+    let mut picker = picker::Picker::new(Vec::new());
+    scan_into(terminal, &mut picker, found)?;
+    loop {
+        let mut rows = Vec::new();
+        let mut fits = true;
+        terminal.draw(|f| {
+            fits = ui::fits(f.area());
+            rows = ui::draw_picker(f, &picker);
+        })?;
+        let command = match event::read()? {
+            // Below the minimum size only the notice shows, so keys only quit.
+            Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
+                is_quit_key(key.code, key.modifiers).then_some(picker::Command::Quit)
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                picker.handle_key(key.code, key.modifiers)
+            }
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                ..
+            }) => rows
+                .iter()
+                .find(|(_, area)| area.contains(Position::new(column, row)))
+                .and_then(|(index, _)| picker.click(*index)),
+            Event::Key(_)
+            | Event::Mouse(_)
+            | Event::Resize(_, _)
+            | Event::FocusGained
+            | Event::FocusLost
+            | Event::Paste(_) => None,
+        };
+        match command {
+            Some(picker::Command::Open(index)) => {
+                // Stays on screen while the device's settings are read, which
+                // can take a few seconds.
+                let row = &picker.rows[index];
+                // Two of one model are told apart by name or serial.
+                let which = row
+                    .name
+                    .as_deref()
+                    .or(row.serial.as_deref())
+                    .map(|which| format!(" ({which})"))
+                    .unwrap_or_default();
+                picker.set_ok(format!("Opening {}{which}…", row.model.display_name()));
+                terminal.draw(|f| {
+                    ui::draw_picker(f, &picker);
+                })?;
+                match ShureDevice::open_path(&picker.rows[index].path) {
+                    Ok(device) => return Ok(Some(device)),
+                    Err(e) => picker.set_err(one_line(&e)),
+                }
+            }
+            Some(picker::Command::Rescan) => {
+                scan_into(terminal, &mut picker, device::list_devices())?;
+            }
+            Some(picker::Command::Quit) => return Ok(None),
+            None => {}
+        }
+    }
+}
+
+/// Fill `picker` with the devices `found`, saying it is looking while it
+/// opens and reads each one, which takes a timeout per device that doesn't
+/// answer.
+fn scan_into(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    picker: &mut picker::Picker,
+    found: Vec<device::DeviceInfo>,
+) -> Result<()> {
+    picker.set_ok("Looking for Shure devices…");
+    terminal.draw(|f| {
+        ui::draw_picker(f, picker);
+    })?;
+    picker.set_rows(picker_rows(found));
+    Ok(())
+}
+
+/// The devices `found`, labelled with their printed serials and names, each
+/// read by opening the device once, as `--list` does.
+fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
+    found
+        .into_iter()
+        .map(|found| {
+            let usb_serial = (found.serial != device::UNKNOWN_SERIAL).then_some(found.serial);
+            match ShureDevice::open_path(&found.path) {
+                Ok(dev) => picker::PickerRow {
+                    serial: dev.read_factory_serial().or(usb_serial),
+                    name: dev.read_device_name(),
+                    problem: None,
+                    path: found.path,
+                    model: found.model,
+                },
+                Err(e) => picker::PickerRow {
+                    serial: usb_serial,
+                    name: None,
+                    problem: Some(one_line(&e)),
+                    path: found.path,
+                    model: found.model,
+                },
+            }
+        })
+        .collect()
+}
+
+/// An error's lines joined into one, for a status bar.
+fn one_line(e: &anyhow::Error) -> String {
+    e.to_string()
+        .lines()
+        .map(|line| line.trim_end_matches('.'))
+        .collect::<Vec<_>>()
+        .join(". ")
 }
 
 /// Read the device's state into `app` at startup, or say it is demo mode.
@@ -302,70 +499,6 @@ fn install_terminal_restore_hook() {
         drop(TerminalCleanup);
         default_hook(info);
     }));
-}
-
-/// Apply a mute action to the connected device without launching the TUI.
-///
-/// Opens the device (or the specific path if `--device` was given), reads
-/// current state to resolve `Toggle`, then sends a single `set_mute()`.
-/// Prints the resulting state to stdout so the caller can see what happened.
-/// `Status` prints a bare `on`/`off` instead, for status-bar scripts.
-fn cmd_mute(action: MuteAction, device_path: Option<&str>) -> Result<()> {
-    let dev = open_cli_device(device_path)?;
-    let read_muted = || -> Result<bool> {
-        Ok(dev
-            .get_state()
-            .context("Could not read device state")?
-            .state
-            .muted)
-    };
-
-    let muted = match action {
-        MuteAction::On => true,
-        MuteAction::Off => false,
-        MuteAction::Toggle => !read_muted()?,
-        MuteAction::Status => {
-            println!("{}", if read_muted()? { "on" } else { "off" });
-            return Ok(());
-        }
-    };
-
-    dev.set_mute(muted).context("Could not set mute")?;
-    println!("Mute → {}", if muted { "ON" } else { "OFF" });
-    Ok(())
-}
-
-/// Load preset slot `slot_number` (1-based) onto the device without launching the TUI.
-///
-/// Reads the current state first so settings the preset doesn't cover keep
-/// their values, then sends everything the same way the Presets tab does.
-fn cmd_preset(slot_number: usize, device_path: Option<&str>) -> Result<()> {
-    let slot = presets::load_preset(slot_number - 1)?
-        .with_context(|| format!("Preset slot {slot_number} is empty."))?;
-    let dev = open_cli_device(device_path)?;
-    let model = dev.model;
-    let mut state = dev
-        .get_state()
-        .context("Could not read device state")?
-        .state;
-    let write_monitor_mix = apply_preset_to_state(&slot, &mut state, model);
-    let refused = apply_preset_to_device(&Some(dev), &slot, &state, model, write_monitor_mix)
-        .context("Could not load preset")?;
-    println!(
-        "Loaded \"{}\".{}{}",
-        slot.name,
-        refused_note(&refused),
-        unread_note(&slot, &state, model)
-    );
-    Ok(())
-}
-
-fn open_cli_device(device_path: Option<&str>) -> Result<ShureDevice> {
-    match device_path {
-        Some(path) => ShureDevice::open_path(path),
-        None => ShureDevice::open(),
-    }
-    .context("Could not open device")
 }
 
 /// Parse a `--demo` model string into a `DeviceModel`.
@@ -492,7 +625,7 @@ fn run_event_loop(
 /// Event-loop state carried between `step()` calls.
 struct LoopState {
     last_presence_poll: Instant,
-    last_mute_poll: Instant,
+    last_live_poll: Instant,
     seen_back: bool,
     pending_scroll: Option<PendingScroll>,
 }
@@ -509,9 +642,41 @@ struct PendingScroll {
 }
 
 /// Write the pending wheel adjustment, if any.
-fn flush_scroll(app: &mut App, device: &mut Option<ShureDevice>, loop_state: &mut LoopState) {
+fn flush_scroll(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    loop_state: &mut LoopState,
+    now: Instant,
+) {
     if let Some(pending) = loop_state.pending_scroll.take() {
-        apply_action(app, device, pending.action, Some(pending.before));
+        send_from_tui(
+            app,
+            device,
+            pending.action,
+            Some(pending.before),
+            now,
+            loop_state,
+        );
+    }
+}
+
+/// Write an action from a key, click or wheel. The next live poll waits a
+/// second: whether a device applies a write before acking it is unconfirmed,
+/// so a poll straight after could read the old value and show it as changed
+/// on the device, and the next arrow key would step from it.
+fn send_from_tui(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    action: DeviceAction,
+    before: Option<protocol::DeviceState>,
+    now: Instant,
+    loop_state: &mut LoopState,
+) {
+    let mute = matches!(action, DeviceAction::SetMute(_));
+    loop_state.last_live_poll = now;
+    apply_action(app, device, action, before);
+    if mute {
+        note_unread(app);
     }
 }
 
@@ -519,7 +684,7 @@ impl LoopState {
     fn new(now: Instant) -> Self {
         Self {
             last_presence_poll: now,
-            last_mute_poll: now,
+            last_live_poll: now,
             seen_back: false,
             pending_scroll: None,
         }
@@ -532,7 +697,8 @@ impl LoopState {
 /// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
 /// below the minimum size only the notice is on screen, so keys only quit and
 /// mouse events are dropped. The mute state is read every
-/// `MUTE_POLL_INTERVAL`. `now` is passed in so the `--qa` harness can run the
+/// `MUTE_POLL_INTERVAL`, and a running gain check takes the meter's peak.
+/// `now` is passed in so the `--qa` harness can run the
 /// same code on a fake clock.
 fn step(
     app: &mut App,
@@ -579,7 +745,7 @@ fn step(
             (Some(pending), Some(Some(mouse::Target::Control(focus)))) if pending.focus == focus
         );
         if can_act && !same_control {
-            flush_scroll(app, device, loop_state);
+            flush_scroll(app, device, loop_state, now);
         }
         let before = can_act.then(|| app.device_state.clone());
         let action = match event {
@@ -616,42 +782,38 @@ fn step(
                     before,
                 });
             }
-            Some(action) => {
-                // Whether a device applies a mute before acking it is
-                // unconfirmed, so a poll straight after could read the old
-                // state and show it as changed on the device.
-                if matches!(action, DeviceAction::SetMute(_)) {
-                    loop_state.last_mute_poll = now;
-                }
-                apply_action(app, device, action, before);
-            }
+            Some(action) => send_from_tui(app, device, action, before, now, loop_state),
             None => {}
         }
     }
 
     let poll_due = now.duration_since(loop_state.last_presence_poll) >= PRESENCE_POLL_INTERVAL;
-    let mute_poll_due = now.duration_since(loop_state.last_mute_poll) >= MUTE_POLL_INTERVAL;
+    let live_poll_due = || now.duration_since(loop_state.last_live_poll) >= LIVE_POLL_INTERVAL;
     // A pending wheel write goes out before a poll, so if it fails, putting
-    // back its `before` state can't undo a mute change the poll just read.
+    // back its `before` state can't undo a change the poll just read.
     if loop_state.pending_scroll.as_ref().is_some_and(|pending| {
         !queued
             || app.should_quit
             || poll_due
-            || mute_poll_due
+            || live_poll_due()
             || now.duration_since(pending.started) >= SCROLL_FLUSH_INTERVAL
     }) {
-        flush_scroll(app, device, loop_state);
+        flush_scroll(app, device, loop_state, now);
     }
 
-    if mute_poll_due {
-        loop_state.last_mute_poll = now;
-        poll_mute(app, device);
+    // Asked again: the flush above pushes the live poll back.
+    if now.duration_since(loop_state.last_live_poll) >= LIVE_POLL_INTERVAL {
+        loop_state.last_live_poll = now;
+        poll_live(app, device);
     }
 
     if poll_due {
         loop_state.last_presence_poll = now;
         poll_presence(app, device, &mut loop_state.seen_back);
     }
+
+    // After the polls, so a check stops on the gain or mode they just read.
+    app.sample_gain_check(now);
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {
@@ -832,6 +994,14 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
         }
         KeyCode::Char('f') if app.can_flatten_eq() => Some(DeviceAction::FlattenEq),
+        KeyCode::Char('g') if app.active_tab == app::Tab::Main => {
+            app.toggle_gain_check();
+            None
+        }
+        KeyCode::Esc if app.active_tab == app::Tab::Main => {
+            app.close_gain_check();
+            None
+        }
         KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetActions(i) = app.focus {
                 if app.presets[i].is_some() {
@@ -869,16 +1039,24 @@ fn apply_action(
         app.report_unavailable_mute_button();
         return;
     }
+    if matches!(action, DeviceAction::SetLimiter(_)) && app.device_state.limiter_enabled.is_none() {
+        app.report_unavailable_limiter();
+        return;
+    }
+    if matches!(action, DeviceAction::SetMv7PlaybackMix(_)) && app.playback_unread() {
+        app.report_unavailable_playback();
+        return;
+    }
     let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
         DeviceAction::Reconnect => reconnect(app, device),
         DeviceAction::SetGain(gain_tenths) => {
-            app.set_ok(format!("Gain → {}", format_gain(*gain_tenths)));
+            app.set_ok(gain_line(*gain_tenths));
             send_if_connected(device, |d| d.set_gain(*gain_tenths))
         }
         DeviceAction::SetMode(mode) => {
-            app.set_ok(format!("Mode → {}", mode));
+            app.set_ok(mode_line(*mode));
             let state = &app.device_state;
             send_if_connected(device, |d| {
                 d.set_mode(
@@ -913,7 +1091,7 @@ fn apply_action(
             send_if_connected(device, |d| d.set_auto_gain(gain))
         }
         DeviceAction::SetMute(m) => {
-            app.set_ok(format!("Mute → {}", if *m { "ON" } else { "OFF" }));
+            app.set_ok(mute_line(*m));
             send_if_connected(device, |d| d.set_mute(*m))
         }
         DeviceAction::SetPhantom(p) => {
@@ -1032,15 +1210,11 @@ fn apply_action(
             send_if_connected(device, |d| d.set_mv6_gain_lock(*locked))
         }
         DeviceAction::SetMonitorMix(m) => {
-            app.set_ok(if app.device_model.has_playback_mix() {
-                format!("Mic Level → {m}%")
-            } else {
-                format!("Monitor Mix → {m}%")
-            });
+            app.set_ok(monitor_mix_line(app.device_model, *m));
             send_if_connected(device, |d| d.set_monitor_mix(*m))
         }
         DeviceAction::SetMv7PlaybackMix(m) => {
-            app.set_ok(format!("Playback Level → {m}%"));
+            app.set_ok(playback_mix_line(*m));
             send_if_connected(device, |d| d.set_mv7_playback_mix(*m))
         }
         // ── MV7+ exclusive actions ────────────────────────────────────────────
@@ -1151,7 +1325,19 @@ fn apply_action(
             }
         }
         DeviceAction::LoadPreset(i) => {
-            if let Some(slot) = &app.presets[*i].clone() {
+            if let Some(saved) = &app.presets[*i] {
+                // An unread Playback Level (MV6) stays unread: a preset's
+                // 0 means "not saved", so neither the screen nor the device
+                // gets it. Cloned so the stored preset keeps its value.
+                let playback_skipped = app.playback_unread() && saved.playback_mix > 0;
+                let slot = &PresetSlot {
+                    playback_mix: if app.playback_unread() {
+                        0
+                    } else {
+                        saved.playback_mix
+                    },
+                    ..saved.clone()
+                };
                 let write_monitor_mix =
                     apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 apply_preset_to_device(
@@ -1163,10 +1349,15 @@ fn apply_action(
                 )
                 .and_then(|refused| {
                     let message = format!(
-                        "Loaded \"{}\".{}{}",
+                        "Loaded \"{}\".{}{}{}",
                         slot.name,
                         refused_note(&refused),
-                        unread_note(slot, &app.device_state, app.device_model)
+                        unread_note(slot, &app.device_state, app.device_model),
+                        if playback_skipped {
+                            app::not_loaded("Playback Level")
+                        } else {
+                            String::new()
+                        }
                     );
                     if refused.is_empty() {
                         app.set_ok(message);
@@ -1235,7 +1426,9 @@ enum ActionKind {
     PresetFile,
     /// Saves the shown state as a preset.
     SavePreset,
-    /// One write whose value doesn't come from the shown state.
+    /// One write that can't jump a level from stale state: its value doesn't
+    /// come from the shown state, or it is mute, an on/off that the screen
+    /// shows once written. Mute must work even when a readback failed.
     FixedWrite,
     /// One write built on the shown state.
     Write,
@@ -1250,14 +1443,15 @@ fn action_kind(action: &DeviceAction) -> ActionKind {
             ActionKind::PresetFile
         }
         DeviceAction::SavePreset(_) => ActionKind::SavePreset,
-        DeviceAction::RenameDevice(_) | DeviceAction::FactoryReset => ActionKind::FixedWrite,
+        DeviceAction::RenameDevice(_) | DeviceAction::FactoryReset | DeviceAction::SetMute(_) => {
+            ActionKind::FixedWrite
+        }
         DeviceAction::LoadPreset(_) | DeviceAction::FlattenEq => ActionKind::Writes,
         DeviceAction::SetGain(_)
         | DeviceAction::SetMode(_)
         | DeviceAction::SetAutoPosition(_)
         | DeviceAction::SetAutoTone(_)
         | DeviceAction::SetAutoGain(_)
-        | DeviceAction::SetMute(_)
         | DeviceAction::SetPhantom(_)
         | DeviceAction::SetLock(_)
         | DeviceAction::SetLimiter(_)
@@ -1343,6 +1537,13 @@ fn recover_from_failure(
             Some(read)
         }
     };
+    // A mute nothing could read back may or may not have landed. Show it as
+    // off: Muted over a live mic is the worse mistake, and the live poll
+    // shows the real state once the device answers.
+    let mute_unknown = matches!(action, DeviceAction::SetMute(_)) && read_back == Some(false);
+    if mute_unknown {
+        app.device_state.muted = false;
+    }
     if gone {
         app.device_connected = false;
     }
@@ -1350,7 +1551,10 @@ fn recover_from_failure(
         format!("Device error: {e} — {RECONNECT_HINT}")
     } else {
         match read_back {
-            Some(true) => format!("Device error: {e}. Settings read back from the device."),
+            Some(true) => format!("Device error: {e}. {READ_BACK_NOTE}"),
+            Some(false) if mute_unknown => {
+                format!("Device error: {e}. {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}")
+            }
             Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
             None => format!("Device error: {e}"),
         }
@@ -1438,6 +1642,12 @@ const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Status-bar wording for a lost device, shared by the poll and failed commands.
 const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in.";
 
+/// Status-bar note after a failed write whose device was then read again.
+const READ_BACK_NOTE: &str = "Settings read back from the device.";
+
+/// Status-bar note for a mute nothing could read back (`recover_from_failure()`).
+const MUTE_UNKNOWN_NOTE: &str = "Mute state unknown, shown as OFF.";
+
 /// What one presence poll does.
 #[derive(Debug, PartialEq)]
 enum PollStep {
@@ -1490,32 +1700,139 @@ fn mark_disconnected(app: &mut App, model: DeviceModel) {
     ));
 }
 
-/// How often the event loop reads the mic's mute state.
-const MUTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the event loop reads what a script can change (`poll_live()`).
+const LIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Read the mic's mute state and show it, so a press of its mute button (or
-/// another app muting it) shows without `r`. Nothing changes when the device
-/// gives no usable answer; the next poll asks again. A HID failure marks the
-/// device disconnected, as the presence poll does. Skipped in demo mode, while
-/// disconnected, and while the state is unread, where `r` is the way back.
-fn poll_mute(app: &mut App, device: &Option<ShureDevice>) {
+/// Read mute, mode, gain and the monitor levels (`read_live()`) and show any
+/// change, so one made elsewhere shows without `r`: the mic's own mute
+/// button, `shurectl --gain` from a Stream Deck, or MOTIV. Otherwise the next
+/// arrow key would step from a stale value and jump the level. A value the
+/// device gives no usable answer for stays as shown; the next poll asks again.
+/// A mode change re-reads everything, since it changes which controls apply
+/// (and on the MV7 resets EQ and compressor). A HID failure marks the device
+/// disconnected, as the presence poll does. Skipped in demo mode and while
+/// disconnected; it runs while the settings are unread too, since mute can be
+/// written then and the screen should show the mic's real state.
+fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     let Some(dev) = device.as_ref() else {
         return; // demo mode
     };
-    if !app.device_connected || app.state_unread {
+    if !app.device_connected {
         return;
     }
-    match dev.read_mute() {
-        Ok(Some(muted)) if muted != app.device_state.muted => {
-            app.device_state.muted = muted;
-            app.set_ok(format!(
-                "Mute → {} (changed on the device)",
-                if muted { "ON" } else { "OFF" }
+    // While the settings are unread only mute is read: the rest would read as
+    // changes from defaults, and a GET the readback found unanswered would
+    // cost every poll a timeout.
+    let announce = !app.state_unread;
+    let read = if announce {
+        dev.read_live()
+    } else {
+        dev.read_mute().map(|muted| Live {
+            muted,
+            ..Live::default()
+        })
+    };
+    let live = match read {
+        Ok(live) => live,
+        Err(e) if is_disconnect(&e) => return mark_disconnected(app, dev.model),
+        // Anything else leaves the values unknown for now, not changed.
+        Err(_) => return,
+    };
+    let state = &mut app.device_state;
+    let mut changed = Vec::new();
+    if let Some(muted) = live.muted.filter(|muted| *muted != state.muted) {
+        state.muted = muted;
+        changed.push(mute_line(muted));
+    }
+    let mode_before = state.mode;
+    if let Some(mode) = live.mode.filter(|mode| *mode != state.mode) {
+        state.mode = mode;
+        changed.extend(announce.then(|| mode_line(mode)));
+    }
+    if let Some(gain) = live.gain_tenths.filter(|gain| *gain != state.gain_tenths) {
+        state.gain_tenths = gain;
+        // In Auto Level the device sets its own gain, which some models may
+        // report as it moves: kept, but not announced. The MVX2U Gen 2
+        // reports its Manual gain instead (tested 2026-10-28); other models
+        // are unconfirmed.
+        let manual = state.mode == InputMode::Manual;
+        changed.extend((announce && manual).then(|| gain_line(gain)));
+    }
+    // The MV7 stores 1% and 2% as 0%: reading 0% after setting them is no change.
+    let shown_mix = match app.device_model {
+        DeviceModel::Mv7 => protocol::mv7_text::monitor_mix_as_stored(state.monitor_mix),
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7Plus => state.monitor_mix,
+    };
+    if let Some(mix) = live.monitor_mix.filter(|mix| *mix != shown_mix) {
+        state.monitor_mix = mix;
+        changed.extend(announce.then(|| monitor_mix_line(app.device_model, mix)));
+    }
+    if let Some(mix) = live.playback_mix.filter(|mix| *mix != state.playback_mix) {
+        state.playback_mix = mix;
+        changed.extend(announce.then(|| playback_mix_line(mix)));
+    }
+    if announce && app.device_state.mode != mode_before {
+        // A mode changed elsewhere changes which controls apply (and on the
+        // MV7 resets EQ and compressor): read everything again.
+        if let Err(e) = reload_state(app, dev) {
+            if is_disconnect(&e) {
+                return mark_disconnected(app, dev.model);
+            }
+            // The other values came from before the failed readback, so only
+            // the mode, which caused it, is announced.
+            app.state_unread = true;
+            app.settle_focus(mode_before);
+            app.set_err(format!(
+                "{} (changed on the device). {e}. {STATE_UNREAD_HINT}",
+                mode_line(app.device_state.mode)
             ));
+            return;
         }
-        Err(e) if is_disconnect(&e) => mark_disconnected(app, dev.model),
-        // Anything else leaves the mute state unknown for now, not changed.
-        Ok(Some(_) | None) | Err(_) => {}
+    }
+    app.settle_focus(mode_before);
+    if changed.is_empty() {
+        return;
+    }
+    app.set_ok(format!("{} (changed on the device)", changed.join(", ")));
+    note_unread(app);
+}
+
+fn mute_line(muted: bool) -> String {
+    format!("Mute → {}", if muted { "ON" } else { "OFF" })
+}
+
+fn mode_line(mode: InputMode) -> String {
+    format!("Mode → {mode}")
+}
+
+fn gain_line(gain_tenths: u16) -> String {
+    format!("Gain → {}", format_gain(gain_tenths))
+}
+
+/// Monitor Mix is one balance on the MVX2U Gen 1 and MV7, the Mic Level elsewhere.
+fn monitor_mix_line(model: DeviceModel, mix: u8) -> String {
+    if model.has_playback_mix() {
+        format!("Mic Level → {mix}%")
+    } else {
+        format!("Monitor Mix → {mix}%")
+    }
+}
+
+fn playback_mix_line(mix: u8) -> String {
+    format!("Playback Level → {mix}%")
+}
+
+/// While the settings are unread, keep saying so after a mute, which still
+/// goes through then: the rest of the screen isn't the device's. The TUI's
+/// status bar only; the CLI prints the plain line.
+fn note_unread(app: &mut App) {
+    if app.state_unread && !app.status_is_error {
+        let done = app.status_message.trim_end_matches('.').to_string();
+        app.set_err(format!("{done}. {STATE_UNREAD_HINT}"));
     }
 }
 
@@ -1538,6 +1855,7 @@ fn skipped_note(skipped: &[String]) -> String {
 fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     let readback = dev.get_state()?;
     app.device_state = readback.state;
+    app.unread_gets = readback.skipped_gets;
     app.state_unread = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
@@ -1588,19 +1906,23 @@ fn refused_note(refused: &[String]) -> String {
     }
 }
 
-/// Status suffix for a saved Mute Button the load left alone because the
-/// device's couldn't be read (`PresetSlot::apply_to_device_state()`).
+/// Status suffix for a saved Mute Button or Limiter the load left alone
+/// because the device's couldn't be read (`PresetSlot::apply_to_device_state()`).
 fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceModel) -> String {
-    if !model.has_mute_button()
-        || slot.mute_btn_disabled.is_none()
-        || state.mute_btn_disabled.is_some()
+    let mut note = String::new();
+    if model.has_mute_button()
+        && slot.mute_btn_disabled.is_some()
+        && state.mute_btn_disabled.is_none()
     {
-        return String::new();
+        note.push_str(&match state.mute_button_needs_firmware(model) {
+            Some(firmware) => format!(" Mute Button not loaded: it needs firmware {firmware}+."),
+            None => app::not_loaded("Mute Button"),
+        });
     }
-    match state.mute_button_needs_firmware(model) {
-        Some(firmware) => format!(" Mute Button not loaded: it needs firmware {firmware}+."),
-        None => " Mute Button not loaded: its state could not be read.".into(),
+    if slot.limiter_enabled.is_some() && state.limiter_enabled.is_none() {
+        note.push_str(&app::not_loaded("Limiter"));
     }
+    note
 }
 
 /// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
@@ -1823,8 +2145,8 @@ fn write_limiter_and_compressor(
     slot: &PresetSlot,
     state: &protocol::DeviceState,
 ) -> Result<()> {
-    if slot.limiter_enabled.is_some() {
-        d.set_limiter(state.limiter_enabled)?;
+    if let (Some(_), Some(enabled)) = (slot.limiter_enabled, state.limiter_enabled) {
+        d.set_limiter(enabled)?;
     }
     if slot.compressor.is_some() {
         d.set_compressor(&state.compressor)?;
@@ -2023,10 +2345,107 @@ mod tests {
         );
     }
 
+    /// The live poll only announces a change it can tell is one: while the
+    /// settings are unread it reads mute alone, since the screen holds
+    /// defaults, and in Auto Level the device moves its own gain (kept, not
+    /// announced).
+    #[test]
+    fn the_live_poll_keeps_quiet_where_a_change_isnt_one() {
+        let poll_after = |app_state: DeviceState, unread: bool| {
+            let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
+            let device = Some(fake.open());
+            let mut app = App {
+                device_model: DeviceModel::Mv6Gen2,
+                device_state: app_state,
+                state_unread: unread,
+                ..App::default()
+            };
+            app.set_ok("before");
+            poll_live(&mut app, &device);
+            app
+        };
+        let seeded = fake_hid::FakeDevice::seed_state(DeviceModel::Mv6Gen2);
+
+        // Unread: only mute is read, so the default 36 dB on screen isn't
+        // announced as a change on the device.
+        let app = poll_after(DeviceState::default(), true);
+        assert_eq!(app.device_state.gain_tenths, 360);
+        assert!(
+            !app.status_message.contains("Gain"),
+            "{}",
+            app.status_message
+        );
+
+        // Auto Level: a gain moving is the device's own.
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            gain_tenths: 100,
+            ..seeded.clone()
+        };
+        let fake = FakeDevice::with_state(DeviceModel::Mv6Gen2, auto.clone());
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            device_state: DeviceState {
+                gain_tenths: 300,
+                ..auto
+            },
+            ..App::default()
+        };
+        app.set_ok("before");
+        poll_live(&mut app, &Some(fake.open()));
+        assert_eq!(app.device_state.gain_tenths, 100);
+        assert_eq!(app.status_message, "before");
+
+        // Read and in Manual, it is announced.
+        let app = poll_after(
+            DeviceState {
+                gain_tenths: 300,
+                ..seeded
+            },
+            false,
+        );
+        assert!(
+            app.status_message.starts_with("Gain → 24"),
+            "{}",
+            app.status_message
+        );
+    }
+
+    /// A mode changed elsewhere whose re-read fails says so once, with only
+    /// the mode: the other values were read before the failed readback.
+    #[test]
+    fn a_failed_reread_after_a_mode_change_announces_only_the_mode() {
+        let seeded = fake_hid::FakeDevice::seed_state(DeviceModel::Mv6Gen2);
+        let fake = FakeDevice::with_state(
+            DeviceModel::Mv6Gen2,
+            DeviceState {
+                mode: InputMode::Auto,
+                gain_tenths: 300,
+                ..seeded.clone()
+            },
+        );
+        fake.faults_mut(|faults| faults.refused_get = Some("HPF".into()));
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            device_state: seeded,
+            ..App::default()
+        };
+        poll_live(&mut app, &Some(fake.open()));
+        assert!(app.state_unread);
+        assert!(app.status_is_error);
+        let status = &app.status_message;
+        assert!(
+            status.starts_with("Mode → Auto Level (changed on the device). Couldn't read"),
+            "{status}"
+        );
+        assert!(!status.contains("Gain →"), "{status}");
+        assert_eq!(status.matches(STATE_UNREAD_HINT).count(), 1, "{status}");
+    }
+
     /// Finding of the 09e9569 review: a wheel adjustment still pending when the
     /// next key changed the screen took that key's change in with it.
     #[test]
-    fn a_mute_key_pushes_the_next_mute_poll_back() {
+    fn a_write_pushes_the_next_live_poll_back() {
         let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
         let mut device = Some(fake.open());
         let mut app = App {
@@ -2233,6 +2652,127 @@ mod tests {
             .state;
         assert_eq!(state.mute_btn_disabled, Some(false));
         assert_eq!(unread_note(&slot, &state, model), "");
+    }
+
+    /// An unread Playback Level (the MV6's optional read, #99) holds a
+    /// default: the TUI must not step from it, write it or load it.
+    #[test]
+    fn unread_playback_level_is_never_stepped_or_loaded() {
+        let model = DeviceModel::Mv6;
+        let fake = FakeDevice::new(model);
+        fake.faults_mut(|faults| faults.refused_get = Some("PLAYBACK_LEVEL".into()));
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: model,
+            device_connected: true,
+            focus: app::Focus::PlaybackMix,
+            ..App::default()
+        };
+        reload_state(&mut app, device.as_ref().expect("device")).expect("the rest reads");
+        assert!(app.playback_unread());
+        let shown = app.device_state.playback_mix;
+
+        let start = fake.log_len();
+        assert!(app.adjust_focused(1).is_none());
+        assert_eq!(app.device_state.playback_mix, shown);
+        assert_eq!(
+            app.status_message,
+            "Playback Level unavailable: its state could not be read"
+        );
+        apply_action(
+            &mut app,
+            &mut device,
+            DeviceAction::SetMv7PlaybackMix(40),
+            None,
+        );
+        let writes_playback = |packets: &[fake_hid::Packet]| {
+            packets.iter().any(|packet| {
+                matches!(&packet.kind, fake_hid::PacketKind::Set { feature, .. }
+                    if feature == "PLAYBACK_LEVEL")
+            })
+        };
+        assert!(fake.log_since(start).is_empty());
+
+        let slot = PresetSlot {
+            playback_mix: 60,
+            ..PresetSlot::from_device_state("Saved", &app.device_state, model)
+        };
+        app.presets[0] = Some(slot);
+        apply_action(&mut app, &mut device, DeviceAction::LoadPreset(0), None);
+        assert!(!writes_playback(&fake.log_since(start)));
+        assert_eq!(app.device_state.playback_mix, shown);
+        assert!(
+            app.status_message
+                .ends_with(" Playback Level not loaded: its state could not be read."),
+            "{}",
+            app.status_message
+        );
+        // The stored preset keeps its value for a device that answers.
+        assert_eq!(
+            app.presets[0].as_ref().map(|slot| slot.playback_mix),
+            Some(60)
+        );
+    }
+
+    /// The MV7's Limiter block is unconfirmed on hardware: a mic that doesn't
+    /// answer it still reads back, and the Limiter alone stays unknown.
+    #[test]
+    fn unread_mv7_limiter_is_never_saved_loaded_or_written() {
+        let model = DeviceModel::Mv7;
+        let unanswered = DeviceState {
+            limiter_enabled: None,
+            ..FakeDevice::seed_state(model)
+        };
+        let fake = FakeDevice::with_state(model, unanswered);
+        let mut device = Some(fake.open());
+        let readback = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback");
+        assert_eq!(readback.state.limiter_enabled, None);
+        assert_eq!(readback.state.gain_tenths, 240);
+        assert_eq!(readback.skipped.len(), 1);
+        assert!(readback.skipped[0].contains("getBlock 1F"));
+
+        let saved = PresetSlot::from_device_state("Unknown limiter", &readback.state, model);
+        assert_eq!(saved.limiter_enabled, None);
+        let mut app = App {
+            device_model: model,
+            device_state: readback.state,
+            focus: app::Focus::Limiter,
+            ..App::default()
+        };
+        let start = fake.log_len();
+        assert!(app.toggle_focused().is_none());
+        assert_eq!(
+            app.status_message,
+            "Limiter unavailable: its state could not be read"
+        );
+        apply_action(&mut app, &mut device, DeviceAction::SetLimiter(true), None);
+        assert!(fake.log_since(start).is_empty());
+
+        let slot = PresetSlot {
+            limiter_enabled: Some(true),
+            ..saved
+        };
+        let write_monitor_mix = apply_preset_to_state(&slot, &mut app.device_state, model);
+        assert_eq!(app.device_state.limiter_enabled, None);
+        assert_eq!(
+            unread_note(&slot, &app.device_state, model),
+            " Limiter not loaded: its state could not be read."
+        );
+        apply_preset_to_device(&device, &slot, &app.device_state, model, write_monitor_mix)
+            .expect("load other settings");
+        assert!(!fake.log_since(start).iter().any(|packet| {
+            matches!(&packet.kind, fake_hid::PacketKind::Text { line, .. }
+                if line.starts_with("setBlock 1F"))
+        }));
+
+        // A mic that answers reads back and loads the Limiter like any setting.
+        let fake = FakeDevice::new(model);
+        let state = load_on_fake(&fake, &slot, DeviceState::default());
+        assert_eq!(state.limiter_enabled, Some(true));
     }
 
     #[test]
@@ -2622,7 +3162,7 @@ mod tests {
             phantom_power: true,
             monitor_mix: 40,
             playback_mix: 60,
-            limiter_enabled: true,
+            limiter_enabled: Some(true),
             compressor: CompressorPreset::Medium,
             hpf: HpfFrequency::Hz75,
             eq_enabled: true,
