@@ -62,7 +62,7 @@ macOS and Windows need no setup.
 ## Usage
 
 ```bash
-shurectl                  # Connect to the first detected device
+shurectl                  # Open the TUI; with several devices connected, pick one first
 shurectl --list           # List detected Shure devices
 shurectl --device <path>  # Connect to a specific device from --list, by path or serial
 shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7, mv7plus
@@ -81,6 +81,7 @@ shurectl --gain +1        # Change gain, mode or a monitor level, or print JSON 
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
 | `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 in Manual, and MV6 Gen 2 in Advanced tone |
+| `g` | Gain check (Main tab, Manual mode), as `Enter` on the Level meter does; `Esc` closes it |
 | `r` | Refresh state from device (reconnects right away if it was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |
@@ -215,7 +216,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Factory Reset (Info tab) | — | ✓ | — | ✓ | — | ✓ |
 | Firmware update check (Info tab) | — | ✓ | ✓ | ✓ | — | ✓ |
 
-Every model also has the level meter, presets, an Info tab (serial number, device name,
+Every model also has the level meter, the gain check, presets, an Info tab (serial number, device name,
 firmware version), `--demo`, and the command-line options under [Scripting](#scripting)
 (`--playback-mix` where the model has a Playback Level).
 
@@ -225,6 +226,10 @@ firmware version), `--demo`, and the command-line options under [Scripting](#scr
   MV6 Gen 2 and MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
 - The level meter reads your system's default input, so set the Shure as the default input
   (at 100% input volume) for it to match the device.
+- Gain check: in Manual mode, select the Level meter on the Main tab and press `Enter`, then
+  speak normally for 10 seconds. The Summary makes way for the result: your loudest peak and
+  a gain to try, aiming for peaks around -12 dBFS. Set the gain with `←`/`→`, then check
+  again. It listens through the level meter, so it needs the Shure as your default input.
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.

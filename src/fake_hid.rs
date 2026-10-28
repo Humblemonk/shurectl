@@ -1107,6 +1107,23 @@ mod tests {
         }
     }
 
+    /// The device picker labels each device with these two reads.
+    #[test]
+    fn the_picker_reads_the_serial_and_name() {
+        for model in MODELS {
+            let dev = FakeDevice::new(model).open();
+            assert_eq!(
+                dev.read_factory_serial().as_deref(),
+                Some("FAKE0001"),
+                "{model:?}"
+            );
+            let name = model
+                .has_device_rename()
+                .then(|| format!("Fake {}", model.display_name()));
+            assert_eq!(dev.read_device_name(), name, "{model:?}");
+        }
+    }
+
     #[test]
     fn a_late_mute_reply_doesnt_shift_the_readback() {
         // The MV7's text shell matches replies by name and drains per command.

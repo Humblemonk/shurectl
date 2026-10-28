@@ -9,9 +9,23 @@ Releases that need you to do something after upgrading have an **Upgrading** not
 ## 2.15.0 — 2026-10-24
 
 Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the
-device's state as JSON.
+device's state as JSON. A gain check helps set your gain, and with several devices connected
+you pick which one to open.
 
 ### Added
+
+- Gain check: in Manual mode, select the Level meter on the Main tab (it comes after Gain)
+  and press `Enter`, or press `g`, then speak normally for 10 seconds. The Summary makes way
+  for a Gain check card: a countdown, then your loudest peak and a gain to try, aiming for
+  peaks around -12 dBFS, or that the gain looks right. It changes nothing itself: set the
+  gain with the arrow keys while the card shows it beside the suggestion, then check again.
+  `Esc` closes it. It listens through the level meter, so the Shure needs to be your
+  system's default input. It assumes a gain change moves your peaks by the same number of
+  dB, which is unconfirmed on hardware, and the compressor and limiter change that.
+- With more than one device connected, shurectl asks which one to open, showing each one's
+  model, device name and serial, instead of starting in demo mode. Use `↑`/`↓` and `Enter`,
+  or click a device twice. A device that can't be opened (MOTIV holding it, say) shows why.
+  `--device` with the serial it shows skips the question.
 
 - `--json` prints the device's state as one line of JSON: its model, mute, firmware, serial
   and device name, and its settings with the names and values a preset file uses (EQ gains

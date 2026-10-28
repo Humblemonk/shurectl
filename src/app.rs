@@ -6,6 +6,7 @@ use std::time::Instant;
 use crossterm::event::KeyCode;
 
 use crate::firmware::LatestFirmware;
+use crate::gain_check::{GainCheck, Listening};
 use crate::meter::PeakWindow;
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
@@ -113,6 +114,8 @@ pub enum Focus {
     MuteBtnDisable,
     // Main tab — Gain Lock (`has_gain_lock()`, Manual mode only)
     GainLock,
+    // Main tab — the Level meter, which starts a gain check (Manual mode only)
+    GainCheck,
     // Main tab — Playback Level, the second row of Monitor Mix (`has_playback_mix()`)
     PlaybackMix,
     // Main tab — MV6 Gen 2 built-in preset (Speech / Singing / Instrument)
@@ -202,6 +205,8 @@ pub struct App {
     /// The newest firmware Shure lists for each model, once the background
     /// lookup answers. `None` before then, in demo mode, and if it failed.
     pub latest_firmware: Option<LatestFirmware>,
+    /// The gain check, while it listens and then its result until closed.
+    pub gain_check: Option<GainCheck>,
 }
 
 impl Default for App {
@@ -230,6 +235,7 @@ impl Default for App {
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
             meter_clock: None,
             latest_firmware: None,
+            gain_check: None,
         }
     }
 }
@@ -351,6 +357,84 @@ impl App {
     /// screen.
     pub fn can_flatten_eq(&self) -> bool {
         self.active_tab == Tab::Eq && self.eq_bands_shown()
+    }
+
+    /// The running gain check, if one is listening.
+    pub fn gain_check_listening(&self) -> Option<&Listening> {
+        match &self.gain_check {
+            Some(GainCheck::Listening(listening)) => Some(listening),
+            Some(GainCheck::Done(_)) | None => None,
+        }
+    }
+
+    /// The Level meter's Enter, a second click on it, or `g` on the Main tab:
+    /// cancel the running gain check, or start one where it can suggest a
+    /// gain, saying why not elsewhere. Starting one replaces a shown result.
+    pub fn toggle_gain_check(&mut self) {
+        if self.gain_check_listening().is_some() {
+            self.gain_check = None;
+            self.set_ok("Gain check cancelled.");
+        } else if self.demo_mode {
+            self.set_err("Gain check needs a device: demo mode has no level meter.");
+        } else if self.device_state.mode != InputMode::Manual {
+            self.set_err(GAIN_CHECK_AUTO);
+        } else if !self.device_connected {
+            self.set_err("Gain check needs the device connected.");
+        } else if self.state_unread {
+            self.set_err(STATE_UNREAD_HINT);
+        } else {
+            self.gain_check = Some(GainCheck::Listening(Listening::new(
+                self.device_state.gain_tenths,
+            )));
+        }
+    }
+
+    /// Esc on the Main tab: cancel the running gain check, or close its result.
+    pub fn close_gain_check(&mut self) {
+        if let Some(GainCheck::Listening(_)) = self.gain_check.take() {
+            self.set_ok("Gain check cancelled.");
+        }
+    }
+
+    /// Feed the running gain check the meter's peak at `now`, and keep its
+    /// result once it is done. A check stops when its result could no longer
+    /// apply: the device gone or unread (their own status says so), or out of
+    /// Manual mode, which also closes a result. A gain change while it listens
+    /// starts it over, since the loudest peak would otherwise mix two gains.
+    pub fn sample_gain_check(&mut self, now: Instant) {
+        if self.gain_check.is_none() {
+            return;
+        }
+        if self.device_state.mode != InputMode::Manual {
+            if self.gain_check_listening().is_some() {
+                self.set_ok("Gain check stopped: the device left Manual mode.");
+            }
+            self.gain_check = None;
+            return;
+        }
+        let Some(listening) = self.gain_check_listening() else {
+            return;
+        };
+        if !self.device_connected || self.state_unread {
+            self.gain_check = None;
+            return;
+        }
+        if listening.gain_tenths != self.device_state.gain_tenths {
+            self.gain_check = Some(GainCheck::Listening(Listening::new(
+                self.device_state.gain_tenths,
+            )));
+        }
+        let peak = self
+            .peak_window
+            .try_lock()
+            .ok()
+            .and_then(|window| window.short.max(now));
+        let model = self.device_model;
+        if let Some(GainCheck::Listening(listening)) = &mut self.gain_check
+            && let Some(outcome) = listening.sample(now, peak, model)
+        {
+            self.gain_check = Some(GainCheck::Done(outcome));
+        }
     }
 
     /// Returns true when Gain Lock is on and the model has one. A lock flag from
@@ -482,12 +566,16 @@ impl App {
 
     // ── Focus cycling within a tab ────────────────────────────────────────────
     //
+    // GainCheck is the Level meter, which sits after Gain (and Gain Lock) on
+    // every model and starts a gain check.
+    //
     // MVX2U Gen 1 Main cycles:
-    //   Manual: Mode → Mute → Gain → MonitorMix → Phantom → Lock → (wrap)
+    //   Manual: Mode → Mute → Gain → GainCheck → MonitorMix → Phantom → Lock → (wrap)
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → AutoGain → MonitorMix → Phantom → Lock → (wrap)
     //
     // MVX2U Gen 2 Main cycles:
-    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → Phantom → (wrap)
+    //   Manual: Mode → Mute → Gain → GainLock → GainCheck → MonitorMix → PlaybackMix → Phantom
+    //           → (wrap)
     //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → Phantom → (wrap)
     //
     // MVX2U Gen 2 EQ cycles:
@@ -500,7 +588,7 @@ impl App {
     //   (A mode change while on Limiter/Compressor is fixed up by settle_focus().)
     //
     // MV6 Main cycles (Playback Level unconfirmed on hardware, see has_playback_mix):
-    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → (wrap)
+    //   Manual: Mode → Mute → Gain → GainLock → GainCheck → MonitorMix → PlaybackMix → (wrap)
     //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → (wrap)
     //
     // MV6 EQ:      Tone (slider only, no bands)
@@ -508,18 +596,19 @@ impl App {
     //
     // MV6 Gen 2: as MV6, plus Mic Preset last (a device extra), and in Auto its
     // Auto Level controls (Gen 1 order):
-    //   Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → MicPreset → (wrap)
+    //   Manual: Mode → Mute → Gain → GainLock → GainCheck → MonitorMix → PlaybackMix
+    //           → MicPreset → (wrap)
     //   Auto:   Mode → Mute → AutoGain (Target Level) → AdaptationRate → MonitorMix
     //           → PlaybackMix → MicPreset → (wrap)
     //   EQ:     ToneMode → Tone (Simple) or EqBandSelect → EqGain(band) (Advanced)
     //
     // MV7 Main cycles (Gen 1 order, minus Auto Gain and Phantom which it lacks):
-    //   Manual: Mode → Mute → Gain → MonitorMix → Lock → (wrap)
+    //   Manual: Mode → Mute → Gain → GainCheck → MonitorMix → Lock → (wrap)
     //   Auto:   Mode → Mute → AutoPosition → AutoTone → MonitorMix → Lock → (wrap)
     // MV7 EQ: EqPreset. MV7 Dynamics: Compressor. MV7 LED: LedLiveMeter → LedNightMode.
     //
     // MV7+ Main cycles:
-    //   Manual: Mode → Mute → Gain → MonitorMix → PlaybackMix → (wrap)
+    //   Manual: Mode → Mute → Gain → GainCheck → MonitorMix → PlaybackMix → (wrap)
     //   Auto:   Mode → Mute → MonitorMix → PlaybackMix → (wrap)
     // MV7+ EQ: Tone. MV7+ Dynamics: Limiter → Compressor → Denoiser → PopperStopper
     //   → MuteBtnDisable → Hpf → (wrap). Reverb and LED tabs: MV7+ only.
@@ -566,6 +655,12 @@ impl App {
                 Focus::GainLock,
                 DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
                 InputMode::Manual,
+            ) => Focus::GainCheck,
+            (
+                Tab::Main,
+                Focus::GainCheck,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
             ) => Focus::MonitorMix,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv6, InputMode::Manual) => {
                 Focus::PlaybackMix
@@ -581,7 +676,10 @@ impl App {
             // ── MVX2U Manual cycle ────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::Gain, DeviceModel::Mvx2u, InputMode::Manual) => Focus::MonitorMix,
+            (Tab::Main, Focus::Gain, DeviceModel::Mvx2u, InputMode::Manual) => Focus::GainCheck,
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mvx2u, InputMode::Manual) => {
+                Focus::MonitorMix
+            }
             // ── MVX2U Auto cycle ──────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2u, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoPosition,
@@ -616,6 +714,9 @@ impl App {
             (Tab::Main, Focus::Mute, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Gain,
             (Tab::Main, Focus::Gain, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::GainLock,
             (Tab::Main, Focus::GainLock, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::GainCheck
+            }
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
                 Focus::MonitorMix
             }
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Mute,
@@ -684,7 +785,10 @@ impl App {
             // ── MV7+ Main cycle
             (Tab::Main, Focus::Mode, DeviceModel::Mv7Plus, _) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::Gain, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::MonitorMix,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::GainCheck,
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mv7Plus, InputMode::Manual) => {
+                Focus::MonitorMix
+            }
             (Tab::Main, Focus::Mute, DeviceModel::Mv7Plus, InputMode::Auto) => Focus::MonitorMix,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, _) => Focus::PlaybackMix,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv7Plus, _) => Focus::Mode,
@@ -702,7 +806,8 @@ impl App {
             // ── MV7 Main cycle ────────────────────────────────────────────────
             (Tab::Main, Focus::Mode, DeviceModel::Mv7, _) => Focus::Mute,
             (Tab::Main, Focus::Mute, DeviceModel::Mv7, InputMode::Manual) => Focus::Gain,
-            (Tab::Main, Focus::Gain, DeviceModel::Mv7, InputMode::Manual) => Focus::MonitorMix,
+            (Tab::Main, Focus::Gain, DeviceModel::Mv7, InputMode::Manual) => Focus::GainCheck,
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mv7, InputMode::Manual) => Focus::MonitorMix,
             (Tab::Main, Focus::Mute, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
             (Tab::Main, Focus::AutoPosition, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoTone,
             (Tab::Main, Focus::AutoTone, DeviceModel::Mv7, InputMode::Auto) => Focus::MonitorMix,
@@ -813,6 +918,12 @@ impl App {
                 Focus::MonitorMix,
                 DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
                 InputMode::Manual,
+            ) => Focus::GainCheck,
+            (
+                Tab::Main,
+                Focus::GainCheck,
+                DeviceModel::Mv6 | DeviceModel::Mv6Gen2,
+                InputMode::Manual,
             ) => Focus::GainLock,
             (Tab::Main, Focus::Mode, DeviceModel::Mv6, InputMode::Auto) => Focus::PlaybackMix,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv6, _) => Focus::MonitorMix,
@@ -835,7 +946,10 @@ impl App {
             }
             (Tab::Main, Focus::AutoGain, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoTone,
             // ── MVX2U shared tail reverse ─────────────────────────────────────
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, InputMode::Manual) => {
+                Focus::GainCheck
+            }
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mvx2u, InputMode::Manual) => Focus::Gain,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2u, InputMode::Auto) => Focus::AutoGain,
             (Tab::Main, Focus::Phantom, DeviceModel::Mvx2u, _) => Focus::MonitorMix,
             (Tab::Main, Focus::Lock, DeviceModel::Mvx2u, _) => Focus::Phantom,
@@ -860,6 +974,9 @@ impl App {
             (Tab::Main, Focus::Gain, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Mute,
             (Tab::Main, Focus::GainLock, DeviceModel::Mvx2uGen2, InputMode::Manual) => Focus::Gain,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
+                Focus::GainCheck
+            }
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mvx2uGen2, InputMode::Manual) => {
                 Focus::GainLock
             }
             (Tab::Main, Focus::Mode, DeviceModel::Mvx2uGen2, InputMode::Auto) => Focus::Phantom,
@@ -929,7 +1046,10 @@ impl App {
             (Tab::Main, Focus::Mode, DeviceModel::Mv7Plus, _) => Focus::PlaybackMix,
             (Tab::Main, Focus::Mute, DeviceModel::Mv7Plus, _) => Focus::Mode,
             (Tab::Main, Focus::Gain, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Mute,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, InputMode::Manual) => {
+                Focus::GainCheck
+            }
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mv7Plus, InputMode::Manual) => Focus::Gain,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7Plus, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::PlaybackMix, DeviceModel::Mv7Plus, _) => Focus::MonitorMix,
             (Tab::Main, _, DeviceModel::Mv7Plus, _) => Focus::Mode,
@@ -949,7 +1069,8 @@ impl App {
             (Tab::Main, Focus::Gain, DeviceModel::Mv7, InputMode::Manual) => Focus::Mute,
             (Tab::Main, Focus::AutoPosition, DeviceModel::Mv7, InputMode::Auto) => Focus::Mute,
             (Tab::Main, Focus::AutoTone, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
-            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7, InputMode::Manual) => Focus::Gain,
+            (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7, InputMode::Manual) => Focus::GainCheck,
+            (Tab::Main, Focus::GainCheck, DeviceModel::Mv7, InputMode::Manual) => Focus::Gain,
             (Tab::Main, Focus::MonitorMix, DeviceModel::Mv7, InputMode::Auto) => Focus::AutoTone,
             (Tab::Main, Focus::Lock, DeviceModel::Mv7, _) => Focus::MonitorMix,
             (Tab::Main, _, DeviceModel::Mv7, _) => Focus::Mode,
@@ -1362,6 +1483,10 @@ impl App {
                     self.device_state.reverb_type,
                 ))
             }
+            Focus::GainCheck => {
+                self.toggle_gain_check();
+                None
+            }
             Focus::GainLock => {
                 self.device_state.mv6_gain_locked = !self.device_state.mv6_gain_locked;
                 Some(DeviceAction::SetMv6GainLock(
@@ -1549,6 +1674,10 @@ impl App {
 /// and the TUI's note after a mute that still goes through then.
 pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
 
+/// Status for `g` outside Manual mode.
+const GAIN_CHECK_AUTO: &str =
+    "Gain check works in Manual mode; in Auto Level the device sets its own gain.";
+
 /// Status for a Mute Button change refused because its state wasn't read.
 const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";
 
@@ -1709,11 +1838,12 @@ mod tests {
 
     #[test]
     fn main_tab_manual_mode_focus_cycles_forward_and_back() {
-        // Manual: Mode → Mute → Gain → MonitorMix → Phantom → Lock → Mode
+        // Manual: Mode → Mute → Gain → GainCheck → MonitorMix → Phantom → Lock → Mode
         let forward = [
             Focus::Mode,
             Focus::Mute,
             Focus::Gain,
+            Focus::GainCheck,
             Focus::MonitorMix,
             Focus::Phantom,
             Focus::Lock,
@@ -1771,12 +1901,13 @@ mod tests {
 
     #[test]
     fn mv6_main_tab_manual_mode_focus_cycles_forward_and_back() {
-        // MV6 Manual: Mode → Mute → Gain → GainLock → MonitorMix → PlaybackMix → Mode
+        // MV6 Manual: Mode → Mute → Gain → GainLock → GainCheck → MonitorMix → PlaybackMix → Mode
         let forward = [
             Focus::Mode,
             Focus::Mute,
             Focus::Gain,
             Focus::GainLock,
+            Focus::GainCheck,
             Focus::MonitorMix,
             Focus::PlaybackMix,
             Focus::Mode, // wrap
@@ -1794,12 +1925,14 @@ mod tests {
             assert_eq!(app.focus, *expected, "focus_next: expected {expected:?}");
         }
 
-        // Backward from Mode wraps to PlaybackMix, then MonitorMix, then GainLock
+        // Backward from Mode wraps to PlaybackMix, then MonitorMix, GainCheck, GainLock
         app.focus = Focus::Mode;
         app.focus_prev();
         assert_eq!(app.focus, Focus::PlaybackMix);
         app.focus_prev();
         assert_eq!(app.focus, Focus::MonitorMix);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::GainCheck);
         app.focus_prev();
         assert_eq!(app.focus, Focus::GainLock);
     }
@@ -1869,6 +2002,7 @@ mod tests {
             Focus::Mute,
             Focus::Gain,
             Focus::GainLock,
+            Focus::GainCheck,
             Focus::MonitorMix,
             Focus::PlaybackMix,
             Focus::MicPreset,
@@ -2383,6 +2517,50 @@ mod tests {
         }
     }
 
+    /// The Level meter is a stop between the gain controls and Monitor Mix in
+    /// Manual on every model, and Enter on it starts a gain check, sending
+    /// nothing. In Auto it isn't a stop.
+    #[test]
+    fn the_level_meter_is_a_focus_stop_in_manual_only() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7,
+            DeviceModel::Mv7Plus,
+        ] {
+            let before = if model.has_gain_lock() {
+                Focus::GainLock
+            } else {
+                Focus::Gain
+            };
+            let mut app = App {
+                device_model: model,
+                active_tab: Tab::Main,
+                focus: before,
+                ..App::default()
+            };
+            app.device_state.mode = InputMode::Manual;
+            app.focus_next();
+            assert_eq!(app.focus, Focus::GainCheck, "{model:?}");
+            assert!(app.toggle_focused().is_none(), "{model:?}");
+            assert!(app.gain_check_listening().is_some(), "{model:?}");
+            app.focus_next();
+            assert_eq!(app.focus, Focus::MonitorMix, "{model:?}");
+            app.focus_prev();
+            app.focus_prev();
+            assert_eq!(app.focus, before, "{model:?}");
+
+            app.device_state.mode = InputMode::Auto;
+            app.focus = Focus::Mode;
+            for _ in 0..12 {
+                app.focus_next();
+                assert_ne!(app.focus, Focus::GainCheck, "{model:?} Auto");
+            }
+        }
+    }
+
     #[test]
     fn mv7_main_manual_focus_cycle() {
         let mut app = mv7_app(InputMode::Manual);
@@ -2393,6 +2571,7 @@ mod tests {
                 Focus::Mode,
                 Focus::Mute,
                 Focus::Gain,
+                Focus::GainCheck,
                 Focus::MonitorMix,
                 Focus::Lock,
                 Focus::Mode,

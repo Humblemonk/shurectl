@@ -143,7 +143,7 @@ fn read_failed(e: anyhow::Error) -> anyhow::Error {
 }
 
 /// Shown, and matched on reconnect, when a device reports no USB serial number.
-const UNKNOWN_SERIAL: &str = "(unknown)";
+pub const UNKNOWN_SERIAL: &str = "(unknown)";
 
 /// The byte pipe under [`ShureDevice`]. Any error from `write()` or
 /// `read_timeout()` means the device is gone.
@@ -264,7 +264,8 @@ impl ShureDevice {
     /// Open the first (and only) Shure device found on the system.
     ///
     /// Returns an error if zero or more than one Shure device is detected.
-    /// Use `--device` to select a specific device when multiple are present.
+    /// Use `--device` to select a specific device when multiple are present;
+    /// the TUI shows its device picker (`main.rs::pick_device()`) instead.
     pub fn open() -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
         let found = shure_devices(&api);
@@ -1004,6 +1005,29 @@ impl ShureDevice {
             }
         };
         applied.then_some(state.factory_serial)
+    }
+
+    /// Read just the user-set device name, as `read_factory_serial()` reads
+    /// the serial, for the device picker. `None` on the MV7, which has no
+    /// name, when none is set, or when the device doesn't answer.
+    pub fn read_device_name(&self) -> Option<String> {
+        match self.model {
+            DeviceModel::Mv7 => None,
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => {
+                let reply = self
+                    .send_get_past_strays(&cmd_get_device_name(self.next_seq()))
+                    .ok()??;
+                let mut state = DeviceState::default();
+                let applied =
+                    protocol::is_device_name_reply(&reply) && apply_reply(&reply, &mut state);
+                let unset = state.device_name.is_empty() || state.device_name == "Unknown";
+                (applied && !unset).then_some(state.device_name)
+            }
+        }
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────

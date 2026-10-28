@@ -2655,6 +2655,11 @@ pub fn is_serial_reply(reply: &Reply) -> bool {
     reply.feat == FEAT_SERIAL
 }
 
+/// Whether `reply` carries the device name `cmd_get_device_name()` asks for.
+pub fn is_device_name_reply(reply: &Reply) -> bool {
+    reply.feat == FEAT_DEVICE_NAME
+}
+
 /// Whether `reply` is at a live-poll address (`LIVE_ADDRESSES`).
 pub fn is_live_reply(reply: &Reply) -> bool {
     LIVE_ADDRESSES.contains(&reply.feat)

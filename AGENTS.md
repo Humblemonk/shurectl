@@ -41,10 +41,12 @@ src/
   mouse.rs      # HitMap from the last rendered frame; clicks/wheel → the same key actions
   presets.rs    # Host-side presets: TOML load/save/delete, PresetSlot
   protocol.rs   # Packet encoding, CRC-16/ANSI, command constructors, apply_response()
-  ui.rs         # ratatui rendering: the tabs in Tab::ALL + help overlay
+  ui.rs         # ratatui rendering: the tabs in Tab::ALL + help overlay + device picker
   ui_renders.golden  # Render hashes checked by ui.rs `renders_match_golden`
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
   firmware.rs   # Info tab firmware check: background lookup in Shure's online archive
+  gain_check.rs # Level meter's Enter or `g`: listens, suggests a gain in a card; never writes
+  picker.rs     # Startup device picker state and keys when several devices are connected
   fake_hid.rs   # Fake device behind device.rs's HidTransport (tests and `--features qa` only)
   harness.rs    # `--qa` JSON-lines driver over the real event loop step (tests and qa only)
 tests/
@@ -156,8 +158,9 @@ Shared across all models unless the hardware makes it impossible:
 - **Keybindings**: Tab/Shift-Tab cycles tabs, ↑/↓ moves focus, ←/→ adjusts, Enter/Space
   toggles, `?` help. No key only one model responds to. A readme shortcut that works on
   some devices only says which
-- **Focus traversal**: mode → mute → gain → monitor mix → device extras. Models skip entries
-  they lack; they don't reorder them because it "reads better" there
+- **Focus traversal**: mode → mute → gain → gain check (the Level meter, Manual only) →
+  monitor mix → device extras. Models skip entries they lack; they don't reorder them
+  because it "reads better" there
 - **Summary**: the Main tab's Summary is one ordered `SummaryRow` list; a model picks its
   rows in `summary_rows()` but can't reorder them
 - **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same

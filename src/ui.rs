@@ -11,7 +11,9 @@ use ratatui::{
 
 use crate::app::{App, Focus, Tab};
 use crate::firmware::FirmwareStatus;
+use crate::gain_check::GainCheck;
 use crate::mouse::{HitMap, Target};
+use crate::picker::{Picker, PickerRow};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
     InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, MicPreset,
@@ -385,11 +387,7 @@ fn draw_tabs(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
-    let (msg, color) = if app.status_is_error {
-        (format!("✗ {}", app.status_message), C_ERROR)
-    } else {
-        (format!("  {}", app.status_message), C_DIM)
-    };
+    let (msg, color) = status_message(&app.status_message, app.status_is_error);
 
     // The message comes first so errors are never cut; when the full hint no
     // longer fits after it, the short one keeps the way to help and out.
@@ -412,25 +410,43 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             C_DIM,
         )
     };
+    f.render_widget(
+        status_bar(msg, color, (hint, short_hint, hint_color), area.width),
+        area,
+    );
+}
+
+/// A status bar `width` wide: `msg` first so errors are never cut, then the
+/// full key hint, or the short one when the full one no longer fits after it.
+fn status_bar(
+    msg: String,
+    color: Color,
+    (hint, short_hint, hint_color): (&'static str, &'static str, Color),
+    width: u16,
+) -> Paragraph<'static> {
     let msg = Span::styled(msg, Style::default().fg(color));
     let gap = Span::raw("   ");
     let full_width = msg.width() + gap.width() + Span::raw(hint).width();
-    let hint = if full_width <= usize::from(area.width) {
+    let hint = if full_width <= usize::from(width) {
         hint
     } else {
         short_hint
     };
-
-    let status_line = vec![
+    Paragraph::new(Line::from(vec![
         msg,
         gap,
         Span::styled(hint, Style::default().fg(hint_color)),
-    ];
+    ]))
+    .style(Style::default().bg(C_SURFACE))
+}
 
-    f.render_widget(
-        Paragraph::new(Line::from(status_line)).style(Style::default().bg(C_SURFACE)),
-        area,
-    );
+/// A status message as the status bar shows it: errors red behind a cross.
+fn status_message(message: &str, is_error: bool) -> (String, Color) {
+    if is_error {
+        (format!("✗ {message}"), C_ERROR)
+    } else {
+        (format!("  {message}"), C_DIM)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1474,6 +1490,12 @@ fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
 }
 
 fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
+    if let Some(check) = &app.gain_check
+        && app.device_state.mode == InputMode::Manual
+    {
+        draw_gain_check_card(f, app, check, area);
+        return;
+    }
     let mut lines = vec![Line::from("")];
     let mut last_group = None;
     for &row in summary_rows(app.device_model) {
@@ -1494,6 +1516,103 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
         .block(card_block("Summary", false))
         .style(Style::default().bg(C_BG));
     f.render_widget(p, area);
+}
+
+/// The gain check in place of the Summary, from the Level meter's Enter until
+/// Esc: the countdown while it listens, then the loudest peak, the target,
+/// and what to do. "Now" follows the gain as the user sets it.
+fn draw_gain_check_card(f: &mut UiFrame, app: &App, check: &GainCheck, area: Rect) {
+    use crate::gain_check::{Advice, TARGET_PEAK_X10};
+
+    let dim = Style::default().fg(C_DIM);
+    let value = Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD);
+    let dbfs = |x10: Option<i32>| match x10 {
+        Some(x10) => format!("{:.1} dBFS", f64::from(x10) / 10.0),
+        None => "---".to_string(),
+    };
+    let row = |label: &'static str, text: String, style: Style| {
+        Line::from(vec![
+            Span::styled(format!("{label:<14}"), dim),
+            Span::styled(text, style),
+        ])
+    };
+    let note = |text: &'static str, color: Color| {
+        Line::from(Span::styled(text, Style::default().fg(color)))
+    };
+    let target = row("Aiming for", dbfs(Some(TARGET_PEAK_X10)), value);
+    let mut lines = vec![Line::from("")];
+    match check {
+        GainCheck::Listening(listening) => {
+            let now = app.meter_clock.unwrap_or_else(std::time::Instant::now);
+            lines.extend([
+                Line::from(Span::styled(
+                    "Speak normally, as when you record.",
+                    Style::default().fg(C_TEXT),
+                )),
+                Line::from(""),
+                row(
+                    "Time left",
+                    format!("{} s", listening.seconds_left(now)),
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                row("Loudest yet", dbfs(listening.loudest_x10), value),
+                target,
+                Line::from(""),
+                note("[Esc] cancel", C_DIM),
+            ]);
+        }
+        GainCheck::Done(outcome) => {
+            lines.push(if outcome.clipping() {
+                row(
+                    "Clipping at",
+                    dbfs(outcome.loudest_x10),
+                    Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                row("Loudest peak", dbfs(outcome.loudest_x10), value)
+            });
+            lines.extend([target, Line::from("")]);
+            let gain = app.device_state.gain_tenths;
+            match outcome.advice {
+                Advice::Change(suggested) => {
+                    lines.extend([
+                        row("Try Gain", format_gain(suggested), value),
+                        row("Now", format_gain(gain), value),
+                    ]);
+                    if app.gain_locked() {
+                        lines.push(note("Turn Gain Lock off first.", C_WARN));
+                    }
+                    lines.push(if gain == suggested {
+                        note("Set. Check again to confirm.", C_DIM)
+                    } else {
+                        note("Set it on Gain with ←→, then check again.", C_DIM)
+                    });
+                }
+                Advice::Good => lines.push(note("Gain looks right.", C_SUCCESS)),
+                Advice::AtLimit { raise: true } => {
+                    lines.push(note(
+                        "Gain is at its maximum: move closer to the mic.",
+                        C_WARN,
+                    ));
+                }
+                Advice::AtLimit { raise: false } => {
+                    lines.push(note("Gain is at 0 dB: move back from the mic.", C_WARN));
+                }
+                Advice::NoSignal => lines.push(note(
+                    "Heard nothing. Is the Shure your system's default input?",
+                    C_WARN,
+                )),
+            }
+            lines.extend([Line::from(""), note("[g] check again  [Esc] close", C_DIM)]);
+        }
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(card_block("Gain check", false))
+            .style(Style::default().bg(C_BG)),
+        area,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1562,6 +1681,24 @@ fn build_ruler(inner_width: usize) -> String {
     chars.into_iter().collect()
 }
 
+/// The Level meter's frame, `width` wide. Focused (Manual mode only), it is
+/// the gain check's control, with the key that starts or cancels a check.
+fn meter_block(app: &App, width: u16) -> Block<'static> {
+    let focused = app.focus == Focus::GainCheck;
+    let hint = if app.gain_check_listening().is_some() {
+        "  [Enter] cancel"
+    } else {
+        "  [Enter] gain check"
+    };
+    let title = with_hint(
+        vec![Span::styled("  Level  ", focused_style(focused))],
+        focused,
+        hint,
+        width.saturating_sub(2),
+    );
+    focus_border(focused).title(title)
+}
+
 fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     use crate::meter::{METER_FLOOR_DB, METER_SILENT};
 
@@ -1569,10 +1706,14 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     // Both values come from the shared PeakWindow; fall back to METER_SILENT
     // when the lock is unavailable (should never happen in practice) or the
     // window holds nothing recent (no callbacks yet, or the stream stopped).
+    // In Manual mode the meter is also the gain check's control.
+    if app.device_state.mode == InputMode::Manual {
+        f.control(area, Focus::GainCheck);
+    }
+    let now = app.meter_clock.unwrap_or_else(std::time::Instant::now);
     let (short_raw, long_raw) = if app.demo_mode {
         (METER_SILENT, METER_SILENT)
     } else {
-        let now = app.meter_clock.unwrap_or_else(std::time::Instant::now);
         match app.peak_window.try_lock() {
             Ok(pw) => (
                 pw.short.max(now).unwrap_or(METER_SILENT),
@@ -1586,7 +1727,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     if short_raw == METER_SILENT {
         let label = if app.demo_mode { "no device" } else { "---" };
         let empty = Gauge::default()
-            .block(focus_block("Level", false))
+            .block(meter_block(app, area.width))
             .gauge_style(Style::default().fg(C_DIM).bg(C_SURFACE))
             .ratio(0.0)
             .label(label);
@@ -1625,7 +1766,7 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
     // ── Bar gauge ─────────────────────────────────────────────────────────────
     let bar_color = meter_color(short_db);
     let gauge = Gauge::default()
-        .block(focus_block("Level", false))
+        .block(meter_block(app, cols[0].width))
         .gauge_style(Style::default().fg(bar_color).bg(C_SURFACE))
         .ratio(bar_ratio)
         .label(format!("{short_db:+.1} dBFS"));
@@ -3321,6 +3462,128 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Device picker
+// ─────────────────────────────────────────────────────────────────────────────
+/// The device picker (`picker.rs`), shown before the main screen when several
+/// devices are connected: one bordered row per device, the selected one in
+/// the focus border, and how to skip the picker next time. Returns each drawn
+/// row's area with its index in `picker.rows`, for clicks.
+pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
+    if !fits(f.area()) {
+        draw_too_small(f);
+        return Vec::new();
+    }
+    let size = f.area();
+    f.render_widget(Block::default().style(Style::default().bg(C_BG)), size);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Min(0),    // devices
+            Constraint::Length(1), // status
+        ])
+        .split(size);
+
+    let header = Line::from(vec![
+        Span::styled(
+            "shurectl",
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  Choose a device to open", Style::default().fg(C_TEXT)),
+    ]);
+    f.render_widget(
+        Paragraph::new(header).style(Style::default().bg(C_SURFACE)),
+        chunks[0],
+    );
+
+    // Three rows per device, then a blank row and the tip; scrolled so the
+    // selected device shows when there are more than fit.
+    let body = chunks[1].inner(Margin::new(1, 1));
+    let fit = usize::from((body.height.saturating_sub(2) / 3).max(1));
+    let first = (picker.selected + 1).saturating_sub(fit);
+    // The name column, or "Can't open" for a device that wouldn't open (it
+    // has no name then); the reason shows in the status bar when selected.
+    fn middle(row: &PickerRow) -> (&str, Color) {
+        match (&row.problem, row.name.as_deref()) {
+            (Some(_), _) => ("Can't open", C_WARN),
+            (None, name) => (name.unwrap_or_default(), C_TEXT),
+        }
+    }
+    let middle_width = picker
+        .rows
+        .iter()
+        .map(|row| Span::raw(middle(row).0).width())
+        .max()
+        .map_or(0, |width| width + 2);
+    let mut areas = Vec::new();
+    for (index, row) in picker.rows.iter().enumerate().skip(first).take(fit) {
+        let area = Rect::new(body.x, body.y + 3 * (index - first) as u16, body.width, 3)
+            .intersection(body);
+        let (middle_text, middle_color) = middle(row);
+        let spans = vec![
+            Span::styled(
+                format!("{:<19}", row.model.display_name()),
+                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{middle_text:<middle_width$}"),
+                Style::default().fg(middle_color),
+            ),
+            Span::styled("S/N ", Style::default().fg(C_DIM)),
+            Span::styled(
+                row.serial.as_deref().unwrap_or("unknown"),
+                Style::default().fg(C_TEXT),
+            ),
+        ];
+        let block = focus_border(index == picker.selected).padding(Padding::horizontal(1));
+        f.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
+        areas.push((index, area));
+    }
+
+    let shown = areas.len() as u16;
+    if let Some(serial) = picker
+        .rows
+        .get(picker.selected)
+        .and_then(|row| row.serial.as_deref())
+    {
+        let tip = Line::from(vec![
+            Span::styled(" Skip this next time: ", Style::default().fg(C_DIM)),
+            Span::styled(
+                format!("shurectl --device {serial}"),
+                Style::default().fg(C_TEXT),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(tip), text_row(body, 3 * shown + 1));
+    }
+
+    // Until a key or click reports something else, a selected device that
+    // wouldn't open says why.
+    let problem = picker
+        .rows
+        .get(picker.selected)
+        .and_then(|row| row.problem.as_deref())
+        .filter(|_| !picker.status_is_error);
+    let (msg, color) = match problem {
+        Some(problem) => status_message(problem, true),
+        None => status_message(&picker.status, picker.status_is_error),
+    };
+    f.render_widget(
+        status_bar(
+            msg,
+            color,
+            (
+                " [↑↓] Select  [Enter] Open  [r] Rescan  [q] Quit",
+                " [Enter] Open  [q] Quit",
+                C_DIM,
+            ),
+            chunks[2].width,
+        ),
+        chunks[2],
+    );
+    areas
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Help Overlay
 // ─────────────────────────────────────────────────────────────────────────────
 /// One help overlay row: the key column padded so every description lines up.
@@ -3347,6 +3610,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         help_row("← → / h l", "Decrease / increase value"),
         help_row("Enter / Space", "Toggle boolean / cycle option"),
         help_row("f", "Flatten 5-band EQ (EQ tab)"),
+        help_row("g", "Gain check (Main tab, Manual)"),
         Line::from(""),
         heading("  General"),
         help_row("r", "Refresh state from device"),
@@ -3704,10 +3968,47 @@ mod tests {
                 ..App::default()
             };
             visit(&format!("{model:?} help"), &help);
+            for (name, check) in gain_check_states() {
+                let mut app = App {
+                    device_model: model,
+                    focus: Focus::GainCheck,
+                    gain_check: Some(check),
+                    ..App::default()
+                };
+                app.device_state.mode = InputMode::Manual;
+                app.device_state.gain_tenths = 240;
+                app.device_state.mv6_gain_locked = true;
+                visit(&format!("{model:?} gain check {name}"), &app);
+            }
         }
     }
 
-    /// One line per screen from `for_each_screen()`, with a hash of its render.
+    /// The gain check card's states: listening, and each kind of result.
+    fn gain_check_states() -> Vec<(&'static str, GainCheck)> {
+        use crate::gain_check::{Advice, Listening, Outcome};
+
+        let mut listening = Listening::new(240);
+        listening.loudest_x10 = Some(-184);
+        let done = |loudest_x10, advice| {
+            GainCheck::Done(Outcome {
+                loudest_x10,
+                advice,
+            })
+        };
+        vec![
+            ("listening", GainCheck::Listening(listening)),
+            ("raise", done(Some(-180), Advice::Change(300))),
+            ("clipping", done(Some(-3), Advice::Change(130))),
+            ("set", done(Some(-300), Advice::Change(240))),
+            ("good", done(Some(-131), Advice::Good)),
+            ("at max", done(Some(-400), Advice::AtLimit { raise: true })),
+            ("at 0 dB", done(Some(-20), Advice::AtLimit { raise: false })),
+            ("no signal", done(None, Advice::NoSignal)),
+        ]
+    }
+
+    /// One line per screen from `for_each_screen()` and `picker_screens()`,
+    /// with a hash of its render.
     fn render_all() -> String {
         use std::fmt::Write;
 
@@ -3715,7 +4016,136 @@ mod tests {
         for_each_screen(|label, app| {
             writeln!(out, "{label} {:016x}", render_hash(app)).expect("write to String");
         });
+        for (label, picker) in picker_screens() {
+            let (_, _, hash) = render_picker(&picker, 120, 40);
+            writeln!(out, "{label} {hash:016x}").expect("write to String");
+        }
         out
+    }
+
+    /// The device picker's screens: two devices, either one selected; one
+    /// that couldn't be opened, with the longest name; and none.
+    fn picker_screens() -> Vec<(&'static str, Picker)> {
+        use crate::picker::{PickerRow, sample_rows};
+
+        let mut second = Picker::new(sample_rows());
+        second.selected = 1;
+        let mut rows = sample_rows();
+        rows[0].name = Some("N".repeat(crate::protocol::DEVICE_NAME_MAX_LEN));
+        rows.push(PickerRow {
+            path: "/dev/hidraw7".into(),
+            model: DeviceModel::Mv6Gen2,
+            serial: None,
+            name: None,
+            problem: Some("Cannot open /dev/hidraw7: device busy".into()),
+        });
+        let mut problem = Picker::new(rows);
+        problem.selected = 2;
+        let mut refused = Picker::new(sample_rows());
+        refused.set_err("Cannot open /dev/hidraw3: device busy");
+        vec![
+            ("picker first", Picker::new(sample_rows())),
+            ("picker second", second),
+            ("picker problem", problem),
+            ("picker refused", refused),
+            ("picker empty", Picker::new(Vec::new())),
+        ]
+    }
+
+    /// The text, row click areas and hash of a `width`×`height` picker render.
+    fn render_picker(
+        picker: &Picker,
+        width: u16,
+        height: u16,
+    ) -> (String, Vec<(usize, Rect)>, u64) {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        let mut areas = Vec::new();
+        terminal
+            .draw(|f| {
+                areas = draw_picker(f, picker);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (buffer_text(buffer), areas, buffer_hash(buffer))
+    }
+
+    /// Every picker screen shows each device's model, name, serial and problem,
+    /// and the tip, in full at `MIN_SIZE`, and each drawn row is its click area.
+    #[test]
+    fn the_picker_fits_the_min_size() {
+        let (width, height) = MIN_SIZE;
+        for (label, picker) in picker_screens() {
+            let (text, areas, _) = render_picker(&picker, width, height);
+            assert_eq!(areas.len(), picker.rows.len(), "{label}");
+            for (index, area) in &areas {
+                let row = &picker.rows[*index];
+                let line: String = text
+                    .lines()
+                    .nth(usize::from(area.y + 1))
+                    .unwrap_or_default()
+                    .into();
+                let mut expected = vec![row.model.display_name()];
+                expected.extend(row.name.as_deref());
+                expected.extend(row.problem.as_ref().map(|_| "Can't open"));
+                expected.push(row.serial.as_deref().unwrap_or("unknown"));
+                for part in expected {
+                    assert!(
+                        line.contains(part),
+                        "{label}: {part:?} missing from {line:?}"
+                    );
+                }
+            }
+            if let Some(serial) = picker
+                .rows
+                .get(picker.selected)
+                .and_then(|row| row.serial.as_deref())
+            {
+                let tip = format!("Skip this next time: shurectl --device {serial}");
+                assert!(text.contains(&tip), "{label}: no tip\n{text}");
+            }
+            let status = match picker
+                .rows
+                .get(picker.selected)
+                .and_then(|row| row.problem.as_deref())
+            {
+                Some(problem) if !picker.status_is_error => problem,
+                Some(_) | None => picker.status.as_str(),
+            };
+            assert!(text.contains(status), "{label}: no status\n{text}");
+        }
+    }
+
+    /// With more devices than fit, the list scrolls to keep the selected one
+    /// on screen, and draws no row past the status bar.
+    #[test]
+    fn the_picker_scrolls_to_the_selected_device() {
+        let mut rows = Vec::new();
+        for _ in 0..5 {
+            rows.extend(crate::picker::sample_rows());
+        }
+        for (i, row) in rows.iter_mut().enumerate() {
+            row.path = format!("/dev/hidraw{i}");
+        }
+        let mut picker = Picker::new(rows);
+        picker.selected = 9;
+        let (width, height) = MIN_SIZE;
+        let (text, areas, _) = render_picker(&picker, width, height);
+        assert!(areas.iter().any(|(index, _)| *index == 9), "{text}");
+        assert!(
+            areas.iter().all(|(_, area)| area.bottom() < height - 1),
+            "{text}"
+        );
+        assert!(text.contains("shurectl --device 4FA19000331"), "{text}");
+    }
+
+    #[test]
+    fn a_too_small_picker_shows_only_the_needed_size() {
+        let picker = Picker::new(crate::picker::sample_rows());
+        let (text, areas, _) = render_picker(&picker, MIN_SIZE.0 - 1, MIN_SIZE.1);
+        assert!(text.contains("Terminal size too small:"), "{text}");
+        assert!(areas.is_empty());
     }
 
     /// The text of a `width`×`height` render of `app` by `render` (`draw` or
@@ -3735,15 +4165,19 @@ mod tests {
                 hits = render(f, app);
             })
             .expect("draw");
-        let buffer = terminal.backend().buffer();
+        (buffer_text(terminal.backend().buffer()), hits)
+    }
+
+    /// A rendered buffer's text, one line per row.
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
         let mut text = String::new();
-        for y in 0..height {
-            for x in 0..width {
-                text.push_str(buffer[(x, y)].symbol());
+        for row in buffer.content.chunks(usize::from(buffer.area.width.max(1))) {
+            for cell in row {
+                text.push_str(cell.symbol());
             }
             text.push('\n');
         }
-        (text, hits)
+        text
     }
 
     /// The words and click targets a `width`×`height` render shows, leaving out
@@ -3751,9 +4185,11 @@ mod tests {
     /// hints beside the focused control (the status bar and help list those
     /// keys), and the Info tab's static Capabilities list below its controls.
     fn visible_content(app: &App, width: u16, height: u16) -> BTreeSet<String> {
-        const FOCUS_HINTS: [&str; 6] = [
+        const FOCUS_HINTS: [&str; 8] = [
             "[Enter] cycle",
             "[Enter] toggle",
+            "[Enter] gain check",
+            "[Enter] cancel",
             "◄ ► or ←→ to adjust",
             "◄ ► to adjust",
             "◄ ► to change band",
@@ -3823,7 +4259,10 @@ mod tests {
             // What may follow each hint's start before the frame; a bare "◄ ►"
             // is the Denoiser level's own marker.
             for (start, endings) in [
-                ("[Enter]", &["cycle", "toggle", "rename", "Load"][..]),
+                (
+                    "[Enter]",
+                    &["cycle", "toggle", "rename", "Load", "gain check", "cancel"][..],
+                ),
                 (
                     "◄ ►",
                     &["", "to adjust", "or ←→ to adjust", "to change band"][..],

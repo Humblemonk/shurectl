@@ -19,4 +19,6 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
 - `start_meter()` returns `MeterStatus`. The caller must keep the `Stream` in
   `MeterStatus::Running` alive; dropping it stops capture.
 - The meter does not start in demo mode.
+- The gain check (`gain_check.rs`) samples the `short` window from `step()`; a 0.3 s window
+  read every ≤100 ms tick misses no peak. It only reads `peak_window`.
 - `libc` `dup`/`dup2` suppresses stderr while cpal probes ALSA/JACK.

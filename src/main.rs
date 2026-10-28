@@ -36,11 +36,13 @@ mod device;
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod fake_hid;
 mod firmware;
+mod gain_check;
 #[cfg(any(test, feature = "qa"))]
 #[cfg_attr(not(feature = "qa"), allow(dead_code))]
 mod harness;
 mod meter;
 mod mouse;
+mod picker;
 mod presets;
 mod protocol;
 mod ui;
@@ -55,12 +57,12 @@ use crossterm::{
     cursor::Show,
     event::{
         self, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        MouseEvent, MouseEventKind,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend, layout::Position};
 
 use app::{App, DeviceAction, STATE_UNREAD_HINT};
 use cli::{Amount, ModeChoice, MuteAction};
@@ -87,9 +89,9 @@ struct Cli {
     list: bool,
 
     /// Open a specific device by its HID path or its serial, as --list shows
-    /// them. Without this flag, the only detected device is opened (error if
-    /// multiple found). A path can change when the device is replugged; a
-    /// serial doesn't.
+    /// them. Without this flag, the only detected device is opened; with
+    /// several, the TUI asks which, and the other commands need this flag.
+    /// A path can change when the device is replugged; a serial doesn't.
     #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
     device: Option<String>,
 
@@ -211,6 +213,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Entered early only for the device picker; startup warnings print first otherwise.
+    let mut tui = None;
     let (mut device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
         let model = match parse_demo_model(model_str) {
             Ok(m) => m,
@@ -223,6 +227,12 @@ fn main() -> Result<()> {
     } else {
         let open_result = if let Some(ref selector) = cli.device {
             ShureDevice::open_selected(selector)
+        } else if device::list_devices().len() > 1 {
+            let tui = tui.insert(Tui::enter()?);
+            match pick_device(&mut tui.terminal)? {
+                Some(device) => Ok(device),
+                None => return Ok(()),
+            }
         } else {
             ShureDevice::open()
         };
@@ -262,26 +272,132 @@ fn main() -> Result<()> {
         None
     };
 
-    install_terminal_restore_hook();
-    enable_raw_mode()?;
-    let cleanup = TerminalCleanup;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableClickCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut tui = match tui {
+        Some(tui) => tui,
+        None => Tui::enter()?,
+    };
 
     let latest_firmware =
         (!demo_mode && firmware::is_compared(device_model)).then(firmware::spawn_check);
-    let result = run_event_loop(&mut terminal, &mut app, &mut device, latest_firmware);
+    let result = run_event_loop(&mut tui.terminal, &mut app, &mut device, latest_firmware);
 
-    drop(terminal);
-    drop(cleanup);
+    drop(tui);
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
     }
 
     Ok(())
+}
+
+/// The terminal in raw mode on the alternate screen with clicks captured,
+/// put back when dropped.
+struct Tui {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    // Dropped after `terminal`, as the fields are declared.
+    _cleanup: TerminalCleanup,
+}
+
+impl Tui {
+    fn enter() -> Result<Self> {
+        install_terminal_restore_hook();
+        enable_raw_mode()?;
+        let cleanup = TerminalCleanup;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableClickCapture)?;
+        Ok(Self {
+            terminal: Terminal::new(CrosstermBackend::new(stdout))?,
+            _cleanup: cleanup,
+        })
+    }
+}
+
+/// Show the device picker until a device opens, or `None` when the user
+/// quits. Nothing is written: listing reads each device's serial and name,
+/// as `--list` does, and a device that won't open says why and stays listed.
+fn pick_device(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<Option<ShureDevice>> {
+    let mut picker = picker::Picker::new(picker_rows());
+    loop {
+        let mut rows = Vec::new();
+        let mut fits = true;
+        terminal.draw(|f| {
+            fits = ui::fits(f.area());
+            rows = ui::draw_picker(f, &picker);
+        })?;
+        let command = match event::read()? {
+            // Below the minimum size only the notice shows, so keys only quit.
+            Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
+                is_quit_key(key.code, key.modifiers).then_some(picker::Command::Quit)
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                picker.handle_key(key.code, key.modifiers)
+            }
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                ..
+            }) => rows
+                .iter()
+                .find(|(_, area)| area.contains(Position::new(column, row)))
+                .and_then(|(index, _)| picker.click(*index)),
+            Event::Key(_)
+            | Event::Mouse(_)
+            | Event::Resize(_, _)
+            | Event::FocusGained
+            | Event::FocusLost
+            | Event::Paste(_) => None,
+        };
+        match command {
+            Some(picker::Command::Open(index)) => {
+                match ShureDevice::open_path(&picker.rows[index].path) {
+                    Ok(device) => return Ok(Some(device)),
+                    Err(e) => picker.set_err(one_line(&e)),
+                }
+            }
+            Some(picker::Command::Rescan) => picker.set_rows(picker_rows()),
+            Some(picker::Command::Quit) => return Ok(None),
+            None => {}
+        }
+    }
+}
+
+/// Every connected device, labelled with its printed serial and its name,
+/// each read by opening it once, as `--list` does.
+fn picker_rows() -> Vec<picker::PickerRow> {
+    device::list_devices()
+        .into_iter()
+        .map(|found| {
+            let usb_serial = (found.serial != device::UNKNOWN_SERIAL).then_some(found.serial);
+            match ShureDevice::open_path(&found.path) {
+                Ok(dev) => picker::PickerRow {
+                    serial: dev.read_factory_serial().or(usb_serial),
+                    name: dev.read_device_name(),
+                    problem: None,
+                    path: found.path,
+                    model: found.model,
+                },
+                Err(e) => picker::PickerRow {
+                    serial: usb_serial,
+                    name: None,
+                    problem: Some(one_line(&e)),
+                    path: found.path,
+                    model: found.model,
+                },
+            }
+        })
+        .collect()
+}
+
+/// An error's lines joined into one, for a status bar.
+fn one_line(e: &anyhow::Error) -> String {
+    e.to_string()
+        .lines()
+        .map(|line| line.trim_end_matches('.'))
+        .collect::<Vec<_>>()
+        .join(". ")
 }
 
 /// Read the device's state into `app` at startup, or say it is demo mode.
@@ -519,7 +635,8 @@ impl LoopState {
 /// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
 /// below the minimum size only the notice is on screen, so keys only quit and
 /// mouse events are dropped. The mute state is read every
-/// `MUTE_POLL_INTERVAL`. `now` is passed in so the `--qa` harness can run the
+/// `MUTE_POLL_INTERVAL`, and a running gain check takes the meter's peak.
+/// `now` is passed in so the `--qa` harness can run the
 /// same code on a fake clock.
 fn step(
     app: &mut App,
@@ -632,6 +749,9 @@ fn step(
         loop_state.last_presence_poll = now;
         poll_presence(app, device, &mut loop_state.seen_back);
     }
+
+    // After the polls, so a check stops on the gain or mode they just read.
+    app.sample_gain_check(now);
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<DeviceAction> {
@@ -812,6 +932,14 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
         }
         KeyCode::Char('f') if app.can_flatten_eq() => Some(DeviceAction::FlattenEq),
+        KeyCode::Char('g') if app.active_tab == app::Tab::Main => {
+            app.toggle_gain_check();
+            None
+        }
+        KeyCode::Esc if app.active_tab == app::Tab::Main => {
+            app.close_gain_check();
+            None
+        }
         KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetActions(i) = app.focus {
                 if app.presets[i].is_some() {
