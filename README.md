@@ -12,6 +12,7 @@ macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app
   has them
 - Reverb and LED settings on the models that support them
 - Real-time level meter with peak hold
+- Gain check: speak for 10 seconds and shurectl suggests a gain for your voice
 - 4 preset slots, saved as editable TOML files
 - Mute, load a preset, change gain, mode or monitor levels, or read the state as JSON from the
   command line without opening the TUI
