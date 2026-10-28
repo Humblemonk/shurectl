@@ -281,7 +281,7 @@ impl App {
             .mute_button_needs_firmware(self.device_model)
         {
             Some(firmware) => self.set_err(format!("Mute Button needs firmware {firmware}+")),
-            None => self.set_err(MUTE_BTN_UNREAD),
+            None => self.set_err(unavailable("Mute Button")),
         }
     }
 
@@ -299,7 +299,7 @@ impl App {
             self.set_err(STATE_UNREAD_HINT);
             return;
         }
-        self.set_err(PLAYBACK_UNREAD);
+        self.set_err(unavailable("Playback Level"));
     }
 
     /// Refuse a Limiter change while its state is unread (only the MV7's
@@ -309,7 +309,7 @@ impl App {
             self.set_err(STATE_UNREAD_HINT);
             return;
         }
-        self.set_err(LIMITER_UNREAD);
+        self.set_err(unavailable("Limiter"));
     }
 
     // ── Tab navigation ────────────────────────────────────────────────────────
@@ -1704,14 +1704,19 @@ pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — p
 const GAIN_CHECK_AUTO: &str =
     "Gain check works in Manual mode; in Auto Level the device sets its own gain.";
 
-/// Status for a Mute Button change refused because its state wasn't read.
-const MUTE_BTN_UNREAD: &str = "Mute Button unavailable: its state could not be read";
+/// Why a setting the readback got no usable answer for can't be changed or
+/// loaded, worded the same for every setting.
+const UNREAD_REASON: &str = "its state could not be read";
 
-/// Status for a Playback Level change refused because its state wasn't read.
-const PLAYBACK_UNREAD: &str = "Playback Level unavailable: its state could not be read";
+/// Status for a change to `setting` refused because its state wasn't read.
+fn unavailable(setting: &str) -> String {
+    format!("{setting} unavailable: {UNREAD_REASON}")
+}
 
-/// Status for a Limiter change refused because its state wasn't read.
-const LIMITER_UNREAD: &str = "Limiter unavailable: its state could not be read";
+/// Status note for a preset's `setting` skipped because its state wasn't read.
+pub fn not_loaded(setting: &str) -> String {
+    format!(" {setting} not loaded: {UNREAD_REASON}.")
+}
 
 /// Commands to send to the device, produced by App but executed by main.
 #[derive(Debug)]

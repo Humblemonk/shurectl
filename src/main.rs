@@ -347,7 +347,8 @@ fn pick_device(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     found: Vec<device::DeviceInfo>,
 ) -> Result<Option<ShureDevice>> {
-    let mut picker = picker::Picker::new(picker_rows(found));
+    let mut picker = picker::Picker::new(Vec::new());
+    scan_into(terminal, &mut picker, found)?;
     loop {
         let mut rows = Vec::new();
         let mut fits = true;
@@ -401,12 +402,28 @@ fn pick_device(
                 }
             }
             Some(picker::Command::Rescan) => {
-                picker.set_rows(picker_rows(device::list_devices()));
+                scan_into(terminal, &mut picker, device::list_devices())?;
             }
             Some(picker::Command::Quit) => return Ok(None),
             None => {}
         }
     }
+}
+
+/// Fill `picker` with the devices `found`, saying it is looking while it
+/// opens and reads each one, which takes a timeout per device that doesn't
+/// answer.
+fn scan_into(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    picker: &mut picker::Picker,
+    found: Vec<device::DeviceInfo>,
+) -> Result<()> {
+    picker.set_ok("Looking for Shure devices…");
+    terminal.draw(|f| {
+        ui::draw_picker(f, picker);
+    })?;
+    picker.set_rows(picker_rows(found));
+    Ok(())
 }
 
 /// The devices `found`, labelled with their printed serials and names, each
@@ -1337,9 +1354,9 @@ fn apply_action(
                         refused_note(&refused),
                         unread_note(slot, &app.device_state, app.device_model),
                         if playback_skipped {
-                            " Playback Level not loaded: its state could not be read."
+                            app::not_loaded("Playback Level")
                         } else {
-                            ""
+                            String::new()
                         }
                     );
                     if refused.is_empty() {
@@ -1735,7 +1752,9 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     if let Some(gain) = live.gain_tenths.filter(|gain| *gain != state.gain_tenths) {
         state.gain_tenths = gain;
         // In Auto Level the device sets its own gain, which some models may
-        // report as it moves (unconfirmed): kept, but not announced.
+        // report as it moves: kept, but not announced. The MVX2U Gen 2
+        // reports its Manual gain instead (tested 2026-10-28); other models
+        // are unconfirmed.
         let manual = state.mode == InputMode::Manual;
         changed.extend((announce && manual).then(|| gain_line(gain)));
     }
@@ -1752,7 +1771,6 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
         state.monitor_mix = mix;
         changed.extend(announce.then(|| monitor_mix_line(app.device_model, mix)));
     }
-    let state = &mut app.device_state;
     if let Some(mix) = live.playback_mix.filter(|mix| *mix != state.playback_mix) {
         state.playback_mix = mix;
         changed.extend(announce.then(|| playback_mix_line(mix)));
@@ -1764,8 +1782,15 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
             if is_disconnect(&e) {
                 return mark_disconnected(app, dev.model);
             }
+            // The other values came from before the failed readback, so only
+            // the mode, which caused it, is announced.
             app.state_unread = true;
-            changed.push(format!("{e}. {STATE_UNREAD_HINT}"));
+            app.settle_focus(mode_before);
+            app.set_err(format!(
+                "{} (changed on the device). {e}. {STATE_UNREAD_HINT}",
+                mode_line(app.device_state.mode)
+            ));
+            return;
         }
     }
     app.settle_focus(mode_before);
@@ -1891,11 +1916,11 @@ fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceMo
     {
         note.push_str(&match state.mute_button_needs_firmware(model) {
             Some(firmware) => format!(" Mute Button not loaded: it needs firmware {firmware}+."),
-            None => " Mute Button not loaded: its state could not be read.".into(),
+            None => app::not_loaded("Mute Button"),
         });
     }
     if slot.limiter_enabled.is_some() && state.limiter_enabled.is_none() {
-        note.push_str(" Limiter not loaded: its state could not be read.");
+        note.push_str(&app::not_loaded("Limiter"));
     }
     note
 }
@@ -2384,6 +2409,37 @@ mod tests {
             "{}",
             app.status_message
         );
+    }
+
+    /// A mode changed elsewhere whose re-read fails says so once, with only
+    /// the mode: the other values were read before the failed readback.
+    #[test]
+    fn a_failed_reread_after_a_mode_change_announces_only_the_mode() {
+        let seeded = fake_hid::FakeDevice::seed_state(DeviceModel::Mv6Gen2);
+        let fake = FakeDevice::with_state(
+            DeviceModel::Mv6Gen2,
+            DeviceState {
+                mode: InputMode::Auto,
+                gain_tenths: 300,
+                ..seeded.clone()
+            },
+        );
+        fake.faults_mut(|faults| faults.refused_get = Some("HPF".into()));
+        let mut app = App {
+            device_model: DeviceModel::Mv6Gen2,
+            device_state: seeded,
+            ..App::default()
+        };
+        poll_live(&mut app, &Some(fake.open()));
+        assert!(app.state_unread);
+        assert!(app.status_is_error);
+        let status = &app.status_message;
+        assert!(
+            status.starts_with("Mode → Auto Level (changed on the device). Couldn't read"),
+            "{status}"
+        );
+        assert!(!status.contains("Gain →"), "{status}");
+        assert_eq!(status.matches(STATE_UNREAD_HINT).count(), 1, "{status}");
     }
 
     /// Finding of the 09e9569 review: a wheel adjustment still pending when the

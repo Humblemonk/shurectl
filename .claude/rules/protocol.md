@@ -58,9 +58,13 @@ CRC-16/ANSI covers 0x11 up to the CRC
   from the command line showed in a running TUI, and the next arrow key stepped from the new
   gain (tested 2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button
   press still showed (tested 2026-10-25). On the MV7+, a gain change from the command line
-  showed within about a second (reported by mike-callahan, 2026-10-27). Unconfirmed
-  elsewhere: whether other models report a press, whether their GETs reflect changes made
-  elsewhere, and whether the MV7 answers each line within the poll's 200 ms
+  showed within about a second (reported by mike-callahan, 2026-10-27). On the MVX2U Gen 2,
+  switching to Auto, talking, then back to Manual and pressing → raised the gain 1 dB from
+  its Manual value, so the gain GET in Auto reads the Manual gain, not a moving auto gain
+  (tested 2026-10-28). Unconfirmed elsewhere: whether other models report a press, whether
+  their GETs reflect changes made elsewhere, whether the gain GET in Auto reads the Manual
+  gain on the MVX2U Gen 1, MV6 and MV7+ (the MV7 re-reads everything after a mode change),
+  and whether the MV7 answers each line within the poll's 200 ms
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
 
 ## Original MV7: text shell, not binary packets
