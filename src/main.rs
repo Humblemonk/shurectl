@@ -235,6 +235,8 @@ fn main() -> Result<()> {
         };
         let open_result = if let Some(ref selector) = cli.device {
             ShureDevice::open_selected(selector)
+        } else if let [only] = found.as_slice() {
+            ShureDevice::open_path(&only.path)
         } else if found.len() > 1 {
             let tui = tui.insert(Tui::enter()?);
             match pick_device(&mut tui.terminal, found)? {
@@ -242,6 +244,7 @@ fn main() -> Result<()> {
                 None => return Ok(()),
             }
         } else {
+            // None found: open() says so, with the access hint.
             ShureDevice::open()
         };
         match open_result {
@@ -272,7 +275,7 @@ fn main() -> Result<()> {
         match start_meter(Arc::clone(&app.peak_window)) {
             MeterStatus::Running(s) => Some(s),
             MeterStatus::Failed(e) => {
-                app.set_err(format!("Meter unavailable: {e}"));
+                app.add_status(&format!("Meter unavailable: {e}"), true);
                 app.meter_unavailable = true;
                 None
             }
@@ -284,9 +287,18 @@ fn main() -> Result<()> {
     let mut tui = match tui {
         Some(tui) => {
             // Keys pressed while the picker's choice was opened and read were
-            // meant for the picker, not the screen that replaces it.
+            // meant for the picker, not the screen that replaces it; a quit
+            // key among them still quits.
+            let mut quit = false;
             while event::poll(Duration::ZERO)? {
-                event::read()?;
+                if let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press
+                {
+                    quit |= is_quit_key(key.code, key.modifiers);
+                }
+            }
+            if quit {
+                return Ok(());
             }
             tui
         }
@@ -371,10 +383,15 @@ fn pick_device(
             Some(picker::Command::Open(index)) => {
                 // Stays on screen while the device's settings are read, which
                 // can take a few seconds.
-                picker.set_ok(format!(
-                    "Opening {}…",
-                    picker.rows[index].model.display_name()
-                ));
+                let row = &picker.rows[index];
+                // Two of one model are told apart by name or serial.
+                let which = row
+                    .name
+                    .as_deref()
+                    .or(row.serial.as_deref())
+                    .map(|which| format!(" ({which})"))
+                    .unwrap_or_default();
+                picker.set_ok(format!("Opening {}{which}…", row.model.display_name()));
                 terminal.draw(|f| {
                     ui::draw_picker(f, &picker);
                 })?;

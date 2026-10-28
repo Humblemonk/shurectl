@@ -250,6 +250,17 @@ impl App {
         self.status_is_error = is_error;
     }
 
+    /// Show `msg` without hiding an error the status bar already shows: after
+    /// that error, which stays red, or in place of anything else.
+    pub fn add_status(&mut self, msg: &str, is_error: bool) {
+        if self.status_is_error {
+            self.status_message.push(' ');
+            self.status_message.push_str(msg);
+        } else {
+            self.set_status(msg, is_error);
+        }
+    }
+
     pub fn set_ok(&mut self, msg: impl Into<String>) {
         self.set_status(msg, false);
     }
@@ -405,36 +416,36 @@ impl App {
     }
 
     /// Feed the running gain check the meter's peak at `now`, and keep its
-    /// result once it is done. A check stops, saying so, when its result could
-    /// no longer apply: the device gone or unread, the mic muted, or out of
-    /// Manual mode, which also closes a result. A gain change while it listens
-    /// starts it over, since the loudest peak would otherwise mix two gains.
+    /// result once it is done. A check stops, saying so after any error that
+    /// explains it, when its result could no longer apply: the device gone or
+    /// unread, out of Manual mode, or the mic muted. All but a mute also close
+    /// a result, whose "Now" gain would no longer be known or apply. A gain
+    /// change while it listens starts it over, since the loudest peak would
+    /// otherwise mix two gains.
     pub fn sample_gain_check(&mut self, now: Instant) {
-        if self.gain_check.is_none() {
-            return;
-        }
-        if self.device_state.mode != InputMode::Manual {
-            if self.gain_check_listening().is_some() {
-                self.set_ok("Gain check stopped: the device left Manual mode.");
-            }
-            self.gain_check = None;
-            return;
-        }
-        let Some(listening) = self.gain_check_listening() else {
+        let Some(check) = &self.gain_check else {
             return;
         };
-        if !self.device_connected || self.state_unread {
-            // Added to the status that says why, which is kept.
+        let listening = matches!(check, GainCheck::Listening(_));
+        let stop = if !self.device_connected || self.state_unread {
+            Some("Gain check stopped.")
+        } else if self.device_state.mode != InputMode::Manual {
+            Some("Gain check stopped: the device left Manual mode.")
+        } else if listening && self.device_state.muted {
+            Some("Gain check stopped: the mic is muted.")
+        } else {
+            None
+        };
+        if let Some(stop) = stop {
             self.gain_check = None;
-            self.status_message.push_str(" Gain check stopped.");
+            if listening {
+                self.add_status(stop, false);
+            }
             return;
         }
-        if self.device_state.muted {
-            self.gain_check = None;
-            self.set_ok("Gain check stopped: the mic is muted.");
-            return;
-        }
-        if listening.gain_tenths != self.device_state.gain_tenths {
+        if let Some(GainCheck::Listening(listening)) = &self.gain_check
+            && listening.gain_tenths != self.device_state.gain_tenths
+        {
             self.gain_check = Some(GainCheck::Listening(Listening::new(
                 self.device_state.gain_tenths,
             )));
@@ -2574,6 +2585,54 @@ mod tests {
                 assert_ne!(app.focus, Focus::GainCheck, "{model:?} Auto");
             }
         }
+    }
+
+    /// A stopped check says so after an error already shown, never over it,
+    /// and a result closes once its "Now" gain is no longer known.
+    #[test]
+    fn a_gain_check_stop_keeps_the_error_that_explains_it() {
+        let mut app = App::default();
+        app.device_state.mode = InputMode::Manual;
+        app.toggle_gain_check();
+        app.device_state.muted = true;
+        app.set_err("Device error: timed out.");
+        app.sample_gain_check(Instant::now());
+        assert!(app.gain_check.is_none());
+        assert!(app.status_is_error);
+        assert_eq!(
+            app.status_message,
+            "Device error: timed out. Gain check stopped: the mic is muted."
+        );
+
+        app.device_state.muted = false;
+        app.toggle_gain_check();
+        app.device_state.mode = InputMode::Auto;
+        app.state_unread = true;
+        app.set_err(STATE_UNREAD_HINT);
+        app.sample_gain_check(Instant::now());
+        assert!(app.status_is_error);
+        assert_eq!(
+            app.status_message,
+            format!("{STATE_UNREAD_HINT} Gain check stopped.")
+        );
+
+        app.state_unread = false;
+        app.device_state.mode = InputMode::Manual;
+        app.gain_check = Some(GainCheck::Done(crate::gain_check::Outcome {
+            loudest_x10: Some(-180),
+            advice: crate::gain_check::Advice::Change(300),
+        }));
+        app.set_ok("Gain → 24 dB");
+        app.device_connected = false;
+        app.sample_gain_check(Instant::now());
+        assert!(
+            app.gain_check.is_none(),
+            "a result closes when disconnected"
+        );
+        assert_eq!(
+            app.status_message, "Gain → 24 dB",
+            "a closed result says nothing"
+        );
     }
 
     /// A check that would hear nothing useful is refused with the reason.

@@ -58,22 +58,25 @@ impl Picker {
             .and_then(|old| rows.iter().position(|row| row.path == old.path))
             .unwrap_or(0);
         self.rows = rows;
-        self.status = match self.rows.len() {
+        let found = match self.rows.len() {
             0 => "No supported Shure devices found. Plug one in and press r.".to_string(),
             1 => "1 Shure device found.".to_string(),
             n => format!("{n} Shure devices found."),
         };
-        self.status_is_error = false;
+        self.set_ok(found);
+    }
+
+    fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
+        self.status = message.into();
+        self.status_is_error = is_error;
     }
 
     pub fn set_ok(&mut self, message: impl Into<String>) {
-        self.status = message.into();
-        self.status_is_error = false;
+        self.set_status(message, false);
     }
 
     pub fn set_err(&mut self, message: impl Into<String>) {
-        self.status = message.into();
-        self.status_is_error = true;
+        self.set_status(message, true);
     }
 
     /// The command a key asks for, after moving the selection.
