@@ -60,7 +60,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `mute-toggle` | all but MV7 | fake, demo | Enter and Space toggle Mute, send MUTE, and show `● ON` in the error colour |
 | `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is |
 | `settings-follow-the-device` | all | fake | Gain, Monitor Mix and mode changed elsewhere (a script, MOTIV) show within a second, several at once in one status |
-| `manual-after-auto-re-reads-gain` | MVX2U, MV6 | fake | A TUI switch from Auto to Manual re-reads the gain, so → steps from the device's Manual gain, not one read in Auto (unconfirmed on these two models) |
+| `manual-after-auto-re-reads-gain` | MVX2U, MV6 | fake | A TUI switch from Auto to Manual re-reads the gain and names a change in the status, so → steps from the device's Manual gain, not one read in Auto (unconfirmed on these two models); unanswered, the switch isn't reported as failed and → sends nothing |
 | `playback-level-follows-the-device` | MVX2U Gen 2, MV6 Gen 2, MV7+ | fake | A Playback Level changed elsewhere shows within a second (not polled on the MV6, whose GET is unconfirmed, #99) |
 | `mute-poll-finds-the-device-gone` | all | fake | Unplugged at 0.5 s, the device shows as disconnected by the mute poll at 1 s, before the 2 s presence poll |
 | `gain-adjust` | all but MV7 | fake | ←/→ step gain by 1 dB and send GAIN |

@@ -1892,12 +1892,15 @@ fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
 /// MVX2U Gen 1 and MV6 the gain after a switch to Manual. Their gain read in
 /// Auto is unconfirmed and may be Auto's moving gain, kept by the live poll or
 /// a readback, and the first arrow key in Manual would step from it: a jump of
-/// up to the whole range. Unanswered, the settings are marked unread, so
-/// nothing steps from it until a readback. The MVX2U Gen 2 and MV6 Gen 2 keep
-/// their Manual gain through Auto (20 dB before and after, tested on both
-/// 2026-10-23) and report it in Auto (tested 2026-10-28 and 2026-10-31), and
-/// so does the MV7+ (firmware 1.6.0.1, reported by mike-callahan 2026-10-31),
-/// so the gain shown is already the one to step from. No-op in demo mode.
+/// up to the whole range. Also unconfirmed: whether they report the Manual
+/// gain straight after the mode SET's acks. A changed gain is added to the
+/// status. Unanswered, the settings are marked unread, so nothing steps from
+/// the old gain until a readback, but the mode switch, which landed, isn't
+/// reported as failed. The MVX2U Gen 2 and MV6 Gen 2 keep their Manual gain
+/// through Auto (20 dB before and after, tested on both 2026-10-23) and report
+/// it in Auto (tested 2026-10-28 and 2026-10-31), and so does the MV7+
+/// (firmware 1.6.0.1, reported by mike-callahan 2026-10-31), so the gain shown
+/// is already the one to step from. No-op in demo mode.
 fn resync_after_mode(app: &mut App, device: &Option<ShureDevice>, mode: InputMode) -> Result<()> {
     let Some(dev) = device.as_ref() else {
         return Ok(());
@@ -1906,11 +1909,13 @@ fn resync_after_mode(app: &mut App, device: &Option<ShureDevice>, mode: InputMod
         DeviceModel::Mv7 => resync_mv7_state(app, device),
         DeviceModel::Mvx2u | DeviceModel::Mv6 if mode == InputMode::Manual => {
             match dev.read_gain()? {
-                Some(gain_tenths) => app.device_state.gain_tenths = gain_tenths,
-                None => {
-                    app.state_unread = true;
-                    note_unread(app);
+                Some(gain_tenths) if gain_tenths != app.device_state.gain_tenths => {
+                    app.device_state.gain_tenths = gain_tenths;
+                    let done = app.status_message.trim_end_matches('.').to_string();
+                    app.set_ok(format!("{done}, {}", gain_line(gain_tenths)));
                 }
+                Some(_) => {}
+                None => app.state_unread = true,
             }
             Ok(())
         }

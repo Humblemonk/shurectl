@@ -658,12 +658,14 @@ pub mod shell {
             match (name, arg) {
                 (GET_BLOCK, Some(id)) => self.block_reply(id),
                 (SET_BLOCK, Some(arg)) => match arg.split_once(' ') {
-                    // As for gain, the mic answers [Failed] to a block SET
-                    // that changes nothing (seen for Monitor Mix, assumed for
-                    // the rest), such as Monitor Mix's 0–2% floor.
+                    // As for gain, the mic answers [Failed] to a Monitor Mix
+                    // that changes nothing (`MIX_CURVE`'s 0–2% floor). Only
+                    // Monitor Mix: for the other blocks it is assumed, and the
+                    // fake shouldn't build an assumption into the scenarios.
                     Some((id, data))
-                        if self.values.get(&format!("{BLOCK_REPLY} {id}"))
-                            == Some(&data.to_string()) =>
+                        if id == BLOCK_MONITOR_MIX
+                            && self.values.get(&format!("{BLOCK_REPLY} {id}"))
+                                == Some(&data.to_string()) =>
                     {
                         FAILED_REPLY.into()
                     }

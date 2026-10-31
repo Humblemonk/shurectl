@@ -220,8 +220,10 @@ fn execute(
         )?;
         // Whether every model keeps its gain across the switch is unconfirmed,
         // so read the device again before a gain step or the JSON uses it. The
-        // MV7 is read twice, as apply_action() re-reads it too; it's one
-        // readback, not worth a model check.
+        // MV7, and the MVX2U Gen 1 and MV6 switching to Manual, are read twice,
+        // as apply_action() re-reads them too (`resync_after_mode()`); not
+        // worth a model check. This readback also clears the unread mark an
+        // unanswered gain read there leaves.
         if mode != switched_from
             && let Some(dev) = device.as_ref()
         {
