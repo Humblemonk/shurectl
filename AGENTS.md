@@ -8,8 +8,9 @@ Single-crate Rust binary. Prefer the simple, obvious solution over clever abstra
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
 `protocol.md` for `protocol.rs`/`src/protocol/`/`device.rs`/`probe.rs` (HID packet format,
 usbmon debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`,
-`ui.md` for `ui.rs` (MOTIV Mix palette and controls). Claude Code loads these only when a matching file
-is read, so anything a reviewer must know from a diff alone belongs in **Review** below.
+`ui.md` for `ui.rs` (MOTIV Mix palette and controls). Claude Code loads these only when a
+matching file is read, so anything a reviewer must know from a diff alone belongs in
+**Review** below.
 
 ## Commands
 
@@ -327,6 +328,6 @@ rather than promoting a lower one.
   - `low`: no write, readback or preset path touched (rendering, mouse, meter, CLI output).
   - `medium`: device writes, readback, the live poll or presets: where a P1 could come from.
   - `high`: where a P0 could come from: packet bytes, addresses or MV7 commands in
-    `protocol.rs` or `src/protocol/mv7_text.rs`, reply routing or a `getters` slice, the mute, gain, level or 48V write paths, the Gain Lock
-    order in `apply_binary_preset()`, `recover_from_failure()`. Also a release, over every
-    commit since the last tag.
+    `protocol.rs` or `src/protocol/mv7_text.rs`, reply routing or a `getters` slice, the
+    mute, gain, level or 48V write paths, the Gain Lock order in `apply_binary_preset()`,
+    `recover_from_failure()`. Also a release, over every commit since the last tag.
