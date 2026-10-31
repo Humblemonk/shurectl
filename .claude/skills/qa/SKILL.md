@@ -37,6 +37,7 @@ Inputs:
 | `{"tick": 2100}` | Advance the fake clock (ms, max 60000); runs the presence poll (every 2 s) and the live poll (every 1 s: mute, mode, gain and the monitor levels, one GET each, or one line each on the MV7) when they fall due |
 | `{"device": "unplug"}`, `{"device": "replug"}` | Fake device only |
 | `{"device": {"drop_acks": 1, "extra_acks": 1, "refuse": 1, "fail_io": true}}` | Inject faults: fewer or more acks after the next CONFIRM, answer the next command with an unknown address (`[Failed]` on the MV7), fail all I/O. A `tick` that runs the live poll can use up `refuse`, and its drain discards queued acks, so put a one-shot fault right before the command it is for |
+| `{"device": {"refused_get": "MUTE_BUTTON"}}`, `{"device": {"firmware": "1.3.0.13"}}` | Answer that feature's GETs with an unknown address, or report that firmware version, until cleared with `null` (feature names: the `features` query) |
 | `{"device": {"muted": true}}` | Mute (or with `false` unmute) the fake on the device itself, as its mute button does; the next live poll shows it |
 | `{"device": {"gain_tenths": 120, "monitor_mix": 60, "playback_mix": 30, "mode": "Auto"}}` | Change these on the fake itself, as a script or MOTIV would; the next live poll shows them |
 | `{"meter": -12.5}` | Push a peak (dBFS) into the meter at the fake clock's time; `tick` ages it (bar 0.3 s, peak hold 3 s). Demo mode has no meter |
@@ -114,7 +115,8 @@ height, a key only one model answers, a packet sent in demo mode.
 Paths are relative to where `--qa` runs (`tests/` under the end-to-end runner). Trim the
 file to the lines that matter. `cargo test --features qa --test e2e` runs every file
 in `tests/scenarios/` per model in its header and in both fake and demo mode (add
-`"modes": ["fake"]` when it needs the device or the fake's Manual, 24 dB start). The
+`"modes": ["fake"]` when it needs the device or the fake's Manual, 24 dB start; `"size":
+[80, 24]` starts it at another size). Add the scenario's row to `tests/scenarios/README.md`. The
 runner refuses a file with no `expect` line.
 
 A bug you can't fix in the same change can still go in as a regression test: write

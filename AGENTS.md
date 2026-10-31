@@ -82,22 +82,18 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
 **Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second while
-connected (`read_live()`: one GET each, kept only when `answers_at_its_address()`; on the MV7
-one text line each), so a change made elsewhere (the mic's mute button, a script, MOTIV) shows
-without `r`, and the next arrow key doesn't step from a stale value and jump the level. It only
-reads: the binary models drain queued input first, an unusable answer is ignored, and a
-`Disconnected` error marks the device disconnected. A mode change re-reads everything. It runs
-while the other settings are unread too, announcing only mute then (the rest would read as
-changes from defaults); in Auto a gain change is kept but not announced. After any mode switch
-(TUI or `--mode`) the MV7 re-reads everything, and after a switch to Manual the MVX2U Gen 1 and
-MV6, whose gain read in Auto is unconfirmed, re-read the gain (`resync_after_mode()`). Mute is
-a fixed write
-(`ActionKind`), allowed before a readback in the TUI and CLI, because refusing it would leave
-the mic live; a mute whose outcome nothing could read back shows as OFF, never Muted over a
-live mic (`recover_from_failure()`). On the MV7 an unanswered `micMute` skips the poll's other
-lines; the MV6's unconfirmed Playback Level GET (#99) isn't polled. Any write from the TUI
-pushes the next poll back a second (`send_from_tui()`), since whether a device applies a write
-before acking it is unconfirmed. Hardware results: `.claude/rules/protocol.md`.
+connected (`read_live()`: one GET each, kept only when `answers_at_its_address()`; one text
+line each on the MV7), so a change made elsewhere shows without `r` and the next arrow key
+steps from the device's value, not a stale one. It only reads: an unusable answer is ignored
+and a `Disconnected` error marks the device disconnected. A mode change re-reads everything,
+and so does `resync_after_mode()` after a mode switch from the TUI or `--mode`, as far as
+the model needs. While the other settings are unread it still runs, announcing only mute. A
+TUI write pushes the next poll back a second (`send_from_tui()`). Per-model exceptions and
+hardware results: `.claude/rules/protocol.md`.
+
+**Mute** is a fixed write (`ActionKind`), allowed before a readback in the TUI and CLI,
+because refusing it would leave the mic live. A mute whose outcome nothing could read back
+shows as OFF, never Muted over a live mic (`recover_from_failure()`).
 
 ## Adding a New Command
 
@@ -140,10 +136,8 @@ don't add another, or a flag that repeats one. Every write goes through `apply_a
 
 ## Cross-Device UI Consistency
 
-A user owns one device but reads one readme, one help overlay, and one set of screenshots.
-If "Gain Lock" on the Gen 2 is "Lock" on the MV6, the docs stop matching reality. Divergence
-is also the largest maintenance cost here: every model-specific branch is one more
-`DeviceModel` match to keep in step (listed in step 4 below).
+A user owns one device but reads one readme, help overlay and set of screenshots, and every
+model-specific branch is one more `DeviceModel` match to keep in step.
 
 **The rule:** any control that exists on more than one model has identical label, units,
 value formatting, keybinding, and position relative to its neighbours on all of them. Only
@@ -166,9 +160,9 @@ Shared across all models unless the hardware makes it impossible:
 - **Keybindings**: Tab/Shift-Tab cycles tabs, ↑/↓ moves focus, ←/→ adjusts, Enter/Space
   toggles, `?` help. No key only one model responds to. A readme shortcut that works on
   some devices only says which
-- **Focus traversal**: mode → mute → gain → gain check (the Level meter, Manual only) →
-  monitor mix → device extras. Models skip entries they lack; they don't reorder them
-  because it "reads better" there
+- **Focus traversal**: mode → mute → gain → gain lock → gain check (the Level meter, Manual
+  only) → monitor mix → playback level → device extras. Models skip entries they lack; they
+  don't reorder them because it "reads better" there
 - **Summary**: the Main tab's Summary is one ordered `SummaryRow` list; a model picks its
   rows in `summary_rows()` but can't reorder them
 - **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
@@ -258,14 +252,12 @@ rather than promoting a lower one.
   byte routes only FEAT_MIX 0x03 (Playback Mix; evidence in `.claude/rules/protocol.md`).
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
   left at its default (36 dB gain). It drains queued input first, and
-  `send_get_past_strays()` passes over reports that can't be the GET's answer (a late reply,
-  or on Linux another shurectl's: hidraw gives every open handle each report): any other
-  report for a live-poll GET, a reply at a live-poll address for the rest. A GET that reads
-  only strays has no answer, and the readback fails rather than pass with a default. Whether
-  every GET is answered at its own address is unconfirmed, so a general check needs captures
-  first. `query_as()` with `Need::Optional` is for a GET unchecked on that model's hardware
-  or missing from some firmware; its field is an `Option` left `None`, as the Mute Button's
-  is, so nothing shows, saves or writes a default.
+  `send_get_past_strays()` skips reports that can't be the GET's answer (a late reply, or on
+  Linux another shurectl's); a GET that reads only strays fails the readback. Whether every
+  GET is answered at its own address is unconfirmed, so don't add a general address check
+  without captures. `query_as()` with `Need::Optional` is for a GET unchecked on that model
+  or missing from some firmware: its field is an `Option` left `None`, so nothing shows,
+  saves or writes a default.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must

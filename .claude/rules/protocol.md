@@ -8,8 +8,8 @@ paths:
 
 # USB HID Protocol
 
-Every packet is exactly 64 bytes, report ID `0x01` included, sent via `hid_write()` /
-`hid_read()` on `/dev/hidrawN`. Not the USB audio class interface, and not
+Every packet is exactly 64 bytes, report ID `0x01` included, sent as hidapi output reports
+(`write()`/`read()`; `/dev/hidrawN` on Linux). Not the USB audio class interface, and not
 `HIDIOCSFEATURE`/`HIDIOCGFEATURE`. The full layout is the module doc at the top of
 `protocol.rs`; `build_packet()` and `build_packet_hdr0()` frame every binary packet.
 
@@ -33,15 +33,13 @@ CRC-16/ANSI covers 0x11 up to the CRC
   Some settings send only one (Gen 2 mute), which costs one `ACK_TIMEOUT_MS` wait. That
   timeout is 15 ms on every model, measured on the Gen 2 (acks in ≤3 ms). On the MV7+ (a
   MOTIV capture on firmware 1.6, mike-callahan) the two are the CONFIRM ack and a SET echo
-  carrying the value, in either order, and LED-page SETs sometimes send the ack alone (20 of
-  52). The echo comes only when the SET changes the value: 118 of 118 changing SETs got one,
-  20 of 20 same-value SETs only the ack (re-count by mike-callahan, 2026-10-31), so a
-  same-value SET costs one ack timeout, which is harmless. Ack and echo came 9–12 ms after
-  the CONFIRM, at most 19 ms, so the 15 ms wait for each can leave one queued; every
-  readback and live poll drains queued input first. If a user reports stale values after a
-  preset load or refresh, change a value with SET + CONFIRM (a same-value SET gets no echo
-  on the MV7+) and time and count the reports that arrive: too few acks is harmless, too
-  slow or too many is the bug
+  carrying the value, in either order; LED-page SETs sometimes send the ack alone. The echo
+  comes only when the SET changes the value (every changing SET got one, no same-value SET
+  did; re-count by mike-callahan, 2026-10-31), so a same-value SET costs one harmless ack
+  timeout. Ack and echo came 9–19 ms after the CONFIRM, so the 15 ms wait can leave one
+  queued; every readback and live poll drains queued input first. For stale values after a
+  preset load or refresh, change a value with SET + CONFIRM and time and count the reports
+  that arrive: too few acks is harmless, too slow or too many is the bug
 - **State readback:** there is no monolithic GET_STATE. `device.rs::get_state()` issues
   individual `cmd_get_*` packets; `apply_response()` dispatches on the 2-byte feature address
   and writes into `DeviceState`. The address → field mapping is documented inline in
@@ -65,7 +63,14 @@ CRC-16/ANSI covers 0x11 up to the CRC
   (byte 6 = `2d`, byte 8 = `00`; payload `00 00 01`, 16 bytes from MOTIV, then the mic's
   `00 10` value), which the mic doesn't answer. In every session's capture (mike-callahan,
   2026-10-31). shurectl works without it; don't send it
-- **Live poll on hardware** (`read_live()`; the design is under Live poll in `AGENTS.md`): on
+- **Live poll per model** (the design is under Live poll in `AGENTS.md`): the binary models
+  drain queued input before each poll. In Auto a gain change is kept but not announced.
+  After any mode switch the MV7 re-reads everything; after a switch to Manual the MVX2U
+  Gen 1 and MV6, whose gain read in Auto is unconfirmed, re-read the gain
+  (`resync_after_mode()`). On the MV7 an unanswered `micMute` skips the poll's other lines.
+  The MV6's unconfirmed Playback Level GET (#99) isn't polled. A TUI write pushes the poll
+  back a second because whether a device applies a write before acking it is unconfirmed
+- **Live poll on hardware** (`read_live()`): on
   the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows
   the press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed
   from the command line showed in a running TUI, and the next arrow key stepped from the new
