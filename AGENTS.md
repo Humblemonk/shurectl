@@ -214,7 +214,7 @@ Shared across all models unless the hardware makes it impossible:
 
 | Situation | Approach |
 | --- | --- |
-| New protocol command | One roundtrip test in `protocol.rs` first: the packet bytes (match a usbmon capture when there is one) and `apply_response()` decoding the reply. Length and CRC come from `build_packet()`, so don't re-test them per command |
+| New protocol command | One roundtrip test in `protocol.rs` (MV7: `src/protocol/mv7_text.rs`) first: the packet bytes (match a usbmon capture when there is one) and `apply_response()` decoding the reply. Length and CRC come from `build_packet()`, so don't re-test them per command |
 | Packet encoding changes (`build_packet()`, `build_packet_hdr0()`, `crc16_ansi()`) | Test CRC correctness and the 64-byte length invariant there |
 | State decode changes | Test `apply_response()` with hand-crafted response buffers |
 | User-visible behaviour (keys, focus, clicks, status, packet order, reconnects) | A scenario in `tests/scenarios/`, run on every model in its header, with a fake device and in demo mode. Record one with `shurectl --qa` (the `qa` skill, `.claude/skills/qa/SKILL.md`) |
