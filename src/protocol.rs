@@ -418,7 +418,9 @@ impl DeviceModel {
     ///
     /// - MV7+ (MOTIV capture, firmware 1.6): a CONFIRM ack (`09 00 00`) and a SET
     ///   echo (`04 02 02`, or `04 02 01` for the lock class), in either order.
-    ///   LED-page SETs sometimes send the ack alone, which costs one ack timeout.
+    ///   The echo comes only when the SET changes the value (118 of 118 changing
+    ///   SETs, none of 20 same-value ones; mike-callahan, 2026-10-31), and
+    ///   LED-page SETs sometimes send the ack alone. Each costs one ack timeout.
     /// - MVX2U Gen 2 (checked on hardware): a SET ack (`0a 02 02`) and a CONFIRM
     ///   ack (`09 00 00`).
     /// - MVX2U Gen 1, MV6 and MV6 Gen 2: assumed to match (same binary protocol),
@@ -606,7 +608,10 @@ const MV6_GEN2_FEAT_TONE_MODE: [u8; 2] = [0x02, 0x05];
 // Also in mike-callahan's MV7+ captures (firmware 1.6, re-read 2026-10-27), unused
 // here and of unknown meaning: FEAT_GAIN with prefix 0x01, which MOTIV subscribes
 // to and reads as 0x2710 (10000) throughout; lock-class 0x00 0x21 (prefix 0x00),
-// subscribed and read as 0x00. MOTIV reads the firmware version at lock-class
+// subscribed and read as 0x00. MOTIV also subscribes to and reads Gain Lock at
+// MV6_FEAT_GAIN_LOCK, which answered 0x00 to a probe (firmware 1.6.0.1,
+// 2026-10-31); shurectl treats the MV7+ as having no Gain Lock, and its SET is
+// uncaptured. MOTIV reads the firmware version at lock-class
 // 0x00 0x04 as bytes (00 01 00 06 ... on 1.6), where shurectl reads text at
 // FEAT_FIRMWARE.
 
