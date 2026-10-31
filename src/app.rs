@@ -1588,7 +1588,8 @@ impl App {
     /// key sends it, or ←/→ or Enter on a control of a tab this model shows and
     /// hasn't locked. The command line's write flags refuse the rest, so a
     /// script reaches no setting the model lacks, nor one the screen hides in
-    /// its current mode, tone mode or LED theme or behind Gain Lock.
+    /// its current mode, tone mode or LED theme or behind Gain Lock, nor the
+    /// MV6's Playback Level while its read goes unanswered.
     pub fn offers(&self, action: &DeviceAction) -> bool {
         use DeviceAction::*;
         match action {
@@ -1657,7 +1658,8 @@ impl App {
         ];
         let mut walker = self.scratch();
         // Reused for every press: each resets the state, tab, focus and band
-        // below, which is all adjust_focused() and toggle_focused() read.
+        // below. Besides those, adjust_focused() and toggle_focused() read
+        // only `unread_gets`, which scratch() copies and no press changes.
         // Reset more here if they start reading other fields (name editing,
         // the factory-reset confirmation).
         let mut probe = self.scratch();

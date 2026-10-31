@@ -403,17 +403,12 @@ fn check_values(request: &Request, app: &App) -> Result<()> {
 /// asking `offers()` before each, as `write()` will. So `--mode toggle --gain
 /// 30` from Manual, or anything with `--gain` under Gain Lock, changes nothing.
 fn check_writes(request: &Request, app: &App) -> Result<()> {
-    if request.playback_mix.is_some() && app.playback_unread() {
-        bail!(
-            "--playback-mix: the {} didn't answer the Playback Level read, so it isn't \
-             changed (that read is unconfirmed on this model).",
-            app.device_model.display_name()
-        );
-    }
     let mut planned = App {
         device_model: app.device_model,
         // A copy for the replay to change.
         device_state: app.device_state.clone(),
+        // Cloned so offers() refuses an unread Playback Level here too.
+        unread_gets: app.unread_gets.clone(),
         ..App::default()
     };
     if let Some(choice) = request.mode {
@@ -462,16 +457,20 @@ fn mode_after(choice: ModeChoice, current: InputMode) -> InputMode {
 fn refusal(app: &App, flag: &str, action: &DeviceAction) -> String {
     let model = app.device_model.display_name();
     let gain = matches!(action, DeviceAction::SetGain(_));
+    let playback = matches!(action, DeviceAction::SetMv7PlaybackMix(_));
     if gain && app.device_state.mode == InputMode::Auto {
         format!(
             "{flag}: the {model} is in Auto Level mode, which sets its own gain. Use --mode manual first."
         )
     } else if gain && app.gain_locked() {
         format!("{flag}: Gain Lock is on. Turn it off in the TUI first.")
-    } else if matches!(action, DeviceAction::SetMv7PlaybackMix(_))
-        && !app.device_model.has_playback_mix()
-    {
+    } else if playback && !app.device_model.has_playback_mix() {
         format!("{flag}: the {model} has no Playback Level.")
+    } else if playback && app.playback_unread() {
+        format!(
+            "{flag}: the {model} didn't answer the Playback Level read, so it isn't \
+             changed (that read is unconfirmed on this model)."
+        )
     } else {
         format!("{flag}: not available on the {model} with its current settings.")
     }
@@ -1110,5 +1109,31 @@ mod tests {
         };
         let (result, _, _) = run_on(&fake, &request);
         assert_eq!(result.expect("written").device_state.playback_mix, 40);
+    }
+
+    #[test]
+    fn a_playback_level_unread_after_a_re_read_is_refused_with_its_reason() {
+        // As when the re-read after --mode goes without it: check_writes()
+        // passed, so write() is the one to refuse.
+        let mut app = App {
+            device_model: DeviceModel::Mv6,
+            unread_gets: vec![crate::protocol::cmd_get_mv7_playback_mix(0)],
+            ..App::default()
+        };
+        let action = DeviceAction::SetMv7PlaybackMix(40);
+        let err = write(
+            &mut app,
+            &mut None,
+            "--playback-mix",
+            action,
+            |_| {},
+            &mut |_| {},
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(
+            err.contains("didn't answer the Playback Level read"),
+            "{err}"
+        );
     }
 }
