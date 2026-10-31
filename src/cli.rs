@@ -331,7 +331,13 @@ fn write(
     report: &mut dyn FnMut(&str),
 ) -> Result<()> {
     if !app.offers(&action) {
-        bail!("{}", refusal(app, flag, &action));
+        // check_writes() passed the run on the first readback (mute alone,
+        // which skips it, is always offered), so only a re-read after --mode
+        // gets here, with any earlier flags written.
+        bail!(
+            "{} Any flags before it were applied.",
+            refusal(app, flag, &action)
+        );
     }
     let is_mute = matches!(action, DeviceAction::SetMute(_));
     let before = app.device_state.clone();
@@ -402,15 +408,12 @@ fn check_values(request: &Request, app: &App) -> Result<()> {
 /// part of it: replay the writes in order on a copy of the state just read,
 /// asking `offers()` before each, as `write()` will. So `--mode toggle --gain
 /// 30` from Manual, or anything with `--gain` under Gain Lock, changes nothing.
+/// The exception is the re-read after a `--mode` switch: if it changes what
+/// `offers()` allows (the MV6's Playback Level going unread), `write()` refuses
+/// a later flag after the earlier ones were written, and says so.
 fn check_writes(request: &Request, app: &App) -> Result<()> {
-    let mut planned = App {
-        device_model: app.device_model,
-        // A copy for the replay to change.
-        device_state: app.device_state.clone(),
-        // Cloned so offers() refuses an unread Playback Level here too.
-        unread_gets: app.unread_gets.clone(),
-        ..App::default()
-    };
+    // A copy for the replay to change.
+    let mut planned = app.scratch();
     if let Some(choice) = request.mode {
         let mode = mode_after(choice, planned.device_state.mode);
         let action = DeviceAction::SetMode(mode);

@@ -1658,10 +1658,11 @@ impl App {
         ];
         let mut walker = self.scratch();
         // Reused for every press: each resets the state, tab, focus and band
-        // below. Besides those, adjust_focused() and toggle_focused() read
-        // only `unread_gets`, which scratch() copies and no press changes.
-        // Reset more here if they start reading other fields (name editing,
-        // the factory-reset confirmation).
+        // below. adjust_focused() and toggle_focused() read other fields too:
+        // `unread_gets`, which scratch() copies, and the presets,
+        // `state_unread` and the gain check's, left at their defaults. Reset
+        // more here if a press starts changing one a later press reads (name
+        // editing, the factory-reset confirmation).
         let mut probe = self.scratch();
         for tab in Tab::ALL {
             if self.is_tab_locked(tab) {
@@ -1687,8 +1688,10 @@ impl App {
         false
     }
 
-    /// A copy of the model and settings for `a_control_sends()` to change.
-    fn scratch(&self) -> App {
+    /// A copy of the model and settings for `a_control_sends()`, and the CLI's
+    /// `check_writes()`, to change: the model, the settings and which reads
+    /// went unanswered, which is what `offers()` depends on.
+    pub(crate) fn scratch(&self) -> App {
         App {
             device_model: self.device_model,
             // Cloned so the walk can change it without touching the real state.
