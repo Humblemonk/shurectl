@@ -1660,9 +1660,11 @@ impl App {
         // Reused for every press: each resets the state, tab, focus and band
         // below. adjust_focused() and toggle_focused() read other fields too:
         // `unread_gets`, which scratch() copies, and the presets,
-        // `state_unread` and the gain check's, left at their defaults. Reset
-        // more here if a press starts changing one a later press reads (name
-        // editing, the factory-reset confirmation).
+        // `state_unread` and the gain check's fields, left at their defaults.
+        // Enter on the gain check starts it, but that control never sends an
+        // action. Reset more here if a press starts changing a field that
+        // changes what a later press sends (name editing, the factory-reset
+        // confirmation).
         let mut probe = self.scratch();
         for tab in Tab::ALL {
             if self.is_tab_locked(tab) {

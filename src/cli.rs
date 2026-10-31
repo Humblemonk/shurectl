@@ -335,7 +335,8 @@ fn write(
         // which skips it, is always offered), so only a re-read after --mode
         // gets here, with any earlier flags written.
         bail!(
-            "{} Any flags before it were applied.",
+            "{} The changes before it, in the order mode, mute, gain, monitor \
+             levels, were applied.",
             refusal(app, flag, &action)
         );
     }
@@ -505,12 +506,10 @@ fn absolute_level(flag: &str, value: f64) -> Result<u8> {
 /// The state after `presses` of → on `focus` (← when negative), made with the
 /// TUI's own `adjust_focused()`, so a step is the arrow key's by construction.
 fn pressed(app: &App, focus: Focus, presses: i32) -> DeviceState {
+    // A copy for the presses to change.
     let mut control = App {
-        device_model: app.device_model,
-        // A copy for the presses to change.
-        device_state: app.device_state.clone(),
         focus,
-        ..App::default()
+        ..app.scratch()
     };
     // Every control's range is crossed well within this many presses.
     for _ in 0..presses.unsigned_abs().min(1000) {
@@ -1138,5 +1137,6 @@ mod tests {
             err.contains("didn't answer the Playback Level read"),
             "{err}"
         );
+        assert!(err.ends_with("were applied."), "{err}");
     }
 }
