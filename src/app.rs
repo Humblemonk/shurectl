@@ -1691,6 +1691,8 @@ impl App {
             device_model: self.device_model,
             // Cloned so the walk can change it without touching the real state.
             device_state: self.device_state.clone(),
+            // Cloned too: the Playback Level control refuses while it's unread.
+            unread_gets: self.unread_gets.clone(),
             ..App::default()
         }
     }
@@ -2895,6 +2897,13 @@ mod tests {
         assert!(!gen1.offers(&DeviceAction::SetLimiter(true)));
         assert!(!gen1.offers(&DeviceAction::FlattenEq));
         assert!(app(DeviceModel::Mvx2u, InputMode::Manual).offers(&DeviceAction::FlattenEq));
+
+        // Not an unread Playback Level (MV6): its field holds a default.
+        let mut mv6 = app(DeviceModel::Mv6, InputMode::Manual);
+        let playback = DeviceAction::SetMv7PlaybackMix(50);
+        assert!(mv6.offers(&playback));
+        mv6.unread_gets = vec![crate::protocol::cmd_get_mv7_playback_mix(0)];
+        assert!(!mv6.offers(&playback));
 
         // A color only under its behavior's Custom theme.
         let mut leds = app(DeviceModel::Mv7Plus, InputMode::Manual);

@@ -1752,9 +1752,9 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     if let Some(gain) = live.gain_tenths.filter(|gain| *gain != state.gain_tenths) {
         state.gain_tenths = gain;
         // In Auto Level the device sets its own gain, which some models may
-        // report as it moves: kept, but not announced. The MVX2U Gen 2
-        // reports its Manual gain instead (tested 2026-10-28); other models
-        // are unconfirmed.
+        // report as it moves: kept, but not announced. The MVX2U Gen 2 and
+        // MV6 Gen 2 report their Manual gain instead (tested 2026-10-28 and
+        // 2026-10-31); other models are unconfirmed.
         let manual = state.mode == InputMode::Manual;
         changed.extend((announce && manual).then(|| gain_line(gain)));
     }

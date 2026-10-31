@@ -299,6 +299,9 @@ rather than promoting a lower one.
 - Factory Reset not marking the device disconnected; the presence poll handles the reboot
 - `load_mv7_preset()` reading the mic itself, more than once, instead of trusting the TUI's
   possibly stale copy
+- The MV7 Limiter (block `1F`) being read and written though unconfirmed on hardware: its ID
+  and values come from Shure's `DSP-Settings-MV7.xml` (via schlarpc/shure-mv7-firmware-re),
+  and it stays as is until MV7 users report back
 - Presets saved before 2.13.1 applying every per-model setting they hold, and before 2.12.0
   `phantom_power = false`, even from a model without it; nothing records which model saved them
 - `fake_hid.rs` agreeing with `protocol.rs` by construction: it proves sequencing and
