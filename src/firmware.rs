@@ -42,7 +42,7 @@ fn archive_item(model: DeviceModel) -> Option<&'static str> {
         DeviceModel::Mv6 => Some("MV6"),
         DeviceModel::Mv6Gen2 => Some("mv6-gen2"),
         // The MV7's text shell reports 0.0.52.0 for what the archive lists as
-        // package 1.2.19 (see protocol.rs `mv7_text`); one known pair can't map
+        // package 1.2.19 (see `protocol::mv7_text`); one known pair can't map
         // the others.
         DeviceModel::Mv7 => None,
         DeviceModel::Mv7Plus => Some("mv7plus"),

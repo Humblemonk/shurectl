@@ -1,0 +1,20 @@
+{"scenario": "gain-check-stops", "models": "all", "modes": ["fake"]}
+{"device": {"muted": true}}
+{"tick": 1000}
+{"expect": {"state": {"muted": true}}}
+{"key": "g"}
+{"expect": {"status": "Gain check needs the mic unmuted.", "status_is_error": true, "screen_contains": "Summary"}}
+{"device": {"muted": false}}
+{"tick": 1000}
+{"key": "g"}
+{"expect": {"screen_contains": "Time left"}}
+{"device": {"muted": true}}
+{"tick": 1000}
+{"expect": {"status": "Gain check stopped: the mic is muted.", "screen_contains": "Summary"}}
+{"device": {"muted": false}}
+{"tick": 1000}
+{"key": "g"}
+{"expect": {"screen_contains": "Time left"}}
+{"device": "unplug"}
+{"tick": 2100}
+{"expect": {"connected": false, "status": "Gain check stopped.", "screen_contains": "Summary"}}

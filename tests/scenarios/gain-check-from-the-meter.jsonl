@@ -1,0 +1,9 @@
+{"scenario": "gain-check-from-the-meter", "models": ["mvx2u", "mv7", "mv7plus"], "modes": ["fake"]}
+{"key": "Down", "repeat": 3}
+{"expect": {"focus": "GainCheck", "screen_contains": "Level    [Enter] gain check"}}
+{"key": "Enter"}
+{"expect": {"screen_contains": ["Time left     10 s", "Level    [Enter] cancel"], "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Gain check cancelled.", "screen_contains": "Summary"}}
+{"key": "Down"}
+{"expect": {"focus": "MonitorMix"}}

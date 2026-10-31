@@ -12,8 +12,10 @@ macOS, and Windows. A lightweight alternative to the ShurePlus MOTIV desktop app
   has them
 - Reverb and LED settings on the models that support them
 - Real-time level meter with peak hold
+- Gain check: speak for 10 seconds and shurectl suggests a gain for your voice
 - 4 preset slots, saved as editable TOML files
-- Mute or load a preset from the command line without opening the TUI
+- Mute, load a preset, change gain, mode or monitor levels, or read the state as JSON from the
+  command line without opening the TUI
 
 Which controls each model has is listed under [Device support](#device-support).
 
@@ -61,13 +63,14 @@ macOS and Windows need no setup.
 ## Usage
 
 ```bash
-shurectl                  # Connect to the first detected device
+shurectl                  # Open the TUI; with several devices connected, pick one first
 shurectl --list           # List detected Shure devices
-shurectl --device <path>  # Connect to a specific device from --list
+shurectl --device <path>  # Connect to a specific device from --list, by path or serial
 shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7, mv7plus
 shurectl --mute           # Toggle mute without launching the TUI (or --mute on / --mute off)
 shurectl --mute status    # Print "on" or "off", e.g. for a status bar
 shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
+shurectl --gain +1        # Change gain, mode or a monitor level, or print JSON (see Scripting)
 ```
 
 | Key | Action |
@@ -79,6 +82,7 @@ shurectl --preset 2       # Load preset slot 2 (1-4) without launching the TUI
 | `→` / `l` | Increase value |
 | `Enter` / `Space` | Toggle boolean / cycle option |
 | `f` | Flatten EQ (zero all bands) — EQ tab, MVX2U Gen 1 and Gen 2 in Manual, and MV6 Gen 2 in Advanced tone |
+| `g` | Gain check (Main tab, Manual mode), as `Enter` on the Level meter does; `Esc` closes it |
 | `r` | Refresh state from device (reconnects right away if it was unplugged and plugged back in) |
 | `s` | Save preset (on Presets tab, focused slot) |
 | `d` / `Delete` | Delete preset (on Presets tab, actions row of the focused slot) |
@@ -103,6 +107,28 @@ hand-editable file, `preset_1.toml` through `preset_4.toml`, in:
 | Linux | `~/.config/shurectl/presets/` |
 | macOS | `~/Library/Application Support/shurectl/presets/` |
 | Windows | `%APPDATA%\shurectl\presets\` |
+
+## Scripting
+
+For scripts, hotkeys and Stream Deck buttons, each of these opens the device, does one thing
+and exits:
+
+```bash
+shurectl --mute toggle                   # Or on / off; status prints "on" or "off"
+shurectl --preset 2                      # Load preset slot 2
+shurectl --mode toggle                   # Or auto / manual
+shurectl --gain 24                       # dB, rounded down to the model's step; +1 / -1 steps
+shurectl --monitor-mix 40                # 0-100, or +5 / -5
+shurectl --playback-mix 40               # 0-100, or +5 / -5, where the model has it
+shurectl --json                          # The device's state as one line of JSON
+shurectl --mode manual --gain 24 --json  # Several changes, then the JSON
+```
+
+A change the TUI wouldn't make right now, such as gain in Auto Level mode, is refused with the
+reason, and a failure exits with status 1 (`--json` prints `{"error": "..."}`). With two mics,
+pick one by the serial `--list` shows: `--device 3EK26001276`. If the TUI is open, press `r`
+there after loading a preset from the command line, and avoid running commands while
+recording, since both then talk to the device at once. `shurectl --help` explains each option.
 
 ## Troubleshooting
 
@@ -158,7 +184,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Tone (Dark ↔ Natural ↔ Bright slider, 10% steps) | — | Auto | ✓ | Simple tone | — | ✓ |
 | EQ Preset (Flat / High Pass / Presence Boost / both) | — | — | — | — | Manual | — |
 | **Dynamics tab** | | | | | | |
-| Limiter | Manual | Manual | — | — | — | ✓ |
+| Limiter | Manual | Manual | — | — | Manual | ✓ |
 | Compressor (Off / Light / Medium / Heavy) | Manual | Manual | — | — | Manual | ✓ |
 | High-Pass Filter (Off / 75 Hz / 150 Hz) | Manual | ✓ | ✓ | ✓ | — | ✓ |
 | Denoiser | — | ✓ | ✓ | ✓, level 1–100% | — | ✓ |
@@ -171,8 +197,9 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Factory Reset (Info tab) | — | ✓ | — | ✓ | — | ✓ |
 | Firmware update check (Info tab) | — | ✓ | ✓ | ✓ | — | ✓ |
 
-Every model also has the level meter, presets, an Info tab (serial number, device name,
-firmware version), `--mute`, `--preset`, and `--demo`.
+Every model also has the level meter, the gain check, presets, an Info tab (serial number, device name,
+firmware version), `--demo`, and the command-line options under [Scripting](#scripting)
+(`--playback-mix` where the model has a Playback Level).
 
 - On the MV6 Gen 2, Tone Mode at the top of the EQ tab picks the Tone slider (Simple) or the
   5-band EQ (Advanced), as in MOTIV.
@@ -180,12 +207,14 @@ firmware version), `--mute`, `--preset`, and `--demo`.
   MV6 Gen 2 and MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
 - The level meter reads your system's default input, so set the Shure as the default input
   (at 100% input volume) for it to match the device.
+- Gain check: in Manual mode, select the Level meter on the Main tab and press `Enter`, then
+  speak normally for 10 seconds. The Summary makes way for the result: your loudest peak and
+  a gain to try, aiming for peaks around -12 dBFS. Set the gain with `←`/`→`, then check
+  again. It listens through the level meter, so it needs the Shure as your default input.
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.
 - On the MVX2U Gen 1, the EQ also has a master enable and a per-band enable.
-- The limiter MOTIV shows for the MV7 is processing inside the MOTIV app, not a mic
-  setting, so shurectl does not offer it.
 - Factory Reset asks for confirmation, and the mic disconnects afterwards.
 
 </details>

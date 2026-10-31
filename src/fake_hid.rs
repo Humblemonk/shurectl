@@ -91,6 +91,16 @@ pub fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
+/// A setting the TUI's live poll follows, for `FakeDevice::set_on_device()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LiveField {
+    Muted,
+    Mode,
+    Gain,
+    MonitorMix,
+    PlaybackMix,
+}
+
 /// Misbehaviour to inject. Ack and refusal counts are used up as they apply.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Faults {
@@ -107,6 +117,12 @@ pub struct Faults {
     pub refused_get: Option<String>,
     /// Firmware version for FIRMWARE GETs to answer with, until cleared.
     pub firmware_version: Option<String>,
+    /// GET replies to hold back until just before the next GET's, as a reply
+    /// that missed its GET's read arrives.
+    pub late_replies: usize,
+    /// MV7 command line left without any reply, as a mic that ignores it,
+    /// until cleared.
+    pub unanswered_line: Option<String>,
 }
 
 type ValueOf = Box<dyn Fn(&DeviceState) -> Vec<u8>>;
@@ -221,7 +237,7 @@ fn features(model: DeviceModel) -> Vec<Feature> {
         ),
         set_feature(
             "LIMITER",
-            |s| cmd_set_limiter(0, s.limiter_enabled),
+            |s| cmd_set_limiter(0, s.limiter_enabled.unwrap_or_default()),
             Some(|s| json!(s.limiter_enabled)),
         ),
         set_feature(
@@ -466,6 +482,8 @@ struct FakeState {
     /// Presence polls that still report the device absent while it reboots.
     rebooting_polls: u32,
     faults: Faults,
+    /// Replies held back by `Faults::late_replies` or `queue_reply_to()`.
+    held: Vec<Vec<u8>>,
 }
 
 impl FakeState {
@@ -483,6 +501,7 @@ impl FakeState {
             generation: 0,
             rebooting_polls: 0,
             faults: Faults::default(),
+            held: Vec::new(),
         };
         state.load_seed();
         state
@@ -548,6 +567,16 @@ impl FakeState {
             return;
         }
         let line = String::from_utf8_lossy(&text).into_owned();
+        if self.faults.unanswered_line.as_deref() == Some(line.as_str()) {
+            self.log.push(Packet {
+                raw: text,
+                kind: PacketKind::Text {
+                    line,
+                    reply: String::new(),
+                },
+            });
+            return;
+        }
         let reply = if self.faults.refuse > 0 {
             self.faults.refuse -= 1;
             mv7_text::FAILED_REPLY.to_string()
@@ -635,21 +664,26 @@ impl FakeState {
                     raw,
                     kind: PacketKind::Get { feature },
                 });
-                if refused {
+                let reply = if refused {
                     let unknown = Key {
                         addr: UNKNOWN_ADDR,
                         ..key
                     };
-                    self.input
-                        .push_back(fake_wire::reply(seq, unknown, &[0x00]));
+                    Some(fake_wire::reply(seq, unknown, &[0x00]))
                 } else if let Some(version) = firmware_version {
-                    self.input.push_back(fake_wire::reply(
-                        seq,
-                        key,
-                        &fake_wire::lp_string(version),
-                    ));
-                } else if let Some(value) = self.store.get(&key) {
-                    self.input.push_back(fake_wire::reply(seq, key, value));
+                    Some(fake_wire::reply(seq, key, &fake_wire::lp_string(version)))
+                } else {
+                    self.store
+                        .get(&key)
+                        .map(|value| fake_wire::reply(seq, key, value))
+                };
+                // Held replies arrive just before this GET's own.
+                self.input.extend(self.held.drain(..));
+                if self.faults.late_replies > 0 {
+                    self.faults.late_replies -= 1;
+                    self.held.extend(reply);
+                } else if let Some(reply) = reply {
+                    self.input.push_back(reply);
                 }
             }
             Request::Set(key, value) => {
@@ -810,16 +844,64 @@ impl FakeDevice {
     /// Mute or unmute the mic on the device itself, as a press of its mute
     /// button does: nothing is sent, so only a GET shows the change.
     pub fn set_muted_on_device(&self, muted: bool) {
+        let changed = DeviceState {
+            muted,
+            ..DeviceState::default()
+        };
+        self.set_on_device(LiveField::Muted, &changed);
+    }
+
+    /// Change one of the settings the TUI's live poll follows on the device
+    /// itself, to its value in `changed`, as the mic's button, MOTIV or another
+    /// shurectl does: nothing is sent here, so only a GET shows the change.
+    pub fn set_on_device(&self, field: LiveField, changed: &DeviceState) {
         let mut state = self.0.borrow_mut();
+        let model = state.model;
         if let Some(shell) = &mut state.shell {
-            shell.answer(&mv7_text::set_mute(muted).line);
-        } else if let Some(feature) = state.features.iter().find(|f| f.name == "MUTE") {
-            let value = (feature.value)(&DeviceState {
-                muted,
-                ..DeviceState::default()
-            });
+            let command = match field {
+                LiveField::Muted => mv7_text::set_mute(changed.muted),
+                LiveField::Mode => {
+                    mv7_text::set_dsp_mode(changed.mode, changed.auto_position, changed.auto_tone)
+                }
+                LiveField::Gain => mv7_text::set_gain(changed.gain_tenths),
+                LiveField::MonitorMix => mv7_text::set_monitor_mix(changed.monitor_mix),
+                // The MV7 has no Playback Level.
+                LiveField::PlaybackMix => return,
+            };
+            shell.answer(&command.line);
+            return;
+        }
+        let name = match field {
+            LiveField::Muted => "MUTE",
+            LiveField::Mode => "MODE",
+            LiveField::Gain => "GAIN",
+            LiveField::MonitorMix if model.has_playback_mix() => "MIC_LEVEL",
+            LiveField::MonitorMix => "MONITOR_MIX",
+            LiveField::PlaybackMix => "PLAYBACK_LEVEL",
+        };
+        if let Some(feature) = state.features.iter().find(|f| f.name == name) {
+            let value = (feature.value)(changed);
             let key = feature.key;
             state.store.insert(key, value);
+        }
+    }
+
+    /// Queue the reply `get` would get, unasked, as another process's GET
+    /// on the same device would (on Linux, hidraw gives every open handle
+    /// each report). It arrives just before the next GET's own reply.
+    #[cfg(test)]
+    pub fn queue_reply_to(&self, get: &[u8]) {
+        let mut state = self.0.borrow_mut();
+        let Some(fake_wire::Parsed {
+            request: Request::Get(key),
+            seq,
+            ..
+        }) = fake_wire::parse_request(get)
+        else {
+            return;
+        };
+        if let Some(value) = state.store.get(&key).cloned() {
+            state.held.push(fake_wire::reply(seq, key, &value));
         }
     }
 
@@ -953,7 +1035,7 @@ mod tests {
             muted: true,
             phantom_power: true,
             monitor_mix: 50,
-            limiter_enabled: true,
+            limiter_enabled: Some(true),
             compressor: CompressorPreset::Medium,
             hpf: HpfFrequency::Hz150,
             eq_enabled: true,
@@ -993,6 +1075,169 @@ mod tests {
 
     /// Phase 1 gate: every GET each model's `get_state()` sends is answered,
     /// and every answer lands on the field it was seeded from.
+    /// The readback of a fake of `model` holding `seeded`, with nothing in the way.
+    fn clean_readback(model: DeviceModel, seeded: &DeviceState) -> DeviceState {
+        let fake = FakeDevice::with_state(model, seeded.clone());
+        fake.open().get_state().expect("readback").state
+    }
+
+    #[test]
+    fn read_live_reads_what_the_mic_holds_and_ignores_another_reply() {
+        for model in MODELS {
+            let seeded = distinct_state(model);
+            let fake = FakeDevice::with_state(model, seeded.clone());
+            let live = fake.open().read_live().expect("no HID failure");
+            assert_eq!(live.muted, Some(seeded.muted), "{model:?}");
+            assert_eq!(live.mode, Some(seeded.mode), "{model:?}");
+            assert_eq!(live.gain_tenths, Some(seeded.gain_tenths), "{model:?}");
+            assert_eq!(live.monitor_mix, Some(seeded.monitor_mix), "{model:?}");
+            // Not polled on the MV6, whose Playback Level GET is unconfirmed (#99).
+            let polled = model.has_playback_mix() && model != DeviceModel::Mv6;
+            let playback = polled.then_some(seeded.playback_mix);
+            assert_eq!(live.playback_mix, playback, "{model:?}");
+
+            // One answered at another address (or `[Failed]` on the MV7): that
+            // value stays unknown, the rest are still read, except on the MV7,
+            // where an unanswered first line skips the poll's others.
+            fake.faults_mut(|faults| faults.refuse = 1);
+            let live = fake.open().read_live().expect("no HID failure");
+            assert_eq!(live.muted, None, "{model:?}");
+            let gain = (model != DeviceModel::Mv7).then_some(seeded.gain_tenths);
+            assert_eq!(live.gain_tenths, gain, "{model:?}");
+        }
+    }
+
+    /// The device picker labels each device with these two reads.
+    #[test]
+    fn the_picker_reads_the_serial_and_name() {
+        for model in MODELS {
+            let dev = FakeDevice::new(model).open();
+            assert_eq!(
+                dev.read_factory_serial().as_deref(),
+                Some("FAKE0001"),
+                "{model:?}"
+            );
+            let name = model
+                .has_device_rename()
+                .then(|| format!("Fake {}", model.display_name()));
+            assert_eq!(dev.read_device_name(), name, "{model:?}");
+        }
+    }
+
+    #[test]
+    fn a_late_mute_reply_doesnt_shift_the_readback() {
+        // The MV7's text shell matches replies by name and drains per command.
+        for model in MODELS
+            .into_iter()
+            .filter(|model| *model != DeviceModel::Mv7)
+        {
+            let seeded = distinct_state(model);
+            let fake = FakeDevice::with_state(model, seeded.clone());
+            let dev = fake.open();
+            fake.faults_mut(|faults| faults.late_replies = 1);
+            let read = dev.read_mute().expect("no HID failure");
+            assert_eq!(read, None, "{model:?}: its reply comes late");
+            let readback = dev.get_state().expect("readback");
+            assert_eq!(readback.state, clean_readback(model, &seeded), "{model:?}");
+        }
+    }
+
+    #[test]
+    fn another_processs_reply_doesnt_shift_the_readback() {
+        // A running TUI's live poll, seen by a command-line readback.
+        for model in MODELS
+            .into_iter()
+            .filter(|model| *model != DeviceModel::Mv7)
+        {
+            for stray in [
+                protocol::cmd_get_gain(0),
+                protocol::cmd_get_mode(0),
+                protocol::cmd_get_mute(0),
+            ] {
+                let seeded = distinct_state(model);
+                let fake = FakeDevice::with_state(model, seeded.clone());
+                let dev = fake.open();
+                fake.queue_reply_to(&stray);
+                let readback = dev.get_state().expect("readback");
+                assert_eq!(readback.state, clean_readback(model, &seeded), "{model:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stray_reply_never_costs_a_setting_the_poll_or_cli_steps_from() {
+        // Another shurectl's full readback overlapping this one. A stray at a
+        // non-live address may still shift a non-live setting, as it always
+        // could, but mute, mode, gain and the levels must read what the mic holds.
+        for model in MODELS
+            .into_iter()
+            .filter(|model| *model != DeviceModel::Mv7)
+        {
+            for stray in [
+                protocol::cmd_get_hpf(0),
+                protocol::cmd_get_phantom(0),
+                protocol::cmd_get_serial(0),
+            ] {
+                let seeded = distinct_state(model);
+                let fake = FakeDevice::with_state(model, seeded.clone());
+                let dev = fake.open();
+                fake.queue_reply_to(&stray);
+                let Ok(readback) = dev.get_state() else {
+                    continue; // a failed readback writes nothing
+                };
+                let clean = clean_readback(model, &seeded);
+                let state = readback.state;
+                assert_eq!(state.gain_tenths, clean.gain_tenths, "{model:?}");
+                assert_eq!(state.muted, clean.muted, "{model:?}");
+                assert_eq!(state.mode, clean.mode, "{model:?}");
+                assert_eq!(state.monitor_mix, clean.monitor_mix, "{model:?}");
+                assert_eq!(state.playback_mix, clean.playback_mix, "{model:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn more_strays_than_a_get_passes_over_fail_the_readback() {
+        // Two readbacks overlapping can pile up a stray per GET. Past the cap,
+        // a live GET has no answer: the readback fails rather than pass with
+        // that setting at its default.
+        for model in MODELS
+            .into_iter()
+            .filter(|model| *model != DeviceModel::Mv7)
+        {
+            let seeded = distinct_state(model);
+            let fake = FakeDevice::with_state(model, seeded.clone());
+            let dev = fake.open();
+            for _ in 0..12 {
+                fake.queue_reply_to(&protocol::cmd_get_hpf(0));
+            }
+            assert!(
+                dev.get_state().is_err(),
+                "{model:?}: passed despite the strays"
+            );
+        }
+    }
+
+    /// An extra ack left queued after a write (481dc76's class): where it parses
+    /// as a reply (the MV7+ SET echo), it used to answer the first GET, so every
+    /// GET got an applied reply and the readback passed with the last GET's
+    /// field (the serial) at its default. `get_state()` now drains first.
+    #[test]
+    fn a_queued_report_doesnt_shift_the_readback() {
+        for model in MODELS
+            .into_iter()
+            .filter(|model| *model != DeviceModel::Mv7)
+        {
+            let seeded = distinct_state(model);
+            let fake = FakeDevice::with_state(model, seeded.clone());
+            let dev = fake.open();
+            fake.faults_mut(|faults| faults.extra_acks = 1);
+            dev.set_mute(seeded.muted).expect("SET");
+            let readback = dev.get_state().expect("readback");
+            assert_eq!(readback.state, clean_readback(model, &seeded), "{model:?}");
+        }
+    }
+
     #[test]
     fn get_state_reads_back_the_seeded_state_on_every_model() {
         for model in MODELS {
@@ -1039,10 +1284,25 @@ mod tests {
         }
     }
 
+    /// The MV7's Limiter block is an optional read (unconfirmed on hardware):
+    /// a mic that ignores it entirely must still read back everything else.
+    #[test]
+    fn silent_mv7_limiter_read_leaves_the_rest_readable() {
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        fake.faults_mut(|faults| faults.unanswered_line = Some("getBlock 1F".into()));
+        let readback = fake.open().get_state().expect("the rest reads back");
+        assert_eq!(readback.state.limiter_enabled, None);
+        assert_eq!(readback.state.gain_tenths, 240);
+        assert_eq!(readback.skipped.len(), 1);
+        assert!(readback.skipped[0].contains("getBlock 1F"));
+    }
+
     #[test]
     fn refused_required_get_still_fails_readback() {
         for (model, feature, label) in [
             (DeviceModel::Mv7Plus, "GAIN", "Gain"),
+            // Required on the MV7+: its echo of prefix 0x03 is captured.
+            (DeviceModel::Mv7Plus, "PLAYBACK_LEVEL", "Playback Level"),
             (DeviceModel::Mv6, "MUTE_BUTTON", "Mute Button"),
             (DeviceModel::Mv6Gen2, "MUTE_BUTTON", "Mute Button"),
         ] {
@@ -1109,40 +1369,12 @@ mod tests {
         }
     }
 
-    /// Documents a known bug (481dc76's class), not intended behaviour: where
-    /// the extra ack parses as a reply (the MV7+ SET echo), every GET gets an
-    /// applied reply, so the readback passes. Replies route by address, so most
-    /// values still land, but the last GET's reply is never read and its field
-    /// keeps `DeviceState::default()`. A fix must flip these asserts, as it
-    /// must the `readback-extra-ack-keeps-serial` scenario.
-    #[test]
-    fn extra_ack_loses_the_last_readback_field_known_bug() {
-        type Field = fn(&DeviceState) -> Value;
-        let cases: [(DeviceModel, &str, Field); 1] =
-            [(DeviceModel::Mv7Plus, "serial", |s| json!(s.factory_serial))];
-        for (model, name, field) in cases {
-            let seeded = distinct_state(model);
-            let fake = FakeDevice::with_state(model, seeded.clone());
-            let device = fake.open();
-            fake.faults_mut(|f| f.extra_acks = 1);
-            device.set_mute(seeded.muted).expect("set mute");
-            let state = device.get_state().expect("readback").state;
-            assert_ne!(field(&seeded), field(&DeviceState::default()), "{model:?}");
-            assert_eq!(
-                field(&state),
-                field(&DeviceState::default()),
-                "{model:?}: the {name} reply was read after all"
-            );
-            assert_eq!(state.gain_tenths, seeded.gain_tenths, "{model:?}");
-            assert_eq!(fake.0.borrow().input.len(), 1, "{model:?}");
-        }
-    }
-
     /// The acks each model sends after a CONFIRM (`fake_wire::acks_after_confirm`).
     /// The MV7+ SET echo parses as a reply, so leaving it unread misplaces a
     /// later GET's value rather than just delaying it; the Gen 2's don't parse.
+    /// The MV7+ sends the two in either order; the fake sends the ack first.
     #[test]
-    fn acks_after_confirm_match_the_hardware_order() {
+    fn acks_after_confirm_match_the_hardware() {
         let mute = |model| {
             let fake = FakeDevice::new(model);
             let key = fake.0.borrow().key_of("MUTE").expect("MUTE");
@@ -1161,7 +1393,7 @@ mod tests {
             );
         }
         let echo = parsed(&mute(DeviceModel::Mv7Plus));
-        assert_eq!(echo[0], None, "the CONFIRM ack comes first");
+        assert_eq!(echo[0], None, "the fake sends the CONFIRM ack first");
         let mut state = DeviceState::default();
         let reply = echo[1].as_ref().expect("the SET echo parses as a reply");
         assert!(apply_reply(reply, &mut state) && state.muted);

@@ -15,7 +15,9 @@
 {"key": "Enter"}
 {"expect": {"status": "EQ → Flat", "text_sent": "setBlock 31 00000000"}}
 {"click_on": "Dynamics"}
-{"expect": {"tab": "Dynamics", "focus": "Compressor"}}
+{"expect": {"tab": "Dynamics", "focus": "Limiter"}}
+{"key": "Down"}
+{"expect": {"focus": "Compressor", "no_packets": true}}
 {"key": "Enter"}
 {"expect": {"status": "Compressor → Light", "text_sent": "setBlock 19 00000001"}}
 {"key": "Enter"}
