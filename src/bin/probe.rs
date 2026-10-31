@@ -60,10 +60,11 @@ use clap::Parser;
 use hidapi::{HidApi, HidDevice};
 
 /// The probe is a separate binary target, so it cannot reach `shurectl`'s own
-/// modules through `crate::`. `protocol.rs` has no dependencies of its own, so
-/// it is compiled directly into the probe instead of re-implementing the CRC,
-/// the packet framing, and the response parser here. `dead_code` is allowed
-/// because the probe only exercises the read-only slice of the protocol.
+/// modules through `crate::`. `protocol.rs` and its submodules in `protocol/`
+/// have no dependencies of their own, so they are compiled directly into the
+/// probe instead of re-implementing the CRC, the packet framing, and the
+/// response parser here. `dead_code` is allowed because the probe only
+/// exercises the read-only slice of the protocol.
 #[allow(dead_code)]
 #[path = "../protocol.rs"]
 mod protocol;

@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/protocol.rs"
+  - "src/protocol/*.rs"
   - "src/device.rs"
   - "src/bin/probe.rs"
 ---
@@ -72,8 +73,8 @@ CRC-16/ANSI covers 0x11 up to the CRC
 The MV7 (PID `0x1012`) ignores everything above. Its vendor interface takes report ID `0x00`
 plus one ASCII line ending in `\n` (`micMute on`) and answers with a line (`micMute=on`).
 DSP settings are hex-addressed blocks (`setBlock 19 00000001`). All of it lives in
-`protocol::mv7_text`; `device.rs` sends it via `send_text()`, and the binary
-`send_set()`/`send_get_past_strays()` refuse to run on the MV7.
+`protocol::mv7_text` (`src/protocol/mv7_text.rs`); `device.rs` sends it via `send_text()`,
+and the binary `send_set()`/`send_get_past_strays()` refuse to run on the MV7.
 
 - `help` and `help <cmd>` on the device list commands and their syntax. They are safe to
   send; `bootDSP` and `setBlock` with unmapped data are not

@@ -6,9 +6,9 @@ directly over USB HID, replacing the Windows/Mac-only ShurePlus MOTIV Desktop ap
 Single-crate Rust binary. Prefer the simple, obvious solution over clever abstractions.
 
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
-`protocol.md` for `protocol.rs`/`device.rs`/`probe.rs` (HID packet format, usbmon
-debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`, `ui.md` for
-`ui.rs` (MOTIV Mix palette and controls). Claude Code loads these only when a matching file
+`protocol.md` for `protocol.rs`/`src/protocol/`/`device.rs`/`probe.rs` (HID packet format,
+usbmon debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`,
+`ui.md` for `ui.rs` (MOTIV Mix palette and controls). Claude Code loads these only when a matching file
 is read, so anything a reviewer must know from a diff alone belongs in **Review** below.
 
 ## Commands
@@ -41,6 +41,8 @@ src/
   mouse.rs      # HitMap from the last rendered frame; clicks/wheel → the same key actions
   presets.rs    # Host-side presets: TOML load/save/delete, PresetSlot
   protocol.rs   # Packet encoding, CRC-16/ANSI, command constructors, apply_response()
+  protocol/mv7_text.rs   # Original MV7's ASCII command shell, and its stand-in for the fake
+  protocol/fake_wire.rs  # Request parsing, reply framing for fake_hid.rs (tests and qa only)
   ui.rs         # ratatui rendering: the tabs in Tab::ALL + help overlay + device picker
   ui_renders.golden  # Render hashes checked by ui.rs `renders_match_golden`
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
@@ -62,7 +64,9 @@ tests/
 **Layering rules (strict):**
 - `apply_action()` in `main.rs` is the *only* place that writes to the device. Never call
   `device.rs` from `ui.rs`, `app.rs` or `mouse.rs`. Mouse input only maps to key actions.
-- Raw protocol byte values live *only* in `protocol.rs` as named constants.
+- Raw protocol byte values live *only* in `protocol.rs` and its submodules in
+  `src/protocol/`, as named constants. Declare a new submodule with `#[path]` like the
+  others, or `shurectl-probe` won't build.
 - `shurectl-probe`, `--qa` and `fake_hid.rs` must never ship to end users via `cargo install`
   or Homebrew. Keep the `probe`/`qa` features and `cfg(any(test, feature = "qa"))` gates intact.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
@@ -181,7 +185,7 @@ Shared across all models unless the hardware makes it impossible:
 **Before adding anything model-specific, in order:**
 
 1. Do other models have this capability under a different vendor name? Use the existing
-   shurectl name and control. Vendor naming stops at `protocol.rs`.
+   shurectl name and control. Vendor naming stops at `protocol.rs` and `src/protocol/`.
 2. Can an existing shared helper render it? Extend the helper (see Drawing helpers above).
 3. A per-model `draw_*` fork, if genuinely required, keeps its siblings' block order,
    borders and spacing; don't start it by copying one and tweaking strings.
@@ -238,7 +242,8 @@ rather than promoting a lower one.
 - **P2**: users notice, but nothing is written or shown wrong: misleading status, help or
   readme wording, a refusal without its reason, a cross-model UI divergence, noticeable
   slowness. Also a broken Rust rule or regression trap that makes a P0/P1 likely later
-  (`_` over `DeviceModel`, a raw byte outside `protocol.rs`, `unwrap()` in production)
+  (`_` over `DeviceModel`, a raw byte outside `protocol.rs` and `src/protocol/`, `unwrap()`
+  in production)
 - **P3**: no effect on users yet: naming, comments, duplication within the jscpd budget,
   refactor preferences. List them in one line at the end, or leave them out
 
@@ -321,7 +326,7 @@ rather than promoting a lower one.
   - Docs- or test-only: skip the review.
   - `low`: no write, readback or preset path touched (rendering, mouse, meter, CLI output).
   - `medium`: device writes, readback, the live poll or presets: where a P1 could come from.
-  - `high`: where a P0 could come from: packet bytes or addresses in `protocol.rs`, reply
-    routing or a `getters` slice, the mute, gain, level or 48V write paths, the Gain Lock
+  - `high`: where a P0 could come from: packet bytes, addresses or MV7 commands in
+    `protocol.rs` or `src/protocol/mv7_text.rs`, reply routing or a `getters` slice, the mute, gain, level or 48V write paths, the Gain Lock
     order in `apply_binary_preset()`, `recover_from_failure()`. Also a release, over every
     commit since the last tag.

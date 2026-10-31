@@ -701,8 +701,8 @@ impl ShureDevice {
                 format!("{reply:?} in reply to {:?}", command.line)
             });
         }
-        // The Limiter block is unconfirmed on hardware (see protocol.rs
-        // `mv7_text`): unanswered, only the Limiter stays unread.
+        // The Limiter block is unconfirmed on hardware (see `protocol::mv7_text`):
+        // unanswered, only the Limiter stays unread.
         // No reply at all is unusable too; only a disconnect fails the readback.
         let command = mv7_text::get_limiter();
         readback.state.limiter_enabled = None;
