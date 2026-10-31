@@ -876,22 +876,39 @@ impl ShureDevice {
 
     /// Read the mute state alone, for `--mute toggle` and `status`, without a
     /// full readback. `Ok(None)` when the device gave no usable answer (a
-    /// timeout, a refusal, another reply); only a HID failure is an error. On
-    /// the binary models, input still queued from earlier (a late ack) is
-    /// discarded first, so it can't be read as the answer.
+    /// timeout, a refusal, another reply); only a HID failure is an error.
     pub fn read_mute(&self) -> Result<Option<bool>> {
-        let read = match self.model {
-            DeviceModel::Mv7 => self.read_text_alone(&mv7_text::get_mute())?,
+        Ok(self
+            .read_one(mv7_text::get_mute, cmd_get_mute)?
+            .map(|state| state.muted))
+    }
+
+    /// Read the gain alone, as [`Self::read_mute`] reads mute.
+    pub fn read_gain(&self) -> Result<Option<u16>> {
+        Ok(self
+            .read_one(mv7_text::get_gain, cmd_get_gain)?
+            .map(|state| state.gain_tenths))
+    }
+
+    /// One setting read alone: the MV7's text line, or the binary GET. On the
+    /// binary models, input still queued from earlier (a late ack) is
+    /// discarded first, so it can't be read as the answer.
+    fn read_one(
+        &self,
+        text: fn() -> mv7_text::TextCommand,
+        binary: fn(u8) -> Vec<u8>,
+    ) -> Result<Option<DeviceState>> {
+        match self.model {
+            DeviceModel::Mv7 => self.read_text_alone(&text()),
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
                 self.drain_input(&mut [0u8; PACKET_SIZE])?;
-                self.read_alone(&cmd_get_mute(self.next_seq()))?
+                self.read_alone(&binary(self.next_seq()))
             }
-        };
-        Ok(read.map(|state| state.muted))
+        }
     }
 
     /// Read what a script can change (mute, mode, gain and the monitor
@@ -1291,7 +1308,19 @@ impl ShureDevice {
     /// Set the Mic Level, or the mic ↔ playback balance on the MVX2U Gen 1 and MV7.
     pub fn set_monitor_mix(&self, mix: u8) -> Result<()> {
         let pkt = match self.model {
-            DeviceModel::Mv7 => return self.send_text_set(&mv7_text::set_monitor_mix(mix)),
+            // 1% and 2% encode as 0%, so a step onto that floor changes
+            // nothing. The MV7 answers [Failed] to an unchanged Monitor Mix
+            // (noted as seen in 2.12.0, 2026-10-15, no capture recorded; see
+            // .claude/rules/protocol.md); for the floor that is unconfirmed.
+            // Not an error when the re-read matches.
+            DeviceModel::Mv7 => {
+                let stored = mv7_text::monitor_mix_as_stored(mix);
+                return self.send_text_set_checked(
+                    &mv7_text::set_monitor_mix(mix),
+                    &mv7_text::get_monitor_mix(),
+                    |state| state.monitor_mix == stored,
+                );
+            }
             // The Gen 1 balance is prefix 0x01 with the standard header.
             DeviceModel::Mvx2u => protocol::cmd_set_mix(self.next_seq(), mix),
             DeviceModel::Mvx2uGen2

@@ -658,6 +658,15 @@ pub mod shell {
             match (name, arg) {
                 (GET_BLOCK, Some(id)) => self.block_reply(id),
                 (SET_BLOCK, Some(arg)) => match arg.split_once(' ') {
+                    // As for gain, the mic answers [Failed] to a block SET
+                    // that changes nothing (seen for Monitor Mix, assumed for
+                    // the rest), such as Monitor Mix's 0–2% floor.
+                    Some((id, data))
+                        if self.values.get(&format!("{BLOCK_REPLY} {id}"))
+                            == Some(&data.to_string()) =>
+                    {
+                        FAILED_REPLY.into()
+                    }
                     Some((id, data))
                         if [BLOCK_COMPRESSOR, BLOCK_LIMITER, BLOCK_EQ, BLOCK_MONITOR_MIX]
                             .contains(&id) =>

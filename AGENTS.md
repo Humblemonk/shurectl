@@ -88,7 +88,10 @@ without `r`, and the next arrow key doesn't step from a stale value and jump the
 reads: the binary models drain queued input first, an unusable answer is ignored, and a
 `Disconnected` error marks the device disconnected. A mode change re-reads everything. It runs
 while the other settings are unread too, announcing only mute then (the rest would read as
-changes from defaults); in Auto a gain change is kept but not announced. Mute is a fixed write
+changes from defaults); in Auto a gain change is kept but not announced. After any mode switch
+(TUI or `--mode`) the MV7 re-reads everything, and after a switch to Manual the MVX2U Gen 1 and
+MV6, whose gain read in Auto is unconfirmed, re-read the gain (`resync_after_mode()`). Mute is
+a fixed write
 (`ActionKind`), allowed before a readback in the TUI and CLI, because refusing it would leave
 the mic live; a mute whose outcome nothing could read back shows as OFF, never Muted over a
 live mic (`recover_from_failure()`). On the MV7 an unanswered `micMute` skips the poll's other

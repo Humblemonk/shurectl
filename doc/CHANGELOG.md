@@ -66,6 +66,9 @@ you pick which one to open.
 
 ### Fixed
 
+- **MV7:** → on Monitor Mix at 0% moves to 1% instead of failing with "The MV7 rejected"
+  and staying at 0%. The mic stores 1% and 2% as 0% and refuses a change that changes
+  nothing. Found in review and on the fake device; not seen on hardware.
 - `--mute` and `--preset` no longer act on the connected device when given with `--demo` or
   `--list`; the combination is refused.
 - A readback (`r`, a reconnect, or the start of a command-line run) no longer takes a report

@@ -1,0 +1,9 @@
+{"scenario": "mv7-monitor-mix-floor", "models": ["mv7"], "modes": ["fake"]}
+{"expect": {"state": {"monitor_mix": 0}}}
+{"click_on": "Monitor Mix"}
+{"key": "Right"}
+{"expect": {"status": "Monitor Mix → 1%", "status_is_error": false, "state": {"monitor_mix": 1}}}
+{"key": "Right"}
+{"expect": {"status": "Monitor Mix → 2%", "status_is_error": false, "state": {"monitor_mix": 2}}}
+{"key": "Right"}
+{"expect": {"status": "Monitor Mix → 3%", "status_is_error": false, "state": {"monitor_mix": 3}}}

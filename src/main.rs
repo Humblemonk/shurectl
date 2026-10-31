@@ -696,8 +696,9 @@ impl LoopState {
 /// pending wheel adjustment, and poll for the device every
 /// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
 /// below the minimum size only the notice is on screen, so keys only quit and
-/// mouse events are dropped. The mute state is read every
-/// `MUTE_POLL_INTERVAL`, and a running gain check takes the meter's peak.
+/// mouse events are dropped. Mute, mode, gain and the monitor levels are read
+/// every `LIVE_POLL_INTERVAL` (`poll_live()`), and a running gain check takes
+/// the meter's peak.
 /// `now` is passed in so the `--qa` harness can run the
 /// same code on a fake clock.
 fn step(
@@ -1065,7 +1066,7 @@ fn apply_action(
                     state.auto_tone,
                 )
             })
-            .and_then(|()| resync_mv7_state(app, device))
+            .and_then(|()| resync_after_mode(app, device, *mode))
         }
         DeviceAction::SetAutoPosition(pos) => {
             app.set_ok(format!("Mic Position → {}", pos));
@@ -1755,7 +1756,8 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
         // report as it moves: kept, but not announced. The MVX2U Gen 2,
         // MV6 Gen 2 and MV7+ report their Manual gain instead (tested
         // 2026-10-28 and 2026-10-31; the MV7+ reported by mike-callahan
-        // 2026-10-31); other models are unconfirmed.
+        // 2026-10-31); on the others a switch to Manual re-reads it
+        // (`resync_after_mode()`).
         let manual = state.mode == InputMode::Manual;
         changed.extend((announce && manual).then(|| gain_line(gain)));
     }
@@ -1865,11 +1867,7 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
 /// The MV7 stores mode, mic position and tone as one setting, and changing it
 /// changes other state too: entering Auto Level resets EQ and compressor, and
 /// leaving it reports a new gain. Re-read the whole state afterwards so the UI
-/// shows what the mic actually has. No-op for other models and in demo mode:
-/// the MV6 Gen 2 and MVX2U Gen 2 keep their manual gain through Auto (20 dB
-/// before and after, tested on both 2026-10-23), and so does the MV7+ (20 dB
-/// through `--mode auto` and back, firmware 1.6.0.1, reported by
-/// mike-callahan 2026-10-31); the MV6 and MVX2U Gen 1 are unconfirmed.
+/// shows what the mic actually has. No-op for other models and in demo mode.
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
         Some(dev) => match dev.model {
@@ -1886,6 +1884,41 @@ fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
             | DeviceModel::Mv7Plus => Ok(()),
         },
         None => Ok(()),
+    }
+}
+
+/// After a switch to `mode` (a key, a click or `--mode`), re-read what it may
+/// have made stale: everything on the MV7 (`resync_mv7_state()`), and on the
+/// MVX2U Gen 1 and MV6 the gain after a switch to Manual. Their gain read in
+/// Auto is unconfirmed and may be Auto's moving gain, kept by the live poll or
+/// a readback, and the first arrow key in Manual would step from it: a jump of
+/// up to the whole range. Unanswered, the settings are marked unread, so
+/// nothing steps from it until a readback. The MVX2U Gen 2 and MV6 Gen 2 keep
+/// their Manual gain through Auto (20 dB before and after, tested on both
+/// 2026-10-23) and report it in Auto (tested 2026-10-28 and 2026-10-31), and
+/// so does the MV7+ (firmware 1.6.0.1, reported by mike-callahan 2026-10-31),
+/// so the gain shown is already the one to step from. No-op in demo mode.
+fn resync_after_mode(app: &mut App, device: &Option<ShureDevice>, mode: InputMode) -> Result<()> {
+    let Some(dev) = device.as_ref() else {
+        return Ok(());
+    };
+    match dev.model {
+        DeviceModel::Mv7 => resync_mv7_state(app, device),
+        DeviceModel::Mvx2u | DeviceModel::Mv6 if mode == InputMode::Manual => {
+            match dev.read_gain()? {
+                Some(gain_tenths) => app.device_state.gain_tenths = gain_tenths,
+                None => {
+                    app.state_unread = true;
+                    note_unread(app);
+                }
+            }
+            Ok(())
+        }
+        DeviceModel::Mvx2u
+        | DeviceModel::Mv6
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7Plus => Ok(()),
     }
 }
 

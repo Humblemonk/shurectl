@@ -1,0 +1,11 @@
+{"scenario": "manual-after-auto-re-reads-gain", "models": ["mvx2u", "mv6"], "modes": ["fake"]}
+{"expect": {"state": {"gain_tenths": 240, "mode": "Manual"}}}
+{"key": "Enter"}
+{"expect": {"state": {"mode": "Auto"}}}
+{"device": {"gain_tenths": 300}}
+{"click_on": "Mode"}
+{"key": "Enter"}
+{"expect": {"state": {"mode": "Manual", "gain_tenths": 300}, "get": "GAIN"}}
+{"click_on": "Gain"}
+{"key": "Right"}
+{"expect": {"set": {"feature": "GAIN", "value": 310}, "state": {"gain_tenths": 310}}}

@@ -100,7 +100,9 @@ and the binary `send_set()`/`send_get_past_strays()` refuse to run on the MV7.
   gain and Monitor Mix and assumed for every SET, unchecked on hardware: a preset load
   (`load_mv7_preset()`) sends only what differs from a fresh readback (nothing if a reply
   didn't parse, since the readback then fails) and reports refusals without stopping, and
-  gain and mute re-read the value before calling `[Failed]` an error
+  gain, mute and Monitor Mix re-read the value before calling `[Failed]` an error. Monitor
+  Mix 1% and 2% encode as 0% (`MIX_CURVE`), so a step from 0% onto them changes nothing;
+  that it then answers `[Failed]` follows from the above and is unconfirmed on hardware
 - `[Failed]` and `Locked` carry no command name, so `send_text()` drains queued input before
   every write. Without that, a stale one is read as the reply to the next command
 - `dspMode` holds mode, mic position and tone together, and changing it also resets EQ and

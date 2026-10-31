@@ -60,6 +60,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `mute-toggle` | all but MV7 | fake, demo | Enter and Space toggle Mute, send MUTE, and show `● ON` in the error colour |
 | `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is |
 | `settings-follow-the-device` | all | fake | Gain, Monitor Mix and mode changed elsewhere (a script, MOTIV) show within a second, several at once in one status |
+| `manual-after-auto-re-reads-gain` | MVX2U, MV6 | fake | A TUI switch from Auto to Manual re-reads the gain, so → steps from the device's Manual gain, not one read in Auto (unconfirmed on these two models) |
 | `playback-level-follows-the-device` | MVX2U Gen 2, MV6 Gen 2, MV7+ | fake | A Playback Level changed elsewhere shows within a second (not polled on the MV6, whose GET is unconfirmed, #99) |
 | `mute-poll-finds-the-device-gone` | all | fake | Unplugged at 0.5 s, the device shows as disconnected by the mute poll at 1 s, before the 2 s presence poll |
 | `gain-adjust` | all but MV7 | fake | ←/→ step gain by 1 dB and send GAIN |
@@ -70,6 +71,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `monitor-mix-packets` | MVX2U | fake, demo | The Gen 1 slider sends MONITOR_MIX |
 | `monitor-mic-playback-levels` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | Mic Level and Playback Level are separate controls that send MIC_LEVEL and PLAYBACK_LEVEL |
 | `mv7-monitor-mix-block` | MV7 | fake, demo | Monitor Mix at 10%, 50% and 100% sends the `setBlock 22` words from the usbmon captures |
+| `mv7-monitor-mix-floor` | MV7 | fake | → from 0% steps to 1%, 2% and 3% without an error, though the mic stores 1% and 2% as 0% and answers `[Failed]` to them |
 | `phantom-power` | MVX2U, MVX2U Gen 2 | fake, demo | Enter and Space toggle 48V and send PHANTOM; ←/→ do nothing |
 | `config-lock` | MVX2U, MV7 | fake, demo | Enter toggles Config Lock and the block shows LOCKED or Unlocked |
 | `config-lock-packets` | MVX2U | fake, demo | Config Lock sends LOCK |
