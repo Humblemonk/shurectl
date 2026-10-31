@@ -78,7 +78,8 @@ you pick which one to open.
   leaves it alone: arrow keys, the wheel and preset loads don't change it. Before, it showed
   0%, and an arrow key wrote from there. Found in review; not seen on hardware.
 
-Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired these.
+Thanks to @plyrthn (#58) and @joelgaff (#126), whose pull requests inspired
+these. Also thanks to @mike-callahan for his thorough MV7+ investigation.
 
 ## 2.14.2 — 2026-10-23
 
