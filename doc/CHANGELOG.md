@@ -6,7 +6,7 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## 2.15.0 — 2026-10-24
+## 2.15.0 — 2026-10-31
 
 Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the
 device's state as JSON. A gain check helps set your gain, and with several devices connected
@@ -34,7 +34,9 @@ you pick which one to open.
 - `--mode auto|manual|toggle`, `--gain`, `--monitor-mix` and `--playback-mix` change those
   settings without the TUI, to a value or by `+N`/`-N` steps like the arrow keys. They can
   be combined, and each is refused with the reason where the TUI wouldn't make the change,
-  such as gain in Auto Level mode. On an MV6 that doesn't answer its Playback Level read
+  such as gain in Auto Level mode. A refused command normally changes nothing. The one
+  exception is a flag refused after `--mode` switched modes: the flags before it stay
+  applied, and the error says so. On an MV6 that doesn't answer its Playback Level read
   (unconfirmed on that model), `--playback-mix` is refused and `--json` leaves it out.
 - `--device` also takes the serial `--list` shows, which stays the same when a mic is
   replugged, unlike its path.
@@ -49,15 +51,16 @@ you pick which one to open.
   in MOTIV first.
 - Mute works before the device's settings have been read, in the TUI and with `--mute`, and
   the TUI keeps reading the mute state then (a press of the mic's own button shows on the MV6
-  Gen 2, tested under Linux; unconfirmed on other models), with the status still saying the
-  settings aren't read. Other changes still wait for a readback. A mute the device can't
-  confirm shows as OFF, never as Muted while the mic may be live.
+  Gen 2 and a tap on the MV7+'s touch panel, tested under Linux; unconfirmed on other
+  models), with the status still saying the settings aren't read. Other changes still wait
+  for a readback. A mute the device can't confirm shows as OFF, never as Muted while the mic
+  may be live.
 - `--mute on` and `--mute off` send one command without reading the device first, and
   `--mute toggle` and `--mute status` read only the mute state.
 - The TUI follows mode, gain, Monitor Mix and Playback Level as it follows mute: changed from
   a script, a Stream Deck or MOTIV, each shows within a second, and a mode change re-reads
   every setting. Before, the next arrow key stepped from the old value. Tested on the MVX2U
-  Gen 2 and MV6 Gen 2; unconfirmed on other models.
+  Gen 2, MV6 Gen 2 and MV7+; unconfirmed on other models.
 - `--mute` and `--preset` now make their change the same way the TUI does. A preset load
   the device partly refuses exits with status 1.
 
