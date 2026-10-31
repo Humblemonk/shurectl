@@ -1866,8 +1866,9 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
 /// leaving it reports a new gain. Re-read the whole state afterwards so the UI
 /// shows what the mic actually has. No-op for other models and in demo mode:
 /// the MV6 Gen 2 and MVX2U Gen 2 keep their manual gain through Auto (20 dB
-/// before and after, tested on both 2026-10-23); the MV6, MVX2U Gen 1 and
-/// MV7+ are unconfirmed.
+/// before and after, tested on both 2026-10-23), and so does the MV7+ (20 dB
+/// through `--mode auto` and back, firmware 1.6.0.1, reported by
+/// mike-callahan 2026-10-31); the MV6 and MVX2U Gen 1 are unconfirmed.
 fn resync_mv7_state(app: &mut App, device: &Option<ShureDevice>) -> Result<()> {
     match device {
         Some(dev) => match dev.model {
