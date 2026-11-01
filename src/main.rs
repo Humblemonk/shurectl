@@ -67,8 +67,8 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Position};
 use app::{App, DeviceAction, STATE_UNREAD_HINT};
 use cli::{Amount, ModeChoice, MuteAction};
 use device::{Live, ShureDevice};
-use meter::{MeterStatus, start_meter};
-use presets::PresetSlot;
+use meter::{InputTarget, MeterStatus, start_meter};
+use presets::{PresetSlot, apply_preset_to_state};
 use protocol::{DeviceModel, InputMode, format_gain};
 
 #[derive(Parser)]
@@ -271,17 +271,12 @@ fn main() -> Result<()> {
 
     app.presets = presets;
 
-    let _meter_stream = if !demo_mode {
-        match start_meter(Arc::clone(&app.peak_window)) {
-            MeterStatus::Running(s) => Some(s),
-            MeterStatus::Failed(e) => {
-                app.add_status(&format!("Meter unavailable: {e}"), true);
-                app.meter_unavailable = true;
-                None
-            }
-        }
-    } else {
+    // Not on a device whose first readback found it gone: its input is gone
+    // too, and the default input may be another mic. A reconnect starts it.
+    let mut meter_stream = if demo_mode || !app.device_connected {
         None
+    } else {
+        start_device_meter(&mut app, device.as_ref())
     };
 
     let mut tui = match tui {
@@ -307,7 +302,13 @@ fn main() -> Result<()> {
 
     let latest_firmware =
         (!demo_mode && firmware::is_compared(device_model)).then(firmware::spawn_check);
-    let result = run_event_loop(&mut tui.terminal, &mut app, &mut device, latest_firmware);
+    let result = run_event_loop(
+        &mut tui.terminal,
+        &mut app,
+        &mut device,
+        &mut meter_stream,
+        latest_firmware,
+    );
 
     drop(tui);
 
@@ -563,10 +564,35 @@ impl Drop for TerminalCleanup {
     }
 }
 
+/// Start the level meter on `dev`'s own input, or on the system default input
+/// when that isn't found. Keep the returned stream alive while metering.
+fn start_device_meter(app: &mut App, dev: Option<&ShureDevice>) -> Option<cpal::Stream> {
+    let target = InputTarget {
+        usb_serial: dev
+            .map(|dev| dev.serial_number.as_str())
+            .filter(|serial| *serial != device::UNKNOWN_SERIAL),
+        product: dev.and_then(|dev| dev.product.as_deref()),
+    };
+    match start_meter(Arc::clone(&app.peak_window), &target) {
+        MeterStatus::Running(stream, input) => {
+            app.meter_unavailable = false;
+            app.meter_input = Some(input);
+            Some(stream)
+        }
+        MeterStatus::Failed(e) => {
+            app.add_status(&format!("Meter unavailable: {e}"), true);
+            app.meter_unavailable = true;
+            app.meter_input = None;
+            None
+        }
+    }
+}
+
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     device: &mut Option<ShureDevice>,
+    meter_stream: &mut Option<cpal::Stream>,
     latest_firmware: Option<mpsc::Receiver<firmware::LatestFirmware>>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
@@ -600,6 +626,7 @@ fn run_event_loop(
         } else {
             None
         };
+        let was_connected = app.device_connected;
         step(
             app,
             device,
@@ -609,6 +636,30 @@ fn run_event_loop(
             Instant::now(),
             &mut loop_state,
         );
+        // The device's input leaves with it. Stop listening, so the meter shows
+        // no reading rather than whatever input the system moves the stream to.
+        if was_connected && !app.device_connected {
+            *meter_stream = None;
+            app.meter_input = None;
+        }
+        // A device back from lost has its input back too, however it came back.
+        if !was_connected && app.device_connected {
+            app.meter_restart_pending = true;
+        }
+        // A new handle may be a replugged device, whose input comes back as a
+        // new one; `r` asks again when the meter isn't on the device's own
+        // input. The old stream goes first, so two never run at once. A device
+        // shown as lost gets no stream: the next reconnect asks again. While a
+        // gain check listens, the restart waits for it to end, so one check
+        // never hears two inputs or a gap.
+        if app.meter_restart_pending && app.gain_check_listening().is_none() && !app.demo_mode {
+            app.meter_restart_pending = false;
+            *meter_stream = None;
+            app.meter_input = None;
+            if app.device_connected {
+                *meter_stream = start_device_meter(app, device.as_ref());
+            }
+        }
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
@@ -918,6 +969,14 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 return None;
             }
         }
+    }
+
+    if let Some(index) = app.confirming_preset_load.take() {
+        if code == KeyCode::Enter {
+            return Some(DeviceAction::LoadPreset(index));
+        }
+        app.set_ok("Preset load cancelled.");
+        return None;
     }
 
     if app.help_visible {
@@ -1327,18 +1386,8 @@ fn apply_action(
         }
         DeviceAction::LoadPreset(i) => {
             if let Some(saved) = &app.presets[*i] {
-                // An unread Playback Level (MV6) stays unread: a preset's
-                // 0 means "not saved", so neither the screen nor the device
-                // gets it. Cloned so the stored preset keeps its value.
                 let playback_skipped = app.playback_unread() && saved.playback_mix > 0;
-                let slot = &PresetSlot {
-                    playback_mix: if app.playback_unread() {
-                        0
-                    } else {
-                        saved.playback_mix
-                    },
-                    ..saved.clone()
-                };
+                let slot = &saved.for_load(app.playback_unread());
                 let write_monitor_mix =
                     apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 apply_preset_to_device(
@@ -1591,6 +1640,10 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
                 "State refreshed from device.{}",
                 skipped_note(&skipped)
             ));
+            // The device's input may have come up after it did (a replug):
+            // look for it again unless the meter already has it.
+            app.meter_restart_pending |=
+                !matches!(app.meter_input, Some(meter::MeterInput::Device(_)));
             return Ok(());
         }
         Err(e) => e,
@@ -1618,6 +1671,7 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
     let name = reopened.model.display_name();
     // Keep the new handle even if its readback failed: the old one may be dead.
     *device = Some(reopened);
+    app.meter_restart_pending = true;
     match loaded {
         Ok(skipped) => {
             app.device_connected = true;
@@ -1963,39 +2017,6 @@ fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceMo
         note.push_str(&app::not_loaded("Limiter"));
     }
     note
-}
-
-/// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
-/// Monitor Mix applies, for `apply_preset_to_device()`.
-fn apply_preset_to_state(
-    slot: &PresetSlot,
-    state: &mut protocol::DeviceState,
-    model: DeviceModel,
-) -> bool {
-    let monitor_mix_before = state.monitor_mix;
-    slot.apply_to_device_state(state);
-    // A balance and a Mic Level share the field but not the meaning: keep the
-    // device's own Monitor Mix rather than translate one into the other.
-    let monitor_mix_applies = !slot
-        .monitor_mix_is_mic_level
-        .is_some_and(|mic_level| mic_level != model.has_playback_mix());
-    if !monitor_mix_applies {
-        state.monitor_mix = monitor_mix_before;
-    }
-    // Show the gain and EQ the device will actually get: presets are
-    // shared across models, so one saved elsewhere may be out of
-    // range or off this model's step grid.
-    state.gain_tenths = model.snap_gain_tenths(state.gain_tenths);
-    for band in &mut state.eq_bands {
-        band.gain_db = model.snap_eq_gain_tenths(band.gain_db);
-    }
-    // A lock flag from a model with Gain Lock would sit hidden here
-    // and be saved into this model's presets, then lock the gain
-    // wherever one of those is loaded.
-    if !model.has_gain_lock() {
-        state.mv6_gain_locked = false;
-    }
-    monitor_mix_applies
 }
 
 /// Writes a preset's Playback Level when it saved one. A preset's 0 means "not

@@ -85,7 +85,11 @@ CRC-16/ANSI covers 0x11 up to the CRC
   from its Manual value, so the gain GET in Auto reads the Manual gain, not a moving auto
   gain (tested 2026-10-28); the same on the MV6 Gen 2 (tested 2026-10-31) and the MV7+
   (`--json` in Auto after talking read the Manual 20 dB, firmware 1.6.0.1, reported by
-  mike-callahan, 2026-10-31). Unconfirmed elsewhere: whether the MVX2U Gen 1 and MV6
+  mike-callahan, 2026-10-31). A gain SET in Auto is kept as the Manual gain: on the MVX2U
+  Gen 2 a preset saved in Auto at 40 dB, loaded in Auto over a Manual gain of 25 dB, left
+  40 dB after a switch to Manual (tested 2026-10-31), and the same on the MV6 Gen 2
+  (tested 2026-10-31); unconfirmed on the MVX2U Gen 1, MV6 and MV7+.
+  Unconfirmed elsewhere: whether the MVX2U Gen 1 and MV6
   report a press, whether their GETs reflect changes made elsewhere, whether the gain GET in
   Auto reads the Manual gain on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a
   mode change), and whether the MV7 answers each line within the poll's 200 ms

@@ -1,6 +1,6 @@
 [package]
 name = "shurectl"
-version = "2.15.0"
+version = "2.16.0"
 edition = "2024"
 rust-version = "1.88"
 default-run = "shurectl"
@@ -35,7 +35,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
-cpal = "0.18.2"
+cpal = { version = "0.18.2", features = ["pulseaudio"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 dirs-next = "2.0"

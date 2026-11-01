@@ -14,6 +14,11 @@ pub enum Target {
     Control(Focus),
     /// A specific preset action, rather than the whole actions row.
     PresetAction(usize, KeyCode),
+    /// The preset load box: its Load and Cancel buttons, and the rest of it,
+    /// where a click does nothing.
+    LoadButton,
+    CancelButton,
+    LoadBox,
 }
 
 #[derive(Default)]
@@ -51,8 +56,12 @@ impl HitMap {
 /// Returns a key to dispatch through handle_key after updating UI-only state.
 /// A click focuses an unselected control without activating it. Clicking an
 /// already-focused control activates it, including focus set by the keyboard.
-/// Preset actions share one row focus, so each button fires only on a second
-/// click on that same button; a first click on Delete never follows Load.
+/// Preset actions share one row focus, so Save and Delete fire only on a second
+/// click on that same button; a first click on Delete never follows Load. Load
+/// fires on the first click, because it only opens the load box. In the box,
+/// its Load button loads, a click elsewhere in it does nothing, and a click
+/// outside it or on Cancel cancels. The box keeps its buttons clear of the
+/// preset's Load button, so a double-click can't load unseen changes.
 /// Wheel events still focus and adjust immediately.
 /// Clicking outside an edited name cancels via Esc, consuming that click.
 /// Any click cancels a pending factory reset the same way, so confirming stays
@@ -62,6 +71,22 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
     let left_click = event.kind == MouseEventKind::Down(MouseButton::Left);
     if app.confirming_factory_reset {
         return left_click.then_some(KeyCode::Esc);
+    }
+    if app.confirming_preset_load.is_some() {
+        if !left_click {
+            return None;
+        }
+        return match hits.target_at(event.column, event.row) {
+            Some(Target::LoadButton) => Some(KeyCode::Enter),
+            Some(Target::LoadBox) => None,
+            Some(
+                Target::CancelButton
+                | Target::Tab(_)
+                | Target::Control(_)
+                | Target::PresetAction(..),
+            )
+            | None => Some(KeyCode::Esc),
+        };
     }
     if app.help_visible {
         return None;
@@ -113,11 +138,16 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
             let armed = app.focus == Focus::PresetActions(index)
                 && armed_preset_action == Some((index, action));
             app.focus = Focus::PresetActions(index);
+            if action == KeyCode::Enter {
+                return Some(action);
+            }
             if !armed {
                 app.armed_preset_action = Some((index, action));
             }
             armed.then_some(action)
         }
+        // Only drawn while the load box is open, which returned above.
+        Target::LoadButton | Target::CancelButton | Target::LoadBox => None,
     }
 }
 
@@ -571,6 +601,49 @@ mod tests {
     }
 
     #[test]
+    fn preset_load_box_buttons_and_a_double_click() {
+        let left = MouseEventKind::Down(MouseButton::Left);
+        for (width, height) in [(80, 24), (120, 40), (120, 50)] {
+            for slot in 0..crate::presets::PRESET_COUNT {
+                let mut app = App {
+                    active_tab: Tab::Presets,
+                    ..App::default()
+                };
+                app.presets[slot] = Some(PresetSlot::from_device_state(
+                    "Test",
+                    &app.device_state,
+                    app.device_model,
+                ));
+                let hits = render(&app, width, height);
+                let load = event_at(&hits, Target::PresetAction(slot, KeyCode::Enter), left);
+                // A double-click on the preset's Load button: the second click
+                // lands on the open box, never on its Load button.
+                let opened = handle_mouse(&mut app, load, &hits)
+                    .and_then(|key| crate::handle_key(&mut app, key, KeyModifiers::NONE));
+                assert!(opened.is_none());
+                assert_eq!(app.confirming_preset_load, Some(slot));
+                let box_hits = render(&app, width, height);
+                assert_ne!(
+                    box_hits.target_at(load.column, load.row),
+                    Some(Target::LoadButton),
+                    "{width}x{height} slot {slot}"
+                );
+                let second = handle_mouse(&mut app, load, &box_hits)
+                    .and_then(|key| crate::handle_key(&mut app, key, KeyModifiers::NONE));
+                assert!(second.is_none(), "{width}x{height} slot {slot}");
+
+                // The box's text does nothing; Cancel cancels.
+                app.confirming_preset_load = Some(slot);
+                assert!(click(&mut app, &box_hits, Target::LoadBox).is_none());
+                assert_eq!(app.confirming_preset_load, Some(slot));
+                assert!(click(&mut app, &box_hits, Target::CancelButton).is_none());
+                assert_eq!(app.confirming_preset_load, None);
+                assert_eq!(app.status_message, "Preset load cancelled.");
+            }
+        }
+    }
+
+    #[test]
     fn preset_actions_have_separate_targets_and_rename_blocks_click_through() {
         let mut app = App {
             active_tab: Tab::Presets,
@@ -582,12 +655,16 @@ mod tests {
             app.device_model,
         ));
         let hits = render(&app, 120, 40);
+        // Load opens the load box on the first click; its Load button loads.
         assert!(click(&mut app, &hits, Target::PresetAction(0, KeyCode::Enter)).is_none());
         assert_eq!(app.focus, Focus::PresetActions(0));
+        assert_eq!(app.confirming_preset_load, Some(0));
+        let box_hits = render(&app, 120, 40);
         assert!(matches!(
-            click(&mut app, &hits, Target::PresetAction(0, KeyCode::Enter)),
+            click(&mut app, &box_hits, Target::LoadButton),
             Some(DeviceAction::LoadPreset(0))
         ));
+        assert_eq!(app.confirming_preset_load, None);
         app.focus = Focus::PresetName(0);
         assert!(click(&mut app, &hits, Target::PresetAction(0, KeyCode::Char('s'))).is_none());
         assert_eq!(app.focus, Focus::PresetActions(0));

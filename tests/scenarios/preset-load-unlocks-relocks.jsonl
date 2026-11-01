@@ -8,4 +8,6 @@
 {"key": "s"}
 {"key": "Down"}
 {"key": "Enter"}
+{"expect": {"screen_contains": "[ Load ]", "no_packets": true}}
+{"key": "Enter"}
 {"expect": {"status": "Loaded", "sets": [{"feature": "GAIN_LOCK", "value": false}, {"feature": "GAIN", "value": 240, "applied": true}, {"feature": "GAIN_LOCK", "value": true}], "state": {"mv6_gain_locked": true, "gain_tenths": 240}}}

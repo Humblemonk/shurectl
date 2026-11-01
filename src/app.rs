@@ -7,7 +7,7 @@ use crossterm::event::KeyCode;
 
 use crate::firmware::LatestFirmware;
 use crate::gain_check::{GainCheck, Listening};
-use crate::meter::PeakWindow;
+use crate::meter::{MeterInput, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, HpfFrequency,
@@ -193,6 +193,9 @@ pub struct App {
     /// Set to `true` after the user first presses Enter on the factory reset button.
     /// A second Enter fires the action; any other key cancels.
     pub confirming_factory_reset: bool,
+    /// The preset slot whose load box is open, showing what loading it would
+    /// change. Enter or its Load button loads; any other key or click cancels.
+    pub confirming_preset_load: Option<usize>,
     /// The preset slot and action a first click selected; only a second click on
     /// that same button fires it. Cleared by any other click or any key.
     pub armed_preset_action: Option<(usize, KeyCode)>,
@@ -210,6 +213,12 @@ pub struct App {
     /// True when the meter's capture stream couldn't start, so a gain check
     /// would hear nothing.
     pub meter_unavailable: bool,
+    /// The input the meter listens to, while it runs.
+    pub meter_input: Option<MeterInput>,
+    /// Set when the device handle is replaced (a reconnect), or by `r` while
+    /// the meter isn't on the device's own input, so the event loop starts the
+    /// meter on the device's input again.
+    pub meter_restart_pending: bool,
 }
 
 impl Default for App {
@@ -234,12 +243,15 @@ impl Default for App {
             editing_device_name: false,
             name_draft: String::new(),
             confirming_factory_reset: false,
+            confirming_preset_load: None,
             armed_preset_action: None,
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
             meter_clock: None,
             latest_firmware: None,
             gain_check: None,
             meter_unavailable: false,
+            meter_input: None,
+            meter_restart_pending: false,
         }
     }
 }
@@ -1571,12 +1583,17 @@ impl App {
                     self.device_state.led_night_mode,
                 ))
             }
+            // Loading first shows what it would change; the box's Enter loads.
+            // Not before a readback: it would compare against defaults.
             Focus::PresetActions(i) => {
                 if self.presets[i].is_some() {
-                    Some(DeviceAction::LoadPreset(i))
-                } else {
-                    None
+                    if self.state_unread {
+                        self.set_err(STATE_UNREAD_HINT);
+                    } else {
+                        self.confirming_preset_load = Some(i);
+                    }
                 }
+                None
             }
             _ => None,
         }

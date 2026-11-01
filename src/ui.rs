@@ -12,12 +12,13 @@ use ratatui::{
 use crate::app::{App, Focus, Tab};
 use crate::firmware::FirmwareStatus;
 use crate::gain_check::GainCheck;
+use crate::meter::MeterInput;
 use crate::mouse::{HitMap, Target};
 use crate::picker::{Picker, PickerRow};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
-    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, MicPreset,
-    ReverbType, format_gain,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EQ_BAND_FREQS, EqPreset,
+    HpfFrequency, InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
+    MicPosition, MicPreset, ReverbType, format_gain,
 };
 
 /// Keep hit regions beside the layout that draws them, not in a second layout.
@@ -243,6 +244,8 @@ fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     }
 
     draw_status(f, app, chunks[3]);
+    // Over the tab's content only: the tabs and status bar stay in view.
+    draw_preset_load_box(f, app, chunks[2]);
 
     if app.help_visible {
         draw_help_overlay(f, size);
@@ -1368,9 +1371,7 @@ fn tone_label(tone: i8) -> String {
 }
 
 /// A row's value, or None when the row doesn't apply in the current mode.
-fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
-    let ds = &app.device_state;
-    let model = app.device_model;
+fn summary_value(ds: &DeviceState, model: DeviceModel, row: SummaryRow) -> Option<Span<'static>> {
     let manual = ds.mode == InputMode::Manual;
     let text = |value: String| Span::styled(value, Style::default().fg(C_TEXT));
     let on_off = |on: bool| {
@@ -1499,7 +1500,7 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
     let mut lines = vec![Line::from("")];
     let mut last_group = None;
     for &row in summary_rows(app.device_model) {
-        let Some(value) = summary_value(app, row) else {
+        let Some(value) = summary_value(&app.device_state, app.device_model, row) else {
             continue;
         };
         if last_group.is_some_and(|group| group != row.group()) {
@@ -1599,7 +1600,14 @@ fn draw_gain_check_card(f: &mut UiFrame, app: &App, check: &GainCheck, area: Rec
                     lines.push(note("Gain is at 0 dB: move back from the mic.", C_WARN));
                 }
                 Advice::NoSignal => lines.push(note(
-                    "Heard nothing. Is the Shure your system's default input?",
+                    match app.meter_input {
+                        Some(MeterInput::Device(_)) => {
+                            "Heard nothing. Check the mic's input volume in your sound settings."
+                        }
+                        Some(MeterInput::Default) | None => {
+                            "Heard nothing. Is the Shure your system's default input?"
+                        }
+                    },
                     C_WARN,
                 )),
             }
@@ -1723,23 +1731,21 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
         }
     };
 
-    // ── Silent / no-device state ──────────────────────────────────────────────
-    if short_raw == METER_SILENT {
+    // ── Bar reading ───────────────────────────────────────────────────────────
+    // Without data (demo mode, no audio yet, or the device unplugged) the bar
+    // is empty but keeps the same layout, peak box and ruler included.
+    let (bar_label, bar_color, bar_ratio) = if short_raw == METER_SILENT {
         let label = if app.demo_mode { "no device" } else { "---" };
-        let empty = Gauge::default()
-            .block(meter_block(app, area.width))
-            .gauge_style(Style::default().fg(C_DIM).bg(C_SURFACE))
-            .ratio(0.0)
-            .label(label);
-        f.render_widget(empty, area);
-        return;
-    }
-
-    let short_db = short_raw as f32 / 10.0;
-    let long_db = long_raw as f32 / 10.0;
-    let floor = METER_FLOOR_DB;
-
-    let bar_ratio = ((short_db - floor) / (0.0 - floor)).clamp(0.0, 1.0) as f64;
+        (label.to_string(), C_DIM, 0.0)
+    } else {
+        let short_db = short_raw as f32 / 10.0;
+        let floor = METER_FLOOR_DB;
+        (
+            format!("{short_db:+.1} dBFS"),
+            meter_color(short_db),
+            ((short_db - floor) / (0.0 - floor)).clamp(0.0, 1.0) as f64,
+        )
+    };
 
     // ── Layout: bar + peak box on top row, ruler below ────────────────────────
     //
@@ -1764,18 +1770,18 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
         .split(rows[0]);
 
     // ── Bar gauge ─────────────────────────────────────────────────────────────
-    let bar_color = meter_color(short_db);
     let gauge = Gauge::default()
         .block(meter_block(app, cols[0].width))
         .gauge_style(Style::default().fg(bar_color).bg(C_SURFACE))
         .ratio(bar_ratio)
-        .label(format!("{short_db:+.1} dBFS"));
+        .label(bar_label);
     f.render_widget(gauge, cols[0]);
 
     // ── Peak-hold numeric readout (long window) ───────────────────────────────
     let (hold_text, hold_color) = if long_raw == METER_SILENT {
         ("  ---   ".to_string(), C_DIM)
     } else {
+        let long_db = long_raw as f32 / 10.0;
         (format!("{long_db:+.1}"), meter_color(long_db))
     };
     let readout = Paragraph::new(Line::from(vec![
@@ -2311,7 +2317,7 @@ fn eq_band_column(
             Style::default().fg(if gain_foc { C_FOCUS } else { C_DIM }),
         ),
         Span::styled(
-            format!("{:+.1} dB", eq.gain_db as f32 / 10.0),
+            eq_gain_text(eq.gain_db),
             if gain_foc {
                 Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
             } else {
@@ -3285,6 +3291,18 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
         Span::styled(vid_pid, Style::default().fg(C_TEXT)),
     ]));
 
+    // Which input the Level meter hears; amber when it may not be this device.
+    if let Some(input) = &app.meter_input {
+        let (text, color) = match input {
+            MeterInput::Device(name) => (name.as_str(), C_TEXT),
+            MeterInput::Default => ("System default input", C_WARN),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Meter Input  : ", Style::default().fg(C_DIM)),
+            Span::styled(text, Style::default().fg(color)),
+        ]));
+    }
+
     // Device Actions before Capabilities: the long static list must not push
     // the only button on this tab off a short terminal.
     if app.supports_factory_reset() {
@@ -3619,7 +3637,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         Line::from(""),
         heading("  Presets tab"),
         help_row("Enter (on name)", "Rename preset"),
-        help_row("Enter (on actions)", "Load preset to device"),
+        help_row("Enter (on actions)", "Load preset (shows changes first)"),
         help_row("s", "Save current settings to slot"),
         help_row("d / Delete", "Delete preset"),
         Line::from(""),
@@ -3657,6 +3675,435 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
             .style(Style::default().bg(C_SURFACE)),
     );
     f.render_widget(help, popup_area);
+}
+
+/// An EQ band's gain, from tenths of a dB: "+2.0 dB".
+fn eq_gain_text(gain_tenths: i16) -> String {
+    format!("{:+.1} dB", f32::from(gain_tenths) / 10.0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preset load box
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Width of the load box's labels, colon excluded: the longest are "Playback Level"
+/// and "LED Solid Theme".
+const LOAD_LABEL_WIDTH: usize = 15;
+
+/// A setting a preset load would change, as the load box lists it.
+#[derive(Debug, PartialEq)]
+struct LoadChange {
+    label: String,
+    old: String,
+    new: String,
+    /// The new value's colour: the Summary's for its row (LOCKED amber, ON
+    /// green), white for values the Summary doesn't show, and amber for
+    /// phantom power switching on, a caution where the Summary shows green.
+    new_color: Color,
+}
+
+/// Whether a preset load writes settings its target mode doesn't use. The
+/// binary models write every saved setting in either mode
+/// (`apply_binary_preset()`); the MV7 switches mode first, then writes only
+/// what that mode uses (`load_mv7_preset()`).
+fn load_writes_every_mode(model: DeviceModel) -> bool {
+    match model {
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7Plus => true,
+        DeviceModel::Mv7 => false,
+    }
+}
+
+/// A Summary row's value in `state`, and when it takes effect: `None` for
+/// now, or a note such as "in Manual" for a value `state` holds but its
+/// mode doesn't use. Such values are looked up only where the
+/// load writes them anyway (`load_writes_every_mode()`). `None` when the row
+/// has no value in any of them.
+fn row_as_loaded(
+    state: &DeviceState,
+    model: DeviceModel,
+    row: SummaryRow,
+) -> Option<(Span<'static>, Option<&'static str>)> {
+    // Summary's "auto" placeholder stands for the device's own value, not a
+    // saved one.
+    let shown = |state: &DeviceState| {
+        let placeholder = state.mode == InputMode::Auto && summary_auto_managed(model, row);
+        (!placeholder)
+            .then(|| summary_value(state, model, row))
+            .flatten()
+    };
+    if let Some(span) = shown(state) {
+        return Some((span, None));
+    }
+    if !load_writes_every_mode(model) {
+        return None;
+    }
+    // A copy of the state in the mode that uses the row.
+    let mut other_mode = state.clone();
+    let note = match state.mode {
+        InputMode::Manual => {
+            other_mode.mode = InputMode::Auto;
+            "in Auto"
+        }
+        InputMode::Auto => {
+            other_mode.mode = InputMode::Manual;
+            "in Manual"
+        }
+    };
+    shown(&other_mode).map(|span| (span, Some(note)))
+}
+
+/// The settings that loading would change from `current` to `target`: the
+/// model's Summary rows in their order and wording (mute aside, which loads
+/// leave alone), then what the Summary doesn't show. A value the load writes
+/// but the target mode doesn't use carries a note ("30 dB (in Manual)").
+/// `playback_read` is false while the Playback Level is unread, as a load
+/// leaves it then.
+fn load_changes(
+    current: &DeviceState,
+    target: &DeviceState,
+    model: DeviceModel,
+    playback_read: bool,
+) -> Vec<LoadChange> {
+    let mut changes = Vec::new();
+    let mut add = |name: &str, old: String, new: String, new_color: Color| {
+        if old != new {
+            changes.push(LoadChange {
+                label: format!("{name:<LOAD_LABEL_WIDTH$}: "),
+                old,
+                new,
+                new_color,
+            });
+        }
+    };
+    let text = |span: Span<'static>| span.content.into_owned();
+    for &row in summary_rows(model) {
+        if row == SummaryRow::Muted {
+            continue;
+        }
+        // A row the load doesn't write has nothing to show.
+        let Some((new, note)) = row_as_loaded(target, model, row) else {
+            continue;
+        };
+        let old = row_as_loaded(current, model, row)
+            .map_or_else(|| "–".to_string(), |(span, _)| text(span));
+        let new_color = if row == SummaryRow::Phantom && target.phantom_power {
+            C_WARN
+        } else {
+            new.style.fg.unwrap_or(C_TEXT)
+        };
+        let new = text(new);
+        if old == new {
+            continue;
+        }
+        let name = row.label().trim_end_matches([' ', ':']);
+        let new = match note {
+            Some(note) => format!("{new} ({note})"),
+            None => new,
+        };
+        add(name, old, new, new_color);
+    }
+    // The Summary shows the MV6 Gen 2's denoiser level only while it is on;
+    // the load writes it either way.
+    if model.has_denoiser_level()
+        && !target.denoiser_enabled
+        && current.denoiser_level != target.denoiser_level
+    {
+        add(
+            "Denoiser Level",
+            format!("{}%", current.denoiser_level),
+            format!("{}% (when on)", target.denoiser_level),
+            C_TEXT,
+        );
+    }
+    // The MV6 Gen 2's Summary shows Tone as "5-band EQ" while its 5-band EQ is
+    // in use; the load writes the Tone slider either way.
+    let tone_modes = match model {
+        DeviceModel::Mv6Gen2 => true,
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv7
+        | DeviceModel::Mv7Plus => false,
+    };
+    if tone_modes && target.tone_advanced && current.tone != target.tone {
+        add(
+            "Tone Slider",
+            tone_label(current.tone),
+            format!("{} (in Simple tone)", tone_label(target.tone)),
+            C_TEXT,
+        );
+    }
+    let percent = |value: u8| format!("{value}%");
+    if model.has_playback_mix() {
+        add(
+            "Mic Level",
+            percent(current.monitor_mix),
+            percent(target.monitor_mix),
+            C_TEXT,
+        );
+    } else if current.monitor_mix != target.monitor_mix {
+        // A balance, as the Main tab's Mic ◄─NN%─► Playback gauge shows it.
+        add(
+            "Monitor Mix",
+            percent(current.monitor_mix),
+            format!("{} (Mic ◄► Playback)", percent(target.monitor_mix)),
+            C_TEXT,
+        );
+    }
+    if model.has_playback_mix() && playback_read {
+        add(
+            "Playback Level",
+            percent(current.playback_mix),
+            percent(target.playback_mix),
+            C_TEXT,
+        );
+    }
+    let (eq_bands, band_switches) = match model {
+        DeviceModel::Mvx2u => (true, true),
+        DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 => (true, false),
+        DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => (false, false),
+    };
+    if eq_bands {
+        for (index, (old, new)) in current.eq_bands.iter().zip(&target.eq_bands).enumerate() {
+            let band = index + 1;
+            add(
+                &format!("EQ Band {band}"),
+                eq_gain_text(old.gain_db),
+                eq_gain_text(new.gain_db),
+                C_TEXT,
+            );
+            if band_switches {
+                let on_off = |on: bool| if on { "ON" } else { "OFF" }.to_string();
+                add(
+                    &format!("EQ Band {band} On"),
+                    on_off(old.enabled),
+                    on_off(new.enabled),
+                    C_TEXT,
+                );
+            }
+        }
+    }
+    let led_panel = match model {
+        DeviceModel::Mv7Plus => true,
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7 => false,
+    };
+    if led_panel {
+        let shown = |value: &dyn std::fmt::Display| value.to_string();
+        let rgb = |[r, g, b]: [u8; 3]| format!("#{r:02X}{g:02X}{b:02X}");
+        add(
+            "LED Behavior",
+            shown(&current.led_behavior),
+            shown(&target.led_behavior),
+            C_TEXT,
+        );
+        add(
+            "LED Brightness",
+            shown(&current.led_brightness),
+            shown(&target.led_brightness),
+            C_TEXT,
+        );
+        add(
+            "LED Live Theme",
+            shown(&current.led_live_theme),
+            shown(&target.led_live_theme),
+            C_TEXT,
+        );
+        add(
+            "LED Solid Theme",
+            shown(&current.led_solid_theme),
+            shown(&target.led_solid_theme),
+            C_TEXT,
+        );
+        add(
+            "LED Pulse Theme",
+            shown(&current.led_pulsing_theme),
+            shown(&target.led_pulsing_theme),
+            C_TEXT,
+        );
+        for (name, old, new) in [
+            ("LED Solid", current.led_solid_rgb, target.led_solid_rgb),
+            (
+                "LED Pulsing",
+                current.led_pulsing_rgb,
+                target.led_pulsing_rgb,
+            ),
+            (
+                "LED Edge",
+                current.led_live_edge_rgb,
+                target.led_live_edge_rgb,
+            ),
+            (
+                "LED Middle",
+                current.led_live_middle_rgb,
+                target.led_live_middle_rgb,
+            ),
+            (
+                "LED Interior",
+                current.led_live_interior_rgb,
+                target.led_live_interior_rgb,
+            ),
+        ] {
+            add(name, rgb(old), rgb(new), C_TEXT);
+        }
+    }
+    changes
+}
+
+/// What the rows a full load box leaves out are about: "LED, EQ bands, Reverb Type".
+fn hidden_groups(changes: &[LoadChange]) -> String {
+    let mut groups: Vec<&str> = Vec::new();
+    for change in changes {
+        let name = change.label.trim_end_matches([' ', ':']);
+        let group = if name.starts_with("LED") {
+            "LED"
+        } else if name.starts_with("EQ Band") {
+            "EQ bands"
+        } else {
+            name
+        };
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    groups.join(", ")
+}
+
+/// The preset load box: what loading the slot would change, and Load and
+/// Cancel buttons. Its buttons sit at its right edge, clear of the preset's
+/// own Load button at the left of the card, so the second click of a
+/// double-click on that button never loads: it lands outside the box and
+/// cancels, or on the box's text and does nothing.
+fn draw_preset_load_box(f: &mut UiFrame, app: &App, area: Rect) {
+    let Some(index) = app.confirming_preset_load else {
+        return;
+    };
+    let Some(slot) = &app.presets[index] else {
+        return;
+    };
+    // The state the load would leave, fitted exactly as the load fits it.
+    // A copy: the shown state changes only when the load runs.
+    let mut target = app.device_state.clone();
+    crate::presets::apply_preset_to_state(
+        &slot.for_load(app.playback_unread()),
+        &mut target,
+        app.device_model,
+    );
+    let changes = load_changes(
+        &app.device_state,
+        &target,
+        app.device_model,
+        !app.playback_unread(),
+    );
+
+    // Two border rows, a blank row above and below the list, and the buttons.
+    const FRAME_ROWS: u16 = 5;
+    let width = 64u16.min(area.width.saturating_sub(4));
+    let max_height = area.height.saturating_sub(2);
+    let room = usize::from(max_height.saturating_sub(FRAME_ROWS));
+    let mut lines = vec![Line::from("")];
+    if changes.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " Matches the device: loading changes nothing.",
+            Style::default().fg(C_DIM),
+        )));
+    } else {
+        // Leave a row for "…and N more" when they don't all fit.
+        let shown = if changes.len() > room {
+            room.saturating_sub(1)
+        } else {
+            changes.len()
+        };
+        for change in &changes[..shown] {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {}", change.label), Style::default().fg(C_DIM)),
+                Span::styled(change.old.clone(), Style::default().fg(C_DIM)),
+                Span::styled(" → ", Style::default().fg(C_DIM)),
+                Span::styled(change.new.clone(), Style::default().fg(change.new_color)),
+            ]));
+        }
+        if shown < changes.len() {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " …and {} more: {}",
+                    changes.len() - shown,
+                    hidden_groups(&changes[shown..])
+                ),
+                Style::default().fg(C_DIM),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+
+    const LOAD: &str = "[ Load ]";
+    const CANCEL: &str = "[ Cancel ]";
+    const GAP: u16 = 2;
+    let height = (lines.len() as u16 + 3).min(max_height);
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Span::styled(
+            format!("  Load \"{}\"?  ", slot.name),
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            "  Enter load · Esc cancel  ",
+            Style::default().fg(C_DIM),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(C_DIM))
+        .style(Style::default().bg(C_SURFACE));
+    let inner = block.inner(popup);
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+
+    // The buttons on the box's last inner row, right-aligned.
+    let buttons_row = Rect {
+        y: inner.bottom().saturating_sub(1),
+        height: 1,
+        ..inner
+    };
+    let cancel_width = CANCEL.len() as u16;
+    let load_width = LOAD.len() as u16;
+    let cancel = Rect {
+        x: buttons_row.right().saturating_sub(cancel_width + 1),
+        width: cancel_width,
+        ..buttons_row
+    };
+    let load = Rect {
+        x: cancel.x.saturating_sub(load_width + GAP),
+        width: load_width,
+        ..buttons_row
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            LOAD,
+            Style::default()
+                .fg(Color::Black)
+                .bg(C_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )),
+        load,
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(CANCEL, Style::default().fg(C_TEXT))),
+        cancel,
+    );
+    f.hits.add(popup, Target::LoadBox);
+    f.hits.add(load, Target::LoadButton);
+    f.hits.add(cancel, Target::CancelButton);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3980,7 +4427,265 @@ mod tests {
                 app.device_state.mv6_gain_locked = true;
                 visit(&format!("{model:?} gain check {name}"), &app);
             }
+            for (name, app) in preset_load_states(model) {
+                visit(&format!("{model:?} preset load {name}"), &app);
+            }
         }
+    }
+
+    /// The preset load box open on slot 1: with a preset that changes every
+    /// setting it can (the most rows, so overflow at 80x24), and with one that
+    /// matches the device.
+    fn preset_load_states(model: DeviceModel) -> Vec<(&'static str, App)> {
+        let current = App {
+            device_model: model,
+            active_tab: Tab::Presets,
+            focus: Focus::PresetActions(0),
+            confirming_preset_load: Some(0),
+            ..App::default()
+        };
+        let mut changed = current.device_state.clone();
+        changed.mode = InputMode::Manual;
+        changed.gain_tenths = 400;
+        changed.phantom_power = true;
+        changed.compressor = CompressorPreset::Heavy;
+        changed.denoiser_enabled = true;
+        changed.monitor_mix = 30;
+        changed.playback_mix = 70;
+        changed.tone = 3;
+        for (band, gain) in changed.eq_bands.iter_mut().zip([-40, -20, 0, 20, 40]) {
+            band.gain_db = gain;
+            band.enabled = !band.enabled;
+        }
+        changed.led_behavior = LedBehavior::Pulsing;
+        changed.led_solid_rgb = [255, 0, 0];
+        changed.led_pulsing_rgb = [0, 255, 0];
+        changed.led_live_edge_rgb = [0, 0, 255];
+        let preset = |state: &DeviceState| {
+            let mut app = App {
+                device_model: model,
+                active_tab: Tab::Presets,
+                focus: Focus::PresetActions(0),
+                confirming_preset_load: Some(0),
+                ..App::default()
+            };
+            app.presets[0] = Some(crate::presets::PresetSlot::from_device_state(
+                "Podcast", state, model,
+            ));
+            app
+        };
+        let matching = preset(&current.device_state);
+        vec![("changes", preset(&changed)), ("matches", matching)]
+    }
+
+    /// A load's rows as "label old → new", for comparing in tests.
+    fn change_rows(changes: &[LoadChange]) -> Vec<String> {
+        changes
+            .iter()
+            .map(|change| format!("{}{} → {}", change.label, change.old, change.new))
+            .collect()
+    }
+
+    #[test]
+    fn load_changes_show_what_the_load_writes_in_either_mode() {
+        let manual = DeviceState {
+            mode: InputMode::Manual,
+            gain_tenths: 240,
+            ..DeviceState::default()
+        };
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            ..manual.clone()
+        };
+        let louder = |state: &DeviceState| DeviceState {
+            gain_tenths: 600,
+            ..state.clone()
+        };
+        let model = DeviceModel::Mvx2uGen2;
+        // Auto to Auto, only the gain different: written, so listed.
+        let rows = change_rows(&load_changes(&auto, &louder(&auto), model, true));
+        assert_eq!(rows, ["Gain           : 24 dB → 60 dB (in Manual)"]);
+        // Manual to Auto with a louder gain: the mode and the gain.
+        let rows = change_rows(&load_changes(&manual, &louder(&auto), model, true));
+        assert_eq!(
+            rows,
+            [
+                "Mode           : Manual → Auto Level",
+                "Gain           : 24 dB → 60 dB (in Manual)",
+            ]
+        );
+        // The MV7 writes the gain only in Manual (load_mv7_preset()); its mode
+        // command carries mic position and tone.
+        let rows = change_rows(&load_changes(
+            &manual,
+            &louder(&auto),
+            DeviceModel::Mv7,
+            true,
+        ));
+        assert_eq!(
+            rows,
+            [
+                "Mode           : Manual → Auto Level",
+                "Position       : – → Near",
+                "Tone           : – → Natural",
+            ]
+        );
+        // Auto-managed rows show the saved value, not "auto".
+        let compressed = DeviceState {
+            compressor: CompressorPreset::Heavy,
+            ..auto.clone()
+        };
+        let rows = change_rows(&load_changes(&auto, &compressed, model, true));
+        assert_eq!(rows, ["Compressor     : Off → Heavy (in Manual)"]);
+    }
+
+    #[test]
+    fn load_changes_name_the_balance_and_a_denoiser_level_while_off() {
+        let current = DeviceState {
+            mode: InputMode::Manual,
+            monitor_mix: 50,
+            denoiser_level: 80,
+            ..DeviceState::default()
+        };
+        let target = DeviceState {
+            monitor_mix: 30,
+            denoiser_level: 40,
+            ..current.clone()
+        };
+        let rows = change_rows(&load_changes(&current, &target, DeviceModel::Mvx2u, true));
+        assert_eq!(rows, ["Monitor Mix    : 50% → 30% (Mic ◄► Playback)"]);
+        let rows = change_rows(&load_changes(&current, &target, DeviceModel::Mv6Gen2, true));
+        // Same level on both sides: nothing to list, though the note differs.
+        let same_level = DeviceState {
+            denoiser_level: current.denoiser_level,
+            ..target.clone()
+        };
+        assert!(
+            !change_rows(&load_changes(
+                &current,
+                &same_level,
+                DeviceModel::Mv6Gen2,
+                true
+            ))
+            .iter()
+            .any(|row| row.starts_with("Denoiser Level"))
+        );
+        assert_eq!(
+            rows,
+            [
+                "Denoiser Level : 80% → 40% (when on)",
+                "Mic Level      : 50% → 30%",
+            ]
+        );
+    }
+
+    #[test]
+    fn load_changes_show_the_mv6_gen2_tone_slider_behind_the_5_band_eq() {
+        let current = DeviceState {
+            mode: InputMode::Manual,
+            tone_advanced: true,
+            ..DeviceState::default()
+        };
+        let brighter = DeviceState {
+            tone: 3,
+            ..current.clone()
+        };
+        let model = DeviceModel::Mv6Gen2;
+        // Both on the 5-band EQ: the slider's change still shows.
+        let rows = change_rows(&load_changes(&current, &brighter, model, true));
+        assert_eq!(
+            rows,
+            ["Tone Slider    : Natural → 30% Bright (in Simple tone)"]
+        );
+        // Simple to Advanced: the mode, and the slider behind it.
+        let simple = DeviceState {
+            tone_advanced: false,
+            ..current.clone()
+        };
+        let rows = change_rows(&load_changes(&simple, &brighter, model, true));
+        assert_eq!(
+            rows,
+            [
+                "Tone           : Natural → 5-band EQ",
+                "Tone Slider    : Natural → 30% Bright (in Simple tone)",
+            ]
+        );
+    }
+
+    #[test]
+    fn hidden_groups_name_what_the_overflow_holds() {
+        let change = |name: &str| LoadChange {
+            label: format!("{name:<LOAD_LABEL_WIDTH$}: "),
+            old: String::new(),
+            new: String::new(),
+            new_color: C_TEXT,
+        };
+        let hidden = [
+            change("EQ Band 4"),
+            change("EQ Band 5"),
+            change("LED Solid"),
+            change("Reverb Type"),
+            change("LED Edge"),
+        ];
+        assert_eq!(hidden_groups(&hidden), "EQ bands, LED, Reverb Type");
+    }
+
+    #[test]
+    fn load_changes_lists_what_a_load_would_change() {
+        let current = DeviceState {
+            mode: InputMode::Manual,
+            gain_tenths: 240,
+            ..DeviceState::default()
+        };
+        assert!(load_changes(&current, &current, DeviceModel::Mvx2uGen2, true).is_empty());
+
+        let mut target = current.clone();
+        target.gain_tenths = 400;
+        target.phantom_power = true;
+        target.monitor_mix = 80;
+        target.playback_mix = 20;
+        target.eq_bands[1].gain_db = 20;
+        target.muted = !current.muted;
+        let changes = load_changes(&current, &target, DeviceModel::Mvx2uGen2, true);
+        let rows: Vec<_> = changes
+            .iter()
+            .map(|change| {
+                format!(
+                    "{}{} → {}{}",
+                    change.label,
+                    change.old,
+                    change.new,
+                    if change.new_color == C_WARN {
+                        " (caution)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect();
+        // Summary order and wording; mute left out, as loads leave it alone.
+        assert_eq!(
+            rows,
+            [
+                "Gain           : 24 dB → 40 dB",
+                "Phantom        : OFF → 48V ON (caution)",
+                format!("Mic Level      : {}% → 80%", current.monitor_mix).as_str(),
+                format!("Playback Level : {}% → 20%", current.playback_mix).as_str(),
+                "EQ Band 2      : +0.0 dB → +2.0 dB",
+            ]
+        );
+        // An unread Playback Level is left out, as the load leaves it.
+        let unread = load_changes(&current, &target, DeviceModel::Mvx2uGen2, false);
+        assert!(
+            !unread
+                .iter()
+                .any(|change| change.label.starts_with("Playback"))
+        );
+        // Models without bands or Playback Level list neither.
+        let mv7 = load_changes(&current, &target, DeviceModel::Mv7, true);
+        assert!(!mv7.iter().any(|change| change.label.starts_with("EQ Band")
+            || change.label.starts_with("Playback")
+            || change.label.starts_with("Phantom")));
     }
 
     /// The gain check card's states: listening, and each kind of result.
@@ -4239,6 +4944,13 @@ mod tests {
                     "Wheel: adjust",
                     "Esc to close",
                 ] {
+                    assert!(text.contains(row), "{label}: {row:?} missing\n{text}");
+                }
+                return;
+            }
+            if app.confirming_preset_load.is_some() {
+                // The box covers the tab: its title, buttons and keys show.
+                for row in ["Load \"Podcast\"?", "[ Load ]", "[ Cancel ]", "Enter load"] {
                     assert!(text.contains(row), "{label}: {row:?} missing\n{text}");
                 }
                 return;

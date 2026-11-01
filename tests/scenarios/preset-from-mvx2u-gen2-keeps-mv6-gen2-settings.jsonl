@@ -9,4 +9,6 @@
 {"click_on": "Presets"}
 {"key": "Down"}
 {"key": "Enter"}
+{"expect": {"screen_contains": "[ Load ]", "no_packets": true}}
+{"key": "Enter"}
 {"expect": {"status": "Loaded \"MVX2U Gen 2 Voice\".", "state": {"denoiser_enabled": false, "denoiser_level": 80, "mute_btn_disabled": true}}}

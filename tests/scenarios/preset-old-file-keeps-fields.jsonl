@@ -9,4 +9,6 @@
 {"expect": {"screen_contains": "Old Voice"}}
 {"key": "Down"}
 {"key": "Enter"}
+{"expect": {"screen_contains": "[ Load ]", "no_packets": true}}
+{"key": "Enter"}
 {"expect": {"status": "Loaded \"Old Voice\".", "state": {"playback_mix": 2, "gain_tenths": 300, "monitor_mix": 40}, "set": {"feature": "GAIN", "value": 300}}}

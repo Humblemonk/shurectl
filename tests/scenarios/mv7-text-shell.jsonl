@@ -14,6 +14,8 @@
 {"click_on": "Presets"}
 {"key": "Down"}
 {"key": "Enter"}
+{"expect": {"screen_contains": "[ Load ]", "no_packets": true}}
+{"key": "Enter"}
 {"expect": {"text_sent": "inputGain 25.5", "state": {"gain_tenths": 255}, "status": "Loaded", "status_is_error": false}}
 {"click_on": "Main"}
 {"click_on": "Mode:"}

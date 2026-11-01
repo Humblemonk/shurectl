@@ -6,6 +6,34 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.16.0 — 2026-11-01
+
+Loading a preset shows what it would change before it loads, and the level meter listens to
+the device you opened, not your system's default input.
+
+### Added
+
+- Loading a preset first shows what it would change, such as `Gain : 24 dB → 40 dB`, in a
+  box over the Presets tab, so a preset can't surprise you with a much louder gain. Press
+  `Enter` or click Load to load it, and `Esc`, any other key or a click outside the box to
+  cancel. Phantom power switching on shows in amber. A setting the device uses only in the
+  other mode is listed too, such as `Gain : 24 dB → 60 dB (in Manual)` for a preset saved
+  in Auto Level, because loading writes it, and the device uses that gain once switched to
+  Manual (tested on the MVX2U Gen 2 and MV6 Gen 2; unconfirmed on other models).
+  `--preset` still loads straight away.
+
+### Changed
+
+- The level meter, and the gain check with it, listens to the device you opened instead of
+  your system's default input, so the Shure no longer needs to be the default. With two mics
+  connected, it hears the one you picked. The Info tab's new Meter Input row names the input
+  it listens to, or says "System default input" when it can't find the device's own, as on
+  Linux without PipeWire or PulseAudio. Tested on the MVX2U Gen 2 under PipeWire;
+  unconfirmed on macOS and Windows.
+- With no audio to show (the device unplugged, or before the first reading), the level
+  meter keeps its peak box and dB scale and shows `---`, instead of one empty bar over the
+  whole area.
+
 ## 2.15.0 — 2026-10-31
 
 Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the
