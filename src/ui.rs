@@ -3686,7 +3686,8 @@ fn eq_gain_text(gain_tenths: i16) -> String {
 // Preset load box
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Width of the load box's labels, colon excluded: the longest is "Playback Level".
+/// Width of the load box's labels, colon excluded: the longest are "Playback Level"
+/// and "LED Solid Theme".
 const LOAD_LABEL_WIDTH: usize = 15;
 
 /// A setting a preset load would change, as the load box lists it.
@@ -3701,10 +3702,74 @@ struct LoadChange {
     new_color: Color,
 }
 
+/// Whether a preset load writes settings its target mode doesn't use. The
+/// binary models write every saved setting in either mode
+/// (`apply_binary_preset()`); the MV7 switches mode first, then writes only
+/// what that mode uses (`load_mv7_preset()`).
+fn load_writes_every_mode(model: DeviceModel) -> bool {
+    match model {
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7Plus => true,
+        DeviceModel::Mv7 => false,
+    }
+}
+
+/// A Summary row's value in `state`, and when it takes effect: `None` for
+/// now, or a note such as "in Manual" for a value `state` holds but its
+/// mode or tone mode doesn't use. Such values are looked up only where the
+/// load writes them anyway (`load_writes_every_mode()`). `None` when the row
+/// has no value in any of them.
+fn row_as_loaded(
+    state: &DeviceState,
+    model: DeviceModel,
+    row: SummaryRow,
+) -> Option<(Span<'static>, Option<&'static str>)> {
+    // Summary's "auto" placeholder stands for the device's own value, not a
+    // saved one.
+    let shown = |state: &DeviceState| {
+        let placeholder = state.mode == InputMode::Auto && summary_auto_managed(model, row);
+        (!placeholder)
+            .then(|| summary_value(state, model, row))
+            .flatten()
+    };
+    if let Some(span) = shown(state) {
+        return Some((span, None));
+    }
+    if !load_writes_every_mode(model) {
+        return None;
+    }
+    // Copies of the state in the mode, then the tone mode, that uses the row.
+    let mut other_mode = state.clone();
+    let note = match state.mode {
+        InputMode::Manual => {
+            other_mode.mode = InputMode::Auto;
+            "in Auto"
+        }
+        InputMode::Auto => {
+            other_mode.mode = InputMode::Manual;
+            "in Manual"
+        }
+    };
+    if let Some(span) = shown(&other_mode) {
+        return Some((span, Some(note)));
+    }
+    let mut simple_tone = state.clone();
+    simple_tone.tone_advanced = false;
+    (state.tone_advanced && row == SummaryRow::Tone)
+        .then(|| shown(&simple_tone))
+        .flatten()
+        .map(|span| (span, Some("in Simple tone")))
+}
+
 /// The settings that loading would change from `current` to `target`: the
 /// model's Summary rows in their order and wording (mute aside, which loads
-/// leave alone), then what the Summary doesn't show. `playback_read` is false
-/// while the Playback Level is unread, as a load leaves it then.
+/// leave alone), then what the Summary doesn't show. A value the load writes
+/// but the target mode doesn't use carries a note ("30 dB (in Manual)").
+/// `playback_read` is false while the Playback Level is unread, as a load
+/// leaves it then.
 fn load_changes(
     current: &DeviceState,
     target: &DeviceState,
@@ -3727,31 +3792,58 @@ fn load_changes(
         if row == SummaryRow::Muted {
             continue;
         }
-        // A row the new state hides (Gain in Auto) has nothing to show.
-        let Some(new) = summary_value(target, model, row) else {
+        // A row the load doesn't write has nothing to show.
+        let Some((new, note)) = row_as_loaded(target, model, row) else {
             continue;
         };
+        let old = row_as_loaded(current, model, row)
+            .map_or_else(|| "–".to_string(), |(span, _)| text(span));
         let new_color = if row == SummaryRow::Phantom && target.phantom_power {
             C_WARN
         } else {
             new.style.fg.unwrap_or(C_TEXT)
         };
-        let old = summary_value(current, model, row).map_or_else(|| "–".to_string(), text);
+        let new = text(new);
+        if old == new {
+            continue;
+        }
         let name = row.label().trim_end_matches([' ', ':']);
-        add(name, old, text(new), new_color);
+        let new = match note {
+            Some(note) => format!("{new} ({note})"),
+            None => new,
+        };
+        add(name, old, new, new_color);
+    }
+    // The Summary shows the MV6 Gen 2's denoiser level only while it is on;
+    // the load writes it either way.
+    if model.has_denoiser_level()
+        && !target.denoiser_enabled
+        && current.denoiser_level != target.denoiser_level
+    {
+        add(
+            "Denoiser Level",
+            format!("{}%", current.denoiser_level),
+            format!("{}% (when on)", target.denoiser_level),
+            C_TEXT,
+        );
     }
     let percent = |value: u8| format!("{value}%");
-    let monitor_mix = if model.has_playback_mix() {
-        "Mic Level"
-    } else {
-        "Monitor Mix"
-    };
-    add(
-        monitor_mix,
-        percent(current.monitor_mix),
-        percent(target.monitor_mix),
-        C_TEXT,
-    );
+    if model.has_playback_mix() {
+        add(
+            "Mic Level",
+            percent(current.monitor_mix),
+            percent(target.monitor_mix),
+            C_TEXT,
+        );
+    } else if current.monitor_mix != target.monitor_mix {
+        // A balance, as the Main tab's Mic ◄─NN%─► Playback gauge shows it.
+        add(
+            "Monitor Mix",
+            percent(current.monitor_mix),
+            format!("{} (Mic ◄► Playback)", percent(target.monitor_mix)),
+            C_TEXT,
+        );
+    }
     if model.has_playback_mix() && playback_read {
         add(
             "Playback Level",
@@ -3855,6 +3947,25 @@ fn load_changes(
     changes
 }
 
+/// What the rows a full load box leaves out are about: "LED, EQ bands, Reverb Type".
+fn hidden_groups(changes: &[LoadChange]) -> String {
+    let mut groups: Vec<&str> = Vec::new();
+    for change in changes {
+        let name = change.label.trim_end_matches([' ', ':']);
+        let group = if name.starts_with("LED") {
+            "LED"
+        } else if name.starts_with("EQ Band") {
+            "EQ bands"
+        } else {
+            name
+        };
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    groups.join(", ")
+}
+
 /// The preset load box: what loading the slot would change, and Load and
 /// Cancel buttons. Its buttons sit at its right edge, clear of the preset's
 /// own Load button at the left of the card, so the second click of a
@@ -3909,7 +4020,11 @@ fn draw_preset_load_box(f: &mut UiFrame, app: &App, area: Rect) {
         }
         if shown < changes.len() {
             lines.push(Line::from(Span::styled(
-                format!(" …and {} more", changes.len() - shown),
+                format!(
+                    " …and {} more: {}",
+                    changes.len() - shown,
+                    hidden_groups(&changes[shown..])
+                ),
                 Style::default().fg(C_DIM),
             )));
         }
@@ -4350,6 +4465,125 @@ mod tests {
         };
         let matching = preset(&current.device_state);
         vec![("changes", preset(&changed)), ("matches", matching)]
+    }
+
+    /// A load's rows as "label old → new", for comparing in tests.
+    fn change_rows(changes: &[LoadChange]) -> Vec<String> {
+        changes
+            .iter()
+            .map(|change| format!("{}{} → {}", change.label, change.old, change.new))
+            .collect()
+    }
+
+    #[test]
+    fn load_changes_show_what_the_load_writes_in_either_mode() {
+        let manual = DeviceState {
+            mode: InputMode::Manual,
+            gain_tenths: 240,
+            ..DeviceState::default()
+        };
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            ..manual.clone()
+        };
+        let louder = |state: &DeviceState| DeviceState {
+            gain_tenths: 600,
+            ..state.clone()
+        };
+        let model = DeviceModel::Mvx2uGen2;
+        // Auto to Auto, only the gain different: written, so listed.
+        let rows = change_rows(&load_changes(&auto, &louder(&auto), model, true));
+        assert_eq!(rows, ["Gain           : 24 dB → 60 dB (in Manual)"]);
+        // Manual to Auto with a louder gain: the mode and the gain.
+        let rows = change_rows(&load_changes(&manual, &louder(&auto), model, true));
+        assert_eq!(
+            rows,
+            [
+                "Mode           : Manual → Auto Level",
+                "Gain           : 24 dB → 60 dB (in Manual)",
+            ]
+        );
+        // The MV7 writes the gain only in Manual (load_mv7_preset()); its mode
+        // command carries mic position and tone.
+        let rows = change_rows(&load_changes(
+            &manual,
+            &louder(&auto),
+            DeviceModel::Mv7,
+            true,
+        ));
+        assert_eq!(
+            rows,
+            [
+                "Mode           : Manual → Auto Level",
+                "Position       : – → Near",
+                "Tone           : – → Natural",
+            ]
+        );
+        // Auto-managed rows show the saved value, not "auto".
+        let compressed = DeviceState {
+            compressor: CompressorPreset::Heavy,
+            ..auto.clone()
+        };
+        let rows = change_rows(&load_changes(&auto, &compressed, model, true));
+        assert_eq!(rows, ["Compressor     : Off → Heavy (in Manual)"]);
+    }
+
+    #[test]
+    fn load_changes_name_the_balance_and_a_denoiser_level_while_off() {
+        let current = DeviceState {
+            mode: InputMode::Manual,
+            monitor_mix: 50,
+            denoiser_level: 80,
+            ..DeviceState::default()
+        };
+        let target = DeviceState {
+            monitor_mix: 30,
+            denoiser_level: 40,
+            ..current.clone()
+        };
+        let rows = change_rows(&load_changes(&current, &target, DeviceModel::Mvx2u, true));
+        assert_eq!(rows, ["Monitor Mix    : 50% → 30% (Mic ◄► Playback)"]);
+        let rows = change_rows(&load_changes(&current, &target, DeviceModel::Mv6Gen2, true));
+        // Same level on both sides: nothing to list, though the note differs.
+        let same_level = DeviceState {
+            denoiser_level: current.denoiser_level,
+            ..target.clone()
+        };
+        assert!(
+            !change_rows(&load_changes(
+                &current,
+                &same_level,
+                DeviceModel::Mv6Gen2,
+                true
+            ))
+            .iter()
+            .any(|row| row.starts_with("Denoiser Level"))
+        );
+        assert_eq!(
+            rows,
+            [
+                "Denoiser Level : 80% → 40% (when on)",
+                "Mic Level      : 50% → 30%",
+            ]
+        );
+    }
+
+    #[test]
+    fn hidden_groups_name_what_the_overflow_holds() {
+        let change = |name: &str| LoadChange {
+            label: format!("{name:<LOAD_LABEL_WIDTH$}: "),
+            old: String::new(),
+            new: String::new(),
+            new_color: C_TEXT,
+        };
+        let hidden = [
+            change("EQ Band 4"),
+            change("EQ Band 5"),
+            change("LED Solid"),
+            change("Reverb Type"),
+            change("LED Edge"),
+        ];
+        assert_eq!(hidden_groups(&hidden), "EQ bands, LED, Reverb Type");
     }
 
     #[test]

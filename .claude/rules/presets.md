@@ -28,7 +28,10 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   `apply_preset_to_state()`, here, used by the load and by the TUI's load box
   (`ui.rs::draw_preset_load_box()`), so the box lists exactly what the load sets. Change the
   fitting only there. The box compares against the shown state, which can be stale for
-  settings the live poll doesn't read
+  settings the live poll doesn't read. It lists what the load writes: on the binary models
+  every saved setting whatever the mode, noted "(in Manual)" where the target mode doesn't
+  use it; on the MV7 only what the target mode uses (`ui.rs::load_writes_every_mode()`).
+  Change that function when either load path changes what it writes
 - **Gain Lock**: a locked device ignores gain writes, so `apply_binary_preset()` unlocks,
   writes the gain, and re-locks straight away. A preset without Gain Lock re-locks to the
   shown setting

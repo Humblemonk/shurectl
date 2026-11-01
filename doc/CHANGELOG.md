@@ -13,7 +13,9 @@ Releases that need you to do something after upgrading have an **Upgrading** not
 - Loading a preset first shows what it would change, such as `Gain : 24 dB → 40 dB`, in a
   box over the Presets tab, so a preset can't surprise you with a much louder gain. Press
   `Enter` or click Load to load it, and `Esc`, any other key or a click outside the box to
-  cancel. Phantom power switching on shows in amber. `--preset` still loads straight away.
+  cancel. Phantom power switching on shows in amber. A setting the device uses only in the
+  other mode is listed too, such as `Gain : 24 dB → 60 dB (in Manual)` for a preset saved
+  in Auto Level, because loading writes it. `--preset` still loads straight away.
 
 ### Changed
 
