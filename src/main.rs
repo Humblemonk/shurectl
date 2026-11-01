@@ -67,7 +67,7 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Position};
 use app::{App, DeviceAction, STATE_UNREAD_HINT};
 use cli::{Amount, ModeChoice, MuteAction};
 use device::{Live, ShureDevice};
-use meter::{MeterStatus, start_meter};
+use meter::{InputTarget, MeterStatus, start_meter};
 use presets::PresetSlot;
 use protocol::{DeviceModel, InputMode, format_gain};
 
@@ -271,17 +271,10 @@ fn main() -> Result<()> {
 
     app.presets = presets;
 
-    let _meter_stream = if !demo_mode {
-        match start_meter(Arc::clone(&app.peak_window)) {
-            MeterStatus::Running(s) => Some(s),
-            MeterStatus::Failed(e) => {
-                app.add_status(&format!("Meter unavailable: {e}"), true);
-                app.meter_unavailable = true;
-                None
-            }
-        }
-    } else {
+    let mut meter_stream = if demo_mode {
         None
+    } else {
+        start_device_meter(&mut app, device.as_ref())
     };
 
     let mut tui = match tui {
@@ -307,7 +300,13 @@ fn main() -> Result<()> {
 
     let latest_firmware =
         (!demo_mode && firmware::is_compared(device_model)).then(firmware::spawn_check);
-    let result = run_event_loop(&mut tui.terminal, &mut app, &mut device, latest_firmware);
+    let result = run_event_loop(
+        &mut tui.terminal,
+        &mut app,
+        &mut device,
+        &mut meter_stream,
+        latest_firmware,
+    );
 
     drop(tui);
 
@@ -563,10 +562,35 @@ impl Drop for TerminalCleanup {
     }
 }
 
+/// Start the level meter on `dev`'s own input, or on the system default input
+/// when that isn't found. Keep the returned stream alive while metering.
+fn start_device_meter(app: &mut App, dev: Option<&ShureDevice>) -> Option<cpal::Stream> {
+    let target = InputTarget {
+        usb_serial: dev
+            .map(|dev| dev.serial_number.as_str())
+            .filter(|serial| *serial != device::UNKNOWN_SERIAL),
+        product: dev.and_then(|dev| dev.product.as_deref()),
+    };
+    match start_meter(Arc::clone(&app.peak_window), &target) {
+        MeterStatus::Running(stream, input) => {
+            app.meter_unavailable = false;
+            app.meter_input = Some(input);
+            Some(stream)
+        }
+        MeterStatus::Failed(e) => {
+            app.add_status(&format!("Meter unavailable: {e}"), true);
+            app.meter_unavailable = true;
+            app.meter_input = None;
+            None
+        }
+    }
+}
+
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     device: &mut Option<ShureDevice>,
+    meter_stream: &mut Option<cpal::Stream>,
     latest_firmware: Option<mpsc::Receiver<firmware::LatestFirmware>>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
@@ -600,6 +624,7 @@ fn run_event_loop(
         } else {
             None
         };
+        let was_connected = app.device_connected;
         step(
             app,
             device,
@@ -609,6 +634,12 @@ fn run_event_loop(
             Instant::now(),
             &mut loop_state,
         );
+        // A replugged device's input comes back as a new one, so listen again.
+        // The old stream goes first, so two never run at once.
+        if app.device_connected && !was_connected && !app.demo_mode {
+            *meter_stream = None;
+            *meter_stream = start_device_meter(app, device.as_ref());
+        }
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();

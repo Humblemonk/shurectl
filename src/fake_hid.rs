@@ -991,6 +991,10 @@ impl HidTransport for FakeHid {
         Some(format!("FAKE-{:?}", self.state.borrow().model))
     }
 
+    fn product(&self) -> Option<String> {
+        None
+    }
+
     fn is_present(&self, _model: DeviceModel, _serial: &str) -> Result<bool> {
         let mut state = self.state.borrow_mut();
         if state.rebooting_polls > 0 {

@@ -205,12 +205,13 @@ firmware version), `--demo`, and the command-line options under [Scripting](#scr
   5-band EQ (Advanced), as in MOTIV.
 - Monitor Mix balances mic against playback in your headphones. On the MVX2U Gen 2, MV6,
   MV6 Gen 2 and MV7+ it has separate Mic Level and Playback Level sliders, as in MOTIV.
-- The level meter reads your system's default input, so set the Shure as the default input
-  (at 100% input volume) for it to match the device.
+- The level meter listens to the device's own input, after your system's input volume, so
+  keep that at 100% for it to match the device. If it can't find that input, it uses your
+  system's default input, and the Info tab's Meter Input row says so.
 - Gain check: in Manual mode, select the Level meter on the Main tab and press `Enter`, then
   speak normally for 10 seconds. The Summary makes way for the result: your loudest peak and
   a gain to try, aiming for peaks around -12 dBFS. Set the gain with `←`/`→`, then check
-  again. It listens through the level meter, so it needs the Shure as your default input.
+  again. It listens through the level meter.
 - Gain moves in 1 dB steps, except on the MV7, which uses the hardware's own 1.5 dB step.
 - On the MVX2U Gen 1 and MV7, the device manages EQ and Dynamics itself in Auto Level
   mode, so those tabs are locked until you switch to Manual.

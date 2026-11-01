@@ -12,6 +12,7 @@ use ratatui::{
 use crate::app::{App, Focus, Tab};
 use crate::firmware::FirmwareStatus;
 use crate::gain_check::GainCheck;
+use crate::meter::MeterInput;
 use crate::mouse::{HitMap, Target};
 use crate::picker::{Picker, PickerRow};
 use crate::protocol::{
@@ -1599,7 +1600,14 @@ fn draw_gain_check_card(f: &mut UiFrame, app: &App, check: &GainCheck, area: Rec
                     lines.push(note("Gain is at 0 dB: move back from the mic.", C_WARN));
                 }
                 Advice::NoSignal => lines.push(note(
-                    "Heard nothing. Is the Shure your system's default input?",
+                    match app.meter_input {
+                        Some(MeterInput::Device(_)) => {
+                            "Heard nothing. Check the mic's input volume in your sound settings."
+                        }
+                        Some(MeterInput::Default) | None => {
+                            "Heard nothing. Is the Shure your system's default input?"
+                        }
+                    },
                     C_WARN,
                 )),
             }
@@ -3284,6 +3292,18 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
         Span::styled("  USB VID/PID  : ", Style::default().fg(C_DIM)),
         Span::styled(vid_pid, Style::default().fg(C_TEXT)),
     ]));
+
+    // Which input the Level meter hears; amber when it may not be this device.
+    if let Some(input) = &app.meter_input {
+        let (text, color) = match input {
+            MeterInput::Device(name) => (name.as_str(), C_TEXT),
+            MeterInput::Default => ("System default input", C_WARN),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Meter Input  : ", Style::default().fg(C_DIM)),
+            Span::styled(text, Style::default().fg(color)),
+        ]));
+    }
 
     // Device Actions before Capabilities: the long static list must not push
     // the only button on this tab off a short terminal.

@@ -6,6 +6,17 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.16.0 — unreleased
+
+### Changed
+
+- The level meter, and the gain check with it, listens to the device you opened instead of
+  your system's default input, so the Shure no longer needs to be the default. With two mics
+  connected, it hears the one you picked. The Info tab's new Meter Input row names the input
+  it listens to, or says "System default input" when it can't find the device's own, as on
+  Linux without PipeWire or PulseAudio. Tested on the MVX2U Gen 2 under PipeWire;
+  unconfirmed on macOS and Windows.
+
 ## 2.15.0 — 2026-10-31
 
 Scripts, hotkeys and Stream Deck buttons can change more without the TUI, and read the

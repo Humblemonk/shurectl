@@ -154,6 +154,8 @@ pub trait HidTransport {
     fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize>;
     /// The USB descriptor serial number, if the device reports one.
     fn serial_number(&self) -> Option<String>;
+    /// The USB descriptor product string, if the device reports one.
+    fn product(&self) -> Option<String>;
     /// Whether a device with this model and USB serial is still in the OS
     /// device list. Nothing is sent to the device.
     fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool>;
@@ -175,6 +177,10 @@ impl HidTransport for HidapiTransport {
 
     fn serial_number(&self) -> Option<String> {
         self.0.get_serial_number_string().ok().flatten()
+    }
+
+    fn product(&self) -> Option<String> {
+        self.0.get_product_string().ok().flatten()
     }
 
     fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool> {
@@ -245,6 +251,9 @@ pub struct ShureDevice {
     seq: AtomicU8,
     /// Serial number string read from the USB device descriptor at open time.
     pub serial_number: String,
+    /// Product string from the USB device descriptor, which finds the
+    /// device's audio input for the meter on some systems.
+    pub product: Option<String>,
 }
 
 impl ShureDevice {
@@ -253,11 +262,13 @@ impl ShureDevice {
         let serial_number = transport
             .serial_number()
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
+        let product = transport.product();
         Self {
             transport,
             model,
             seq: AtomicU8::new(0),
             serial_number,
+            product,
         }
     }
 

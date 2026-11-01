@@ -1,20 +1,19 @@
 //! Real-time input level metering via cpal.
 //!
-//! Opens the system default input device and measures sample-peak dBFS on a
-//! background thread. Results reach the render thread through
+//! Opens the connected device's own input, or the system default input when
+//! that can't be told apart (`start_meter()`), and measures sample-peak dBFS
+//! on a background thread. Results reach the render thread through
 //! `peak_window: Arc<Mutex<PeakWindow>>`, a pair of rolling time windows
 //! (short: 0.3 s, long: 3.0 s). The audio thread pushes every callback's peak
 //! into both windows; the render thread reads the rolling maxima to drive the
 //! bar and the peak-hold readout. Readings expire with their window, so a
 //! stalled or failed stream drops to "no data" instead of freezing.
 //!
-//! We deliberately do NOT search for the device by name. On Linux, cpal's
-//! default ALSA host would find the raw `hw:MVX2U` PCM device and open it
-//! exclusively, preventing any other application (PipeWire, PulseAudio, DAW)
-//! from capturing audio until shurectl exits. Using the default input
-//! device instead lets PipeWire/PulseAudio act as the broker and share the
-//! hardware normally. If the user has set the Shure device as their default input,
-//! the meter reads it correctly without the exclusivity problem.
+//! On Linux the device's input is found through PipeWire or PulseAudio, which
+//! share it with every other app. Never through ALSA's own devices: those
+//! open the hardware itself (`hw:`, `plughw:`), which can keep PipeWire, and
+//! every app recording through it, off the mic until shurectl exits. On plain
+//! ALSA the meter keeps to the default input.
 //!
 //! The sentinel value `METER_SILENT` (`i32::MIN`) means no audio data has
 //! arrived recently, or the stream could not be opened.
@@ -113,39 +112,70 @@ impl Default for PeakWindow {
 
 /// What `start_meter()` returns: the running stream, or why it couldn't start.
 pub enum MeterStatus {
-    /// Stream is running; reads come via the shared `PeakWindow`.
-    Running(Stream),
+    /// Stream is running on this input; reads come via the shared `PeakWindow`.
+    Running(Stream, MeterInput),
     /// cpal could not open a capture stream; message is shown in the UI.
     Failed(String),
 }
 
+/// Which input the meter listens to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeterInput {
+    /// The connected device's own input, by the name the system gives it.
+    Device(String),
+    /// The system default input, because the device's own wasn't found.
+    Default,
+}
+
+/// What identifies the connected device among the system's inputs.
+#[derive(Debug, Default)]
+pub struct InputTarget<'a> {
+    /// The USB serial number. PipeWire and PulseAudio put it in the input's
+    /// ID (seen 2026-10-31 on the MVX2U Gen 2 under PipeWire).
+    pub usb_serial: Option<&'a str>,
+    /// The USB product string, for systems whose input names hold it
+    /// (macOS and Windows; unconfirmed).
+    pub product: Option<&'a str>,
+}
+
+/// Squashed serials shorter than this could match by chance.
+const MIN_SERIAL_LEN: usize = 6;
+
+/// Callback period asked of PipeWire and PulseAudio. Left to choose, they
+/// called back about every 300 ms (MVX2U Gen 2 under PipeWire, 2026-10-31),
+/// as long as the meter's whole 0.3 s bar window.
+const PULSE_CALLBACK_HZ: u32 = 50;
+
 // ── start_meter ───────────────────────────────────────────────────────────────
 
-/// Start the capture stream.
+/// Start the capture stream on `target`'s own input, or on the system
+/// default input when no single input matches it.
 ///
-/// Opens the system default input device via cpal. Every audio callback pushes
-/// its peak, as `peak_dbfs * 10`, into both rolling windows in `peak_window`.
+/// Every audio callback pushes its peak, as `peak_dbfs * 10`, into both
+/// rolling windows in `peak_window`.
 ///
-/// Returns `MeterStatus::Running(stream)` on success. The caller **must**
-/// keep the returned `Stream` alive for as long as metering is desired —
-/// dropping it stops the audio capture.
-pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>) -> MeterStatus {
+/// Returns `MeterStatus::Running(stream, input)` on success. The caller
+/// **must** keep the returned `Stream` alive for as long as metering is
+/// desired — dropping it stops the audio capture.
+pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>, target: &InputTarget) -> MeterStatus {
     // cpal probes JACK, OSS, dmix, and dsnoop during host/device enumeration.
     // These C libraries print directly to stderr when their backends are
     // unavailable — there is no way to intercept them from Rust. We suppress
     // stderr for the duration of the noisy probing phase, then restore it.
     let stderr_suppressed = StderrSuppressor::new();
 
+    // PipeWire or PulseAudio when one is running on Linux, else ALSA.
     let host = cpal::default_host();
 
-    // Use the system default input device. PipeWire/PulseAudio will route
-    // from the Shure device if it is set as the default, without exclusive access.
-    let device: Device = match host.default_input_device() {
-        Some(d) => d,
-        None => {
-            drop(stderr_suppressed);
-            return MeterStatus::Failed("No input device found for metering".to_string());
-        }
+    let (device, input) = match device_input(&host, target) {
+        Some((device, name)) => (device, MeterInput::Device(name)),
+        None => match host.default_input_device() {
+            Some(device) => (device, MeterInput::Default),
+            None => {
+                drop(stderr_suppressed);
+                return MeterStatus::Failed("No input device found for metering".to_string());
+            }
+        },
     };
 
     let config = match device.default_input_config() {
@@ -159,7 +189,11 @@ pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>) -> MeterStatus {
     // Probing is done; restore stderr before building the stream.
     drop(stderr_suppressed);
 
-    let stream_config: StreamConfig = config.into();
+    let mut stream_config: StreamConfig = config.into();
+    if is_pulse(&host) {
+        stream_config.buffer_size =
+            cpal::BufferSize::Fixed(stream_config.sample_rate / PULSE_CALLBACK_HZ);
+    }
 
     // Stream errors need no handling: once callbacks stop, the windows expire
     // and the UI shows no reading.
@@ -189,11 +223,104 @@ pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>) -> MeterStatus {
             if let Err(e) = s.play() {
                 MeterStatus::Failed(format!("Cannot start meter stream: {e}"))
             } else {
-                MeterStatus::Running(s)
+                MeterStatus::Running(s, input)
             }
         }
         Err(e) => MeterStatus::Failed(format!("Cannot build meter stream: {e}")),
     }
+}
+
+/// `target`'s own input on `host`, with its name, when exactly one matches.
+/// Never on plain ALSA (see the module doc).
+fn device_input(host: &cpal::Host, target: &InputTarget) -> Option<(Device, String)> {
+    if is_alsa(host) {
+        return None;
+    }
+    let inputs: Vec<(Device, String, String)> = host
+        .input_devices()
+        .ok()?
+        .map(|device| {
+            let id = device
+                .id()
+                .map(|id| id.id().to_string())
+                .unwrap_or_default();
+            let name = device
+                .description()
+                .map(|description| description.name().to_string())
+                .unwrap_or_default();
+            (device, id, name)
+        })
+        .collect();
+    let listed: Vec<(&str, &str)> = inputs
+        .iter()
+        .map(|(_, id, name)| (id.as_str(), name.as_str()))
+        .collect();
+    let index = matching_input(&listed, target)?;
+    let (device, id, name) = inputs.into_iter().nth(index)?;
+    Some((device, if name.is_empty() { id } else { name }))
+}
+
+/// The index of the one input in `inputs` (ID, name) that is `target`: the
+/// one whose ID or name holds its USB serial, or failing that the one whose
+/// name holds its product string. `None` when none or several match.
+/// PulseAudio's monitor sources (what an output plays) are never the mic, and
+/// carry the same serial.
+fn matching_input(inputs: &[(&str, &str)], target: &InputTarget) -> Option<usize> {
+    let candidates: Vec<(usize, String, String)> = inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, _))| !id.ends_with(".monitor"))
+        .map(|(index, (id, name))| (index, squash(id), squash(name)))
+        .collect();
+    let only = |found: &str, in_id: bool| {
+        let mut matches = candidates
+            .iter()
+            .filter(|(_, id, name)| name.contains(found) || (in_id && id.contains(found)));
+        match (matches.next(), matches.next()) {
+            (Some((index, _, _)), None) => Some(*index),
+            _ => None,
+        }
+    };
+    let serial = target
+        .usb_serial
+        .map(squash)
+        .filter(|serial| serial.len() >= MIN_SERIAL_LEN);
+    let product = target
+        .product
+        .map(squash)
+        .filter(|product| !product.is_empty());
+    serial
+        .and_then(|serial| only(&serial, true))
+        .or_else(|| product.and_then(|product| only(&product, false)))
+}
+
+/// Lowercase ASCII letters and digits only: PipeWire writes a serial's
+/// spaces and `#` as `_` in an input's ID.
+fn squash(text: &str) -> String {
+    text.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn is_alsa(host: &cpal::Host) -> bool {
+    host.id() == cpal::HostId::Alsa
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_alsa(_host: &cpal::Host) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn is_pulse(host: &cpal::Host) -> bool {
+    host.id() == cpal::HostId::PulseAudio
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_pulse(_host: &cpal::Host) -> bool {
+    false
 }
 
 // ── Stderr suppressor ─────────────────────────────────────────────────────────
@@ -317,6 +444,80 @@ where
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    // As cpal's PulseAudio host listed them under PipeWire (2026-10-31), with
+    // the serial made up.
+    const GEN2_SERIAL: &str = "MVX2U GEN 2#2-0123456789abcdef0123456789abcdef";
+    const PULSE_INPUTS: [(&str, &str); 4] = [
+        (
+            "alsa_output.usb-Shure_Inc_Shure_MVX2U_GEN_2_MVX2U_GEN_2_2-0123456789abcdef0123456789abcdef-01.analog-stereo.monitor",
+            "Monitor of Shure MVX2U GEN 2 Analog Stereo",
+        ),
+        (
+            "alsa_input.usb-Shure_Inc_Shure_MVX2U_GEN_2_MVX2U_GEN_2_2-0123456789abcdef0123456789abcdef-01.mono-fallback",
+            "Shure MVX2U GEN 2 Mono",
+        ),
+        (
+            "alsa_output.usb-SMSL_SMSL_USB_AUDIO-00.playback.0.0.monitor",
+            "Monitor of SMSL RAW-MDA1",
+        ),
+        (
+            "alsa_output.usb-FIIO_FiiO_K11_R2R-01.playback.0.0.monitor",
+            "Monitor of FiiO K11 R2R",
+        ),
+    ];
+
+    fn target<'a>(usb_serial: Option<&'a str>, product: Option<&'a str>) -> InputTarget<'a> {
+        InputTarget {
+            usb_serial,
+            product,
+        }
+    }
+
+    #[test]
+    fn matching_input_finds_the_source_by_serial_and_skips_its_monitor() {
+        let found = matching_input(&PULSE_INPUTS, &target(Some(GEN2_SERIAL), None));
+        assert_eq!(found, Some(1));
+    }
+
+    #[test]
+    fn matching_input_tells_two_of_a_model_apart_by_serial() {
+        let inputs = [
+            (
+                "alsa_input.usb-Shure_Inc_Shure_MVX2U_GEN_2_MVX2U_GEN_2_2-aaaa1111-01.mono-fallback",
+                "Shure MVX2U GEN 2 Mono",
+            ),
+            (
+                "alsa_input.usb-Shure_Inc_Shure_MVX2U_GEN_2_MVX2U_GEN_2_2-bbbb2222-01.mono-fallback",
+                "Shure MVX2U GEN 2 Mono",
+            ),
+        ];
+        let product = Some("Shure MVX2U GEN 2");
+        let second = target(Some("MVX2U GEN 2#2-bbbb2222"), product);
+        assert_eq!(matching_input(&inputs, &second), Some(1));
+        // Without a serial the product names both, so neither is picked.
+        assert_eq!(matching_input(&inputs, &target(None, product)), None);
+    }
+
+    #[test]
+    fn matching_input_falls_back_to_the_product_name() {
+        let inputs = [
+            ("{0.0.1.00000000}.{1111}", "Microphone (Realtek Audio)"),
+            ("{0.0.1.00000000}.{2222}", "Microphone (Shure MV7+)"),
+        ];
+        let mv7_plus = target(Some("no-such-serial-anywhere"), Some("Shure MV7+"));
+        assert_eq!(matching_input(&inputs, &mv7_plus), Some(1));
+    }
+
+    #[test]
+    fn matching_input_ignores_a_short_or_missing_serial_and_an_empty_product() {
+        assert_eq!(
+            matching_input(&PULSE_INPUTS, &target(Some("2"), None)),
+            None
+        );
+        assert_eq!(matching_input(&PULSE_INPUTS, &target(None, Some(""))), None);
+        assert_eq!(matching_input(&PULSE_INPUTS, &InputTarget::default()), None);
+    }
 
     // ── RollingWindow ─────────────────────────────────────────────────────────
 

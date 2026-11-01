@@ -7,7 +7,7 @@ use crossterm::event::KeyCode;
 
 use crate::firmware::LatestFirmware;
 use crate::gain_check::{GainCheck, Listening};
-use crate::meter::PeakWindow;
+use crate::meter::{MeterInput, PeakWindow};
 use crate::presets::{PRESET_COUNT, PresetSlot};
 use crate::protocol::{
     AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EqPreset, HpfFrequency,
@@ -210,6 +210,8 @@ pub struct App {
     /// True when the meter's capture stream couldn't start, so a gain check
     /// would hear nothing.
     pub meter_unavailable: bool,
+    /// The input the meter listens to, while it runs.
+    pub meter_input: Option<MeterInput>,
 }
 
 impl Default for App {
@@ -240,6 +242,7 @@ impl Default for App {
             latest_firmware: None,
             gain_check: None,
             meter_unavailable: false,
+            meter_input: None,
         }
     }
 }
