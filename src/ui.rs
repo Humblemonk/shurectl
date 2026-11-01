@@ -3695,8 +3695,10 @@ struct LoadChange {
     label: String,
     old: String,
     new: String,
-    /// Phantom power switching on: shown as a caution.
-    caution: bool,
+    /// The new value's colour: the Summary's for its row (LOCKED amber, ON
+    /// green), white for values the Summary doesn't show, and amber for
+    /// phantom power switching on, a caution where the Summary shows green.
+    new_color: Color,
 }
 
 /// The settings that loading would change from `current` to `target`: the
@@ -3710,13 +3712,13 @@ fn load_changes(
     playback_read: bool,
 ) -> Vec<LoadChange> {
     let mut changes = Vec::new();
-    let mut add = |name: &str, old: String, new: String, caution: bool| {
+    let mut add = |name: &str, old: String, new: String, new_color: Color| {
         if old != new {
             changes.push(LoadChange {
                 label: format!("{name:<LOAD_LABEL_WIDTH$}: "),
                 old,
                 new,
-                caution,
+                new_color,
             });
         }
     };
@@ -3726,13 +3728,17 @@ fn load_changes(
             continue;
         }
         // A row the new state hides (Gain in Auto) has nothing to show.
-        let Some(new) = summary_value(target, model, row).map(text) else {
+        let Some(new) = summary_value(target, model, row) else {
             continue;
+        };
+        let new_color = if row == SummaryRow::Phantom && target.phantom_power {
+            C_WARN
+        } else {
+            new.style.fg.unwrap_or(C_TEXT)
         };
         let old = summary_value(current, model, row).map_or_else(|| "–".to_string(), text);
         let name = row.label().trim_end_matches([' ', ':']);
-        let caution = row == SummaryRow::Phantom && target.phantom_power;
-        add(name, old, new, caution);
+        add(name, old, text(new), new_color);
     }
     let percent = |value: u8| format!("{value}%");
     let monitor_mix = if model.has_playback_mix() {
@@ -3744,14 +3750,14 @@ fn load_changes(
         monitor_mix,
         percent(current.monitor_mix),
         percent(target.monitor_mix),
-        false,
+        C_TEXT,
     );
     if model.has_playback_mix() && playback_read {
         add(
             "Playback Level",
             percent(current.playback_mix),
             percent(target.playback_mix),
-            false,
+            C_TEXT,
         );
     }
     let (eq_bands, band_switches) = match model {
@@ -3766,7 +3772,7 @@ fn load_changes(
                 &format!("EQ Band {band}"),
                 eq_gain_text(old.gain_db),
                 eq_gain_text(new.gain_db),
-                false,
+                C_TEXT,
             );
             if band_switches {
                 let on_off = |on: bool| if on { "ON" } else { "OFF" }.to_string();
@@ -3774,7 +3780,7 @@ fn load_changes(
                     &format!("EQ Band {band} On"),
                     on_off(old.enabled),
                     on_off(new.enabled),
-                    false,
+                    C_TEXT,
                 );
             }
         }
@@ -3794,31 +3800,31 @@ fn load_changes(
             "LED Behavior",
             shown(&current.led_behavior),
             shown(&target.led_behavior),
-            false,
+            C_TEXT,
         );
         add(
             "LED Brightness",
             shown(&current.led_brightness),
             shown(&target.led_brightness),
-            false,
+            C_TEXT,
         );
         add(
             "LED Live Theme",
             shown(&current.led_live_theme),
             shown(&target.led_live_theme),
-            false,
+            C_TEXT,
         );
         add(
             "LED Solid Theme",
             shown(&current.led_solid_theme),
             shown(&target.led_solid_theme),
-            false,
+            C_TEXT,
         );
         add(
             "LED Pulse Theme",
             shown(&current.led_pulsing_theme),
             shown(&target.led_pulsing_theme),
-            false,
+            C_TEXT,
         );
         for (name, old, new) in [
             ("LED Solid", current.led_solid_rgb, target.led_solid_rgb),
@@ -3843,7 +3849,7 @@ fn load_changes(
                 target.led_live_interior_rgb,
             ),
         ] {
-            add(name, rgb(old), rgb(new), false);
+            add(name, rgb(old), rgb(new), C_TEXT);
         }
     }
     changes
@@ -3894,12 +3900,11 @@ fn draw_preset_load_box(f: &mut UiFrame, app: &App, area: Rect) {
             changes.len()
         };
         for change in &changes[..shown] {
-            let new_color = if change.caution { C_WARN } else { C_TEXT };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {}", change.label), Style::default().fg(C_DIM)),
                 Span::styled(change.old.clone(), Style::default().fg(C_DIM)),
                 Span::styled(" → ", Style::default().fg(C_DIM)),
-                Span::styled(change.new.clone(), Style::default().fg(new_color)),
+                Span::styled(change.new.clone(), Style::default().fg(change.new_color)),
             ]));
         }
         if shown < changes.len() {
@@ -4372,7 +4377,11 @@ mod tests {
                     change.label,
                     change.old,
                     change.new,
-                    if change.caution { " (caution)" } else { "" }
+                    if change.new_color == C_WARN {
+                        " (caution)"
+                    } else {
+                        ""
+                    }
                 )
             })
             .collect();

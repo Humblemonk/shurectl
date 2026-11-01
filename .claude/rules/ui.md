@@ -33,6 +33,9 @@ lightened so their bar text stays readable.
   or Config Lock block shows LOCKED, its title and its frame in `C_WARN` (a chosen state, not
   an error); Unlocked is `C_TEXT`. Red is for errors, Muted, clipping and destructive actions,
   amber for cautions; never use either as decoration.
+- **Preset load box:** labels and old values `C_DIM`, each new value in its Summary row's
+  colour (`summary_value()`), `C_TEXT` for values the Summary lacks, and 48V switching on in
+  `C_WARN` as a caution where the Summary shows `C_SUCCESS`.
 
 **Controls.** Option strips (Input Mode, Auto Level rows, Mic Preset, Tone Mode) go through
 `segmented_span()`: gray segments with a black-on-lime active pill, pushed with no gap between
