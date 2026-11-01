@@ -271,7 +271,9 @@ fn main() -> Result<()> {
 
     app.presets = presets;
 
-    let mut meter_stream = if demo_mode {
+    // Not on a device whose first readback found it gone: its input is gone
+    // too, and the default input may be another mic. A reconnect starts it.
+    let mut meter_stream = if demo_mode || !app.device_connected {
         None
     } else {
         start_device_meter(&mut app, device.as_ref())
@@ -1632,9 +1634,10 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
                 skipped_note(&skipped)
             ));
             // The device's input may have come up after it did (a replug):
-            // look for it again unless the meter already has it.
-            app.meter_restart_pending |=
-                !matches!(app.meter_input, Some(meter::MeterInput::Device(_)));
+            // look for it again unless the meter already has it, or a gain
+            // check is listening to the meter as it is.
+            app.meter_restart_pending |= app.gain_check_listening().is_none()
+                && !matches!(app.meter_input, Some(meter::MeterInput::Device(_)));
             return Ok(());
         }
         Err(e) => e,
