@@ -638,13 +638,18 @@ fn run_event_loop(
         // no reading rather than whatever input the system moves the stream to.
         if was_connected && !app.device_connected {
             *meter_stream = None;
+            app.meter_input = None;
         }
-        // A new handle (a reconnect, or `r`) may be a replugged device, whose
-        // input comes back as a new one. The old stream goes first, so two
-        // never run at once.
+        // A new handle may be a replugged device, whose input comes back as a
+        // new one; `r` asks again when the meter isn't on the device's own
+        // input. The old stream goes first, so two never run at once. A device
+        // shown as lost gets no stream: the next reconnect asks again.
         if std::mem::take(&mut app.meter_restart_pending) && !app.demo_mode {
             *meter_stream = None;
-            *meter_stream = start_device_meter(app, device.as_ref());
+            app.meter_input = None;
+            if app.device_connected {
+                *meter_stream = start_device_meter(app, device.as_ref());
+            }
         }
 
         if last_tick.elapsed() >= tick_rate {
@@ -1626,6 +1631,10 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
                 "State refreshed from device.{}",
                 skipped_note(&skipped)
             ));
+            // The device's input may have come up after it did (a replug):
+            // look for it again unless the meter already has it.
+            app.meter_restart_pending |=
+                !matches!(app.meter_input, Some(meter::MeterInput::Device(_)));
             return Ok(());
         }
         Err(e) => e,

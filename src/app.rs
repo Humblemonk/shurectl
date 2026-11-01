@@ -215,8 +215,9 @@ pub struct App {
     pub meter_unavailable: bool,
     /// The input the meter listens to, while it runs.
     pub meter_input: Option<MeterInput>,
-    /// Set when the device handle is replaced (a reconnect, or `r`), so the
-    /// event loop starts the meter on the device's input again.
+    /// Set when the device handle is replaced (a reconnect), or by `r` while
+    /// the meter isn't on the device's own input, so the event loop starts the
+    /// meter on the device's input again.
     pub meter_restart_pending: bool,
 }
 

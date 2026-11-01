@@ -3979,7 +3979,8 @@ fn hidden_groups(changes: &[LoadChange]) -> String {
 /// The preset load box: what loading the slot would change, and Load and
 /// Cancel buttons. Its buttons sit at its right edge, clear of the preset's
 /// own Load button at the left of the card, so the second click of a
-/// double-click on that button lands outside the box and cancels.
+/// double-click on that button never loads: it lands outside the box and
+/// cancels, or on the box's text and does nothing.
 fn draw_preset_load_box(f: &mut UiFrame, app: &App, area: Rect) {
     let Some(index) = app.confirming_preset_load else {
         return;

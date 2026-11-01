@@ -149,7 +149,9 @@ const PULSE_CALLBACK_HZ: u32 = 50;
 // ── start_meter ───────────────────────────────────────────────────────────────
 
 /// Start the capture stream on `target`'s own input, or on the system
-/// default input when no single input matches it.
+/// default input when no single input matches it or the matched one fails to
+/// open. On PipeWire or PulseAudio each input is tried with the 20 ms period
+/// first, then with the host's own (`PULSE_CALLBACK_HZ`).
 ///
 /// Every audio callback pushes its peak, as `peak_dbfs * 10`, into both
 /// rolling windows in `peak_window`.
@@ -167,30 +169,62 @@ pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>, target: &InputTarget) ->
     // PipeWire or PulseAudio when one is running on Linux, else ALSA.
     let host = cpal::default_host();
 
-    let (device, input) = match device_input(&host, target) {
-        Some((device, name)) => (device, MeterInput::Device(name)),
-        None => match host.default_input_device() {
-            Some(device) => (device, MeterInput::Default),
-            None => {
-                drop(stderr_suppressed);
-                return MeterStatus::Failed("No input device found for metering".to_string());
-            }
-        },
-    };
-
-    let config = match device.default_input_config() {
-        Ok(c) => c,
-        Err(e) => {
-            drop(stderr_suppressed);
-            return MeterStatus::Failed(format!("Cannot get input config: {e}"));
-        }
-    };
+    // The device's own input first, then the default input, each with its
+    // config (or why it has none).
+    let mut candidates = Vec::new();
+    if let Some((device, name)) = device_input(&host, target) {
+        candidates.push((device, MeterInput::Device(name)));
+    }
+    if let Some(device) = host.default_input_device() {
+        candidates.push((device, MeterInput::Default));
+    }
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .map(|(device, input)| {
+            let config = device
+                .default_input_config()
+                .map_err(|e| format!("Cannot get input config: {e}"));
+            (device, input, config)
+        })
+        .collect();
 
     // Probing is done; restore stderr before building the stream.
     drop(stderr_suppressed);
 
-    let mut stream_config: StreamConfig = config.into();
-    if is_pulse(&host) {
+    let fixed_periods: &[bool] = if is_pulse(&host) {
+        &[true, false]
+    } else {
+        &[false]
+    };
+    let mut last_error = "No input device found for metering".to_string();
+    for (device, input, config) in candidates {
+        let config = match config {
+            Ok(config) => config,
+            Err(e) => {
+                last_error = e;
+                continue;
+            }
+        };
+        for &fixed_period in fixed_periods {
+            match open_stream(&device, &config, fixed_period, Arc::clone(&peak_window)) {
+                Ok(stream) => return MeterStatus::Running(stream, input),
+                Err(e) => last_error = e,
+            }
+        }
+    }
+    MeterStatus::Failed(last_error)
+}
+
+/// Build and start a capture stream on `device` with `config`, asking for the
+/// 20 ms period when `fixed_period` is set.
+fn open_stream(
+    device: &Device,
+    config: &cpal::SupportedStreamConfig,
+    fixed_period: bool,
+    peak_window: Arc<Mutex<PeakWindow>>,
+) -> Result<Stream, String> {
+    let mut stream_config: StreamConfig = config.config();
+    if fixed_period {
         stream_config.buffer_size =
             cpal::BufferSize::Fixed(stream_config.sample_rate / PULSE_CALLBACK_HZ);
     }
@@ -201,33 +235,25 @@ pub fn start_meter(peak_window: Arc<Mutex<PeakWindow>>, target: &InputTarget) ->
 
     use cpal::SampleFormat;
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::I8 => build_stream::<i8>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::U8 => build_stream::<u8>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::I24 => {
-            build_stream::<cpal::I24>(&device, &stream_config, peak_window, err_fn)
-        }
-        SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::U32 => build_stream::<u32>(&device, &stream_config, peak_window, err_fn),
-        SampleFormat::F64 => build_stream::<f64>(&device, &stream_config, peak_window, err_fn),
+        SampleFormat::F32 => build_stream::<f32>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::I16 => build_stream::<i16>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::U16 => build_stream::<u16>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::I8 => build_stream::<i8>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::U8 => build_stream::<u8>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::I24 => build_stream::<cpal::I24>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::I32 => build_stream::<i32>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::U32 => build_stream::<u32>(device, &stream_config, peak_window, err_fn),
+        SampleFormat::F64 => build_stream::<f64>(device, &stream_config, peak_window, err_fn),
         // Rare formats (64-bit ints, U24, DSD): ask for f32. That works where the
         // host converts (ALSA's default plug, PipeWire); elsewhere it fails and
         // the UI shows "Meter unavailable".
-        _ => build_stream::<f32>(&device, &stream_config, peak_window, err_fn),
-    };
-
-    match stream {
-        Ok(s) => {
-            if let Err(e) = s.play() {
-                MeterStatus::Failed(format!("Cannot start meter stream: {e}"))
-            } else {
-                MeterStatus::Running(s, input)
-            }
-        }
-        Err(e) => MeterStatus::Failed(format!("Cannot build meter stream: {e}")),
+        _ => build_stream::<f32>(device, &stream_config, peak_window, err_fn),
     }
+    .map_err(|e| format!("Cannot build meter stream: {e}"))?;
+    stream
+        .play()
+        .map_err(|e| format!("Cannot start meter stream: {e}"))?;
+    Ok(stream)
 }
 
 /// `target`'s own input on `host`, with its name, when exactly one matches.
@@ -262,20 +288,20 @@ fn device_input(host: &cpal::Host, target: &InputTarget) -> Option<(Device, Stri
 
 /// The index of the one input in `inputs` (ID, name) that is `target`: the
 /// one whose ID or name holds its USB serial, or failing that the one whose
-/// name holds its product string. `None` when none or several match.
-/// PulseAudio's monitor sources (what an output plays) are never the mic, and
-/// carry the same serial.
+/// name holds its product string as whole words (`names_product()`). `None`
+/// when none or several match. PulseAudio's monitor sources (what an output
+/// plays) are never the mic, and carry the same serial.
 fn matching_input(inputs: &[(&str, &str)], target: &InputTarget) -> Option<usize> {
-    let candidates: Vec<(usize, String, String)> = inputs
+    let candidates: Vec<(usize, &str, &str)> = inputs
         .iter()
         .enumerate()
         .filter(|(_, (id, _))| !id.ends_with(".monitor"))
-        .map(|(index, (id, name))| (index, squash(id), squash(name)))
+        .map(|(index, (id, name))| (index, *id, *name))
         .collect();
-    let only = |found: &str, in_id: bool| {
+    let only = |is_target: &dyn Fn(&str, &str) -> bool| {
         let mut matches = candidates
             .iter()
-            .filter(|(_, id, name)| name.contains(found) || (in_id && id.contains(found)));
+            .filter(|(_, id, name)| is_target(id, name));
         match (matches.next(), matches.next()) {
             (Some((index, _, _)), None) => Some(*index),
             _ => None,
@@ -287,11 +313,17 @@ fn matching_input(inputs: &[(&str, &str)], target: &InputTarget) -> Option<usize
         .filter(|serial| serial.len() >= MIN_SERIAL_LEN);
     let product = target
         .product
-        .map(squash)
+        .map(words)
         .filter(|product| !product.is_empty());
     serial
-        .and_then(|serial| only(&serial, true))
-        .or_else(|| product.and_then(|product| only(&product, false)))
+        .and_then(|serial| {
+            only(&|id: &str, name: &str| {
+                squash(id).contains(&serial) || squash(name).contains(&serial)
+            })
+        })
+        .or_else(|| {
+            product.and_then(|product| only(&|_: &str, name: &str| names_product(name, &product)))
+        })
 }
 
 /// Lowercase ASCII letters and digits only: PipeWire writes a serial's
@@ -301,6 +333,27 @@ fn squash(text: &str) -> String {
         .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect()
+}
+
+/// Lowercase words of letters, digits and `+`: "Microphone (Shure MV7+)" is
+/// microphone, shure, mv7+.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '+'))
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Whether `name` holds `product`'s words in a row, and not as the start of a
+/// later generation's name: "Shure MV6" is in "Shure MV6 Mono" but not in
+/// "Shure MV6 Gen 2 Mono", and "+" counts, so "Shure MV7" isn't "Shure MV7+".
+fn names_product(name: &str, product: &[String]) -> bool {
+    let name = words(name);
+    name.windows(product.len()).enumerate().any(|(at, run)| {
+        let rest = &name[at + product.len()..];
+        let later_generation = rest.first().is_some_and(|word| word == "gen");
+        run == product && !later_generation
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -507,6 +560,30 @@ mod tests {
         ];
         let mv7_plus = target(Some("no-such-serial-anywhere"), Some("Shure MV7+"));
         assert_eq!(matching_input(&inputs, &mv7_plus), Some(1));
+    }
+
+    #[test]
+    fn matching_input_never_takes_a_sibling_models_input_by_name() {
+        let inputs = [
+            ("{1}", "Microphone (Shure MV6 Gen 2)"),
+            ("{2}", "Microphone (Shure MV7+)"),
+            ("{3}", "Shure MVX2U GEN 2 Mono"),
+        ];
+        for product in ["Shure MV6", "Shure MV7", "Shure MVX2U"] {
+            assert_eq!(
+                matching_input(&inputs, &target(None, Some(product))),
+                None,
+                "{product}"
+            );
+        }
+        assert_eq!(
+            matching_input(&inputs, &target(None, Some("Shure MV6 Gen 2"))),
+            Some(0)
+        );
+        assert_eq!(
+            matching_input(&inputs, &target(None, Some("Shure MVX2U GEN 2"))),
+            Some(2)
+        );
     }
 
     #[test]

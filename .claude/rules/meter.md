@@ -28,11 +28,17 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
   heard the one chosen in the picker, and the MVX2U Gen 2 with the MV6 Gen 2 as the system
   default input; `pw-record` recorded the mic while the meter ran; with `PULSE_SERVER`
   pointed nowhere it fell back to ALSA's default input, said so, and still read levels
-- **macOS and Windows:** matching by-product string or serial is unconfirmed on hardware
+- **macOS and Windows:** matching on the product string or serial is unconfirmed on hardware.
+  The product string matches as whole words, and not when "Gen" follows it, so an MV6
+  never takes an MV6 Gen 2's input, nor an MV7 an MV7+'s (`names_product()`)
 - The meter reads after the OS input volume, i.e. what apps record.
 - `main.rs` stops the meter when the device is lost, so it never shows another input the
   system moves the stream to, and starts it again whenever `reconnect()` replaces the handle
-  (`App::meter_restart_pending`; `r` replaces it without the device ever showing as lost).
+  and the device shows as connected (`App::meter_restart_pending`). `r` replaces the handle
+  only when its readback fails; a successful `r` asks for the meter again only while it isn't
+  on the device's own input (on "System default input", or unavailable), for an input that
+  came up after the device did. If the matched input or the 20 ms period fails to open,
+  `start_meter()` tries the default period, then the default input.
   Tested 2026-10-31 on the MVX2U Gen 2 under PipeWire, with an MV6 Gen 2 as the default
   input: unplugged, the meter showed no reading while the MV6 Gen 2 was spoken into; after a
   replug it read again with no `r`; `r` kept it reading; a gain check stopped on unplug and
