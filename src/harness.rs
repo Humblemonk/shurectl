@@ -110,6 +110,11 @@ pub struct Harness {
     /// `ui::fits()` for the last frame drawn, which `step()` needs as the real
     /// loop passes it.
     fits: bool,
+    /// The last frame drawn, every cell of it. Not the `TestBackend`'s buffer:
+    /// that only gets each frame's changes, and ratatui leaves out the cell a
+    /// wide symbol (🔒) covers, so the backend keeps that cell's old symbol
+    /// where a terminal shows the wide one over it.
+    frame: Buffer,
     previous_screen: Vec<String>,
     /// Packet log length at the previous reply and the previous `expect` line.
     reply_cursor: usize,
@@ -149,6 +154,7 @@ impl Harness {
             now,
             hits: HitMap::default(),
             fits: true,
+            frame: Buffer::default(),
             previous_screen: Vec::new(),
             recording: None,
             preset_dir,
@@ -162,17 +168,20 @@ impl Harness {
         let app = &self.app;
         let mut hits = HitMap::default();
         let mut fits = true;
-        self.terminal.draw(|f| {
+        let completed = self.terminal.draw(|f| {
             fits = ui::fits(f.area());
             hits = ui::draw(f, app);
         })?;
+        // Cloned because the completed frame borrows the terminal, which the
+        // next draw needs back.
+        self.frame = completed.buffer.clone();
         self.hits = hits;
         self.fits = fits;
         Ok(())
     }
 
     fn buffer(&self) -> &Buffer {
-        self.terminal.backend().buffer()
+        &self.frame
     }
 
     /// The screen as one string per row.
