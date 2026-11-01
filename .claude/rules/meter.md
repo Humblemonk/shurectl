@@ -46,7 +46,9 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
   input: unplugged, the meter showed no reading while the MV6 Gen 2 was spoken into; after a
   replug it read again with no `r`; `r` kept it reading; a gain check stopped on unplug and
   worked after the replug. A replug quick enough to skip the disconnect couldn't be made by
-  hand, as the live poll noticed every unplug first.
+  hand, as the live poll noticed every unplug first. Re-tested on 0804ac1 (MVX2U Gen 2,
+  2026-10-31): unplugged, `---` and no Meter Input row; replugged, reading again and the
+  row back with no key; `r` kept it reading; a gain check gave a result.
 - `start_meter()` returns `MeterStatus`. The caller must keep the `Stream` in
   `MeterStatus::Running` alive; dropping it stops capture.
 - The meter does not start in demo mode.
