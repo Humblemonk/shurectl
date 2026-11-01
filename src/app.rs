@@ -212,6 +212,9 @@ pub struct App {
     pub meter_unavailable: bool,
     /// The input the meter listens to, while it runs.
     pub meter_input: Option<MeterInput>,
+    /// Set when the device handle is replaced (a reconnect, or `r`), so the
+    /// event loop starts the meter on the device's input again.
+    pub meter_restart_pending: bool,
 }
 
 impl Default for App {
@@ -243,6 +246,7 @@ impl Default for App {
             gain_check: None,
             meter_unavailable: false,
             meter_input: None,
+            meter_restart_pending: false,
         }
     }
 }

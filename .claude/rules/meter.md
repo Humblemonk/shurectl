@@ -30,9 +30,11 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
   pointed nowhere it fell back to ALSA's default input, said so, and still read levels
 - **macOS and Windows:** matching by-product string or serial is unconfirmed on hardware
 - The meter reads after the OS input volume, i.e. what apps record.
-- `main.rs` starts the meter again after a reconnect, as the old stream's input left with the
-  device. After an unplug and replug, the meter read again with no `r` (MVX2U Gen 2 under
-  PipeWire, tested 2026-10-31).
+- `main.rs` stops the meter when the device is lost, so it never shows another input the
+  system moves the stream to, and starts it again whenever `reconnect()` replaces the handle
+  (`App::meter_restart_pending`; `r` replaces it without the device ever showing as lost).
+  After an unplug and replug, the meter read again with no `r` (MVX2U Gen 2 under PipeWire,
+  tested 2026-10-31).
 - `start_meter()` returns `MeterStatus`. The caller must keep the `Stream` in
   `MeterStatus::Running` alive; dropping it stops capture.
 - The meter does not start in demo mode.

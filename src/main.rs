@@ -634,9 +634,15 @@ fn run_event_loop(
             Instant::now(),
             &mut loop_state,
         );
-        // A replugged device's input comes back as a new one, so listen again.
-        // The old stream goes first, so two never run at once.
-        if app.device_connected && !was_connected && !app.demo_mode {
+        // The device's input leaves with it. Stop listening, so the meter shows
+        // no reading rather than whatever input the system moves the stream to.
+        if was_connected && !app.device_connected {
+            *meter_stream = None;
+        }
+        // A new handle (a reconnect, or `r`) may be a replugged device, whose
+        // input comes back as a new one. The old stream goes first, so two
+        // never run at once.
+        if std::mem::take(&mut app.meter_restart_pending) && !app.demo_mode {
             *meter_stream = None;
             *meter_stream = start_device_meter(app, device.as_ref());
         }
@@ -1649,6 +1655,7 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
     let name = reopened.model.display_name();
     // Keep the new handle even if its readback failed: the old one may be dead.
     *device = Some(reopened);
+    app.meter_restart_pending = true;
     match loaded {
         Ok(skipped) => {
             app.device_connected = true;
