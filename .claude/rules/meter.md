@@ -24,7 +24,7 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
   match ALSA's own devices: `hw:`/`plughw:` open the hardware itself and can keep PipeWire,
   and every app recording through it, off the mic. Left to choose, PipeWire called back
   about every 300 ms, so the Pulse host asks for a 20 ms buffer (`PULSE_CALLBACK_HZ`)
-- **macOS and Windows:** matching by product string or serial is unconfirmed on hardware
+- **macOS and Windows:** matching by-product string or serial is unconfirmed on hardware
 - The meter reads after the OS input volume, i.e. what apps record.
 - `main.rs` starts the meter again after a reconnect, as the old stream's input left with the
   device. After an unplug and replug, the meter read again with no `r` (MVX2U Gen 2 under
