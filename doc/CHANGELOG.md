@@ -8,6 +8,13 @@ Releases that need you to do something after upgrading have an **Upgrading** not
 
 ## 2.16.0 — unreleased
 
+### Added
+
+- Loading a preset first shows what it would change, such as `Gain : 24 dB → 40 dB`, in a
+  box over the Presets tab, so a preset can't surprise you with a much louder gain. Press
+  `Enter` or click Load to load it, and `Esc`, any other key or a click outside the box to
+  cancel. Phantom power switching on shows in amber. `--preset` still loads straight away.
+
 ### Changed
 
 - The level meter, and the gain check with it, listens to the device you opened instead of

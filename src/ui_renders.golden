@@ -90,7 +90,7 @@ Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 62af
 Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetName(3) fc202eac6ed103ed
 Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 0be9f1bd05c321bc
 Mvx2u Auto adv=false muted=true locked=true Info band=0 DeviceName 875bc586ccdb1697
-Mvx2u help 7abc46f5bbe979e0
+Mvx2u help fbb5ea5630aada57
 Mvx2u gain check listening 530e1fc90c601620
 Mvx2u gain check raise e5ef211f90fbfe90
 Mvx2u gain check clipping ea80685cda0f3bd9
@@ -99,6 +99,8 @@ Mvx2u gain check good e5102b286831775e
 Mvx2u gain check at max 5ee16e688b86c81c
 Mvx2u gain check at 0 dB 72919b3dbdd11fd1
 Mvx2u gain check no signal b4b6bc0bab3431f2
+Mvx2u preset load changes 2e8b72a7a6dd81c7
+Mvx2u preset load matches 8a2d306e328561ce
 Mvx2uGen2 Manual adv=false muted=false locked=false Main band=0 Gain 39acbe594c6ced2e
 Mvx2uGen2 Manual adv=false muted=false locked=false Main band=0 GainLock 9bdc1c3a18ac9fd6
 Mvx2uGen2 Manual adv=false muted=false locked=false Main band=0 GainCheck 7688747cd64d71cd
@@ -191,7 +193,7 @@ Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) d5d
 Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) fa16c19a396c989c
 Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 DeviceName 665949b1a70a9ad5
 Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset 7c4a4b0baad24ac5
-Mvx2uGen2 help 64e8458c7b5b5b81
+Mvx2uGen2 help 364f62407f52a262
 Mvx2uGen2 gain check listening 51fa191306d6adaf
 Mvx2uGen2 gain check raise 978e48c1f8ee3602
 Mvx2uGen2 gain check clipping d68fd66b7c9ac243
@@ -200,6 +202,8 @@ Mvx2uGen2 gain check good f1bc568c4d2d6215
 Mvx2uGen2 gain check at max 9242b67002105871
 Mvx2uGen2 gain check at 0 dB 17ded56d10e49604
 Mvx2uGen2 gain check no signal 7ab2f8c1df916f93
+Mvx2uGen2 preset load changes a3f3aaf64f6a5bd7
+Mvx2uGen2 preset load matches 1a0b8a294848ffe4
 Mv6 Manual adv=false muted=false locked=false Main band=0 Gain 12240c7aa8aa74d2
 Mv6 Manual adv=false muted=false locked=false Main band=0 GainLock 8dc72ad468668312
 Mv6 Manual adv=false muted=false locked=false Main band=0 GainCheck 7d1f31290c23862d
@@ -278,7 +282,7 @@ Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 23543a
 Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) cc5a2183bd26147c
 Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 83dd376acabef653
 Mv6 Auto adv=false muted=true locked=true Info band=0 DeviceName 8f2363de16ac93f0
-Mv6 help e60c7a3ffb9d6f81
+Mv6 help f7c5d785d8df7662
 Mv6 gain check listening 2e1e420636e57064
 Mv6 gain check raise 287501734a1df0d3
 Mv6 gain check clipping 2376ded2cac5337e
@@ -287,6 +291,8 @@ Mv6 gain check good a5e3bb8208f9a2ba
 Mv6 gain check at max 1abe20522cf106c2
 Mv6 gain check at 0 dB c57a3f8e7a17a49d
 Mv6 gain check no signal a2349e2c8fd18ae0
+Mv6 preset load changes d6eee4840c7003af
+Mv6 preset load matches 6a18e5db7b84209d
 Mv6Gen2 Manual adv=false muted=false locked=false Main band=0 Gain 5049256cd69e8451
 Mv6Gen2 Manual adv=false muted=false locked=false Main band=0 GainLock 0a0ed72f2fd321d5
 Mv6Gen2 Manual adv=false muted=false locked=false Main band=0 GainCheck 24b6c83f6a5730d8
@@ -491,7 +497,7 @@ Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetName(3) 9fbe1c
 Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetActions(3) d8e1b5e9992089f7
 Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 DeviceName dfa4ea785a4a6858
 Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 FactoryReset cd81fe8f9fc3b060
-Mv6Gen2 help 24258d2a66cb7262
+Mv6Gen2 help b122eb9c65a33ce1
 Mv6Gen2 gain check listening dd01d1a905e10ccc
 Mv6Gen2 gain check raise bdc0e0496d540f21
 Mv6Gen2 gain check clipping 3f9d8c100397fb26
@@ -500,6 +506,8 @@ Mv6Gen2 gain check good 794da7703f929102
 Mv6Gen2 gain check at max 145fc57cabc3b7fa
 Mv6Gen2 gain check at 0 dB 9865aa829deee2ab
 Mv6Gen2 gain check no signal b4c87fd997553888
+Mv6Gen2 preset load changes 44f5f7f528e7c121
+Mv6Gen2 preset load matches 5feff800cc31b455
 Mv7 Manual adv=false muted=false locked=false Main band=0 Gain 68d6af982c685069
 Mv7 Manual adv=false muted=false locked=false Main band=0 GainCheck 859cd33474057b00
 Mv7 Manual adv=false muted=false locked=false Main band=0 MonitorMix 608dea3b1397d4a9
@@ -578,7 +586,7 @@ Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetActions(2) 74d9fd
 Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) a061c84edc6ffd40
 Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) af5bd7ac08580bdf
 Mv7 Auto adv=false muted=true locked=true Info band=0 FactoryReset ebc4ddbb24ca5e73
-Mv7 help 44e3b634ce398ec8
+Mv7 help 7163d704ad78c5af
 Mv7 gain check listening d024084980d804a1
 Mv7 gain check raise 95801dd3e0370481
 Mv7 gain check clipping 0802c67f2898f5b8
@@ -587,6 +595,8 @@ Mv7 gain check good 26514f102b0ee61b
 Mv7 gain check at max 4f474e8285955551
 Mv7 gain check at 0 dB ea0f16e4e1b3ccca
 Mv7 gain check no signal 8fa9cd90cf4bca9b
+Mv7 preset load changes 01c9e2191257119f
+Mv7 preset load matches 19e5cf364eb2e5f9
 Mv7Plus Manual adv=false muted=false locked=false Main band=0 Gain 5d4b566358d350ee
 Mv7Plus Manual adv=false muted=false locked=false Main band=0 GainCheck dfd47bae50280d61
 Mv7Plus Manual adv=false muted=false locked=false Main band=0 MonitorMix f8376a4d5575385d
@@ -751,7 +761,7 @@ Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveMiddl
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInteriorR f5bdb8135a45fe07
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInteriorG a46f231867671e02
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInteriorB 050517254731f2cb
-Mv7Plus help 60004aa2408ff1af
+Mv7Plus help 5d9e02a2f785a828
 Mv7Plus gain check listening c406f94216631d9c
 Mv7Plus gain check raise 0f077670bc8f2a12
 Mv7Plus gain check clipping d5469472fac50043
@@ -760,6 +770,8 @@ Mv7Plus gain check good 40af2b67b81de556
 Mv7Plus gain check at max c267f0b48f4523cc
 Mv7Plus gain check at 0 dB 31832dbac4d7f6ed
 Mv7Plus gain check no signal 8888a7bb0cfbe264
+Mv7Plus preset load changes 28554ca2247ae355
+Mv7Plus preset load matches a472c857293f4658
 picker first f2c8ab73fc6da935
 picker second 1b921ac13f890700
 picker problem 7b55939185e82cb0

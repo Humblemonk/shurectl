@@ -68,7 +68,7 @@ use app::{App, DeviceAction, STATE_UNREAD_HINT};
 use cli::{Amount, ModeChoice, MuteAction};
 use device::{Live, ShureDevice};
 use meter::{InputTarget, MeterStatus, start_meter};
-use presets::PresetSlot;
+use presets::{PresetSlot, apply_preset_to_state};
 use protocol::{DeviceModel, InputMode, format_gain};
 
 #[derive(Parser)]
@@ -957,6 +957,14 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         }
     }
 
+    if let Some(index) = app.confirming_preset_load.take() {
+        if code == KeyCode::Enter {
+            return Some(DeviceAction::LoadPreset(index));
+        }
+        app.set_ok("Preset load cancelled.");
+        return None;
+    }
+
     if app.help_visible {
         if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
             app.help_visible = false;
@@ -1364,18 +1372,8 @@ fn apply_action(
         }
         DeviceAction::LoadPreset(i) => {
             if let Some(saved) = &app.presets[*i] {
-                // An unread Playback Level (MV6) stays unread: a preset's
-                // 0 means "not saved", so neither the screen nor the device
-                // gets it. Cloned so the stored preset keeps its value.
                 let playback_skipped = app.playback_unread() && saved.playback_mix > 0;
-                let slot = &PresetSlot {
-                    playback_mix: if app.playback_unread() {
-                        0
-                    } else {
-                        saved.playback_mix
-                    },
-                    ..saved.clone()
-                };
+                let slot = &saved.for_load(app.playback_unread());
                 let write_monitor_mix =
                     apply_preset_to_state(slot, &mut app.device_state, app.device_model);
                 apply_preset_to_device(
@@ -2001,39 +1999,6 @@ fn unread_note(slot: &PresetSlot, state: &protocol::DeviceState, model: DeviceMo
         note.push_str(&app::not_loaded("Limiter"));
     }
     note
-}
-
-/// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
-/// Monitor Mix applies, for `apply_preset_to_device()`.
-fn apply_preset_to_state(
-    slot: &PresetSlot,
-    state: &mut protocol::DeviceState,
-    model: DeviceModel,
-) -> bool {
-    let monitor_mix_before = state.monitor_mix;
-    slot.apply_to_device_state(state);
-    // A balance and a Mic Level share the field but not the meaning: keep the
-    // device's own Monitor Mix rather than translate one into the other.
-    let monitor_mix_applies = !slot
-        .monitor_mix_is_mic_level
-        .is_some_and(|mic_level| mic_level != model.has_playback_mix());
-    if !monitor_mix_applies {
-        state.monitor_mix = monitor_mix_before;
-    }
-    // Show the gain and EQ the device will actually get: presets are
-    // shared across models, so one saved elsewhere may be out of
-    // range or off this model's step grid.
-    state.gain_tenths = model.snap_gain_tenths(state.gain_tenths);
-    for band in &mut state.eq_bands {
-        band.gain_db = model.snap_eq_gain_tenths(band.gain_db);
-    }
-    // A lock flag from a model with Gain Lock would sit hidden here
-    // and be saved into this model's presets, then lock the gain
-    // wherever one of those is loaded.
-    if !model.has_gain_lock() {
-        state.mv6_gain_locked = false;
-    }
-    monitor_mix_applies
 }
 
 /// Writes a preset's Playback Level when it saved one. A preset's 0 means "not

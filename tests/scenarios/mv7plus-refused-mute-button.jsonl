@@ -18,6 +18,8 @@
 {"click_on": "Presets"}
 {"key": "Down"}
 {"key": "Enter"}
+{"expect": {"screen_contains": "[ Load ]", "no_packets": true}}
+{"key": "Enter"}
 {"expect": {"status": "Loaded \"MV7+ Voice\". Mute Button not loaded: its state could not be read.", "state": {"mute_btn_disabled": null, "denoiser_enabled": false}}}
 {"click_on": "Dynamics"}
 {"device": {"refused_get": null}}

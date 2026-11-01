@@ -1,0 +1,16 @@
+{"scenario": "preset-load-confirm-phantom", "models": ["mvx2u", "mvx2u-gen2"]}
+{"click_on": "48V:"}
+{"key": "Enter"}
+{"expect": {"state": {"phantom_power": true}}}
+{"click_on": "Presets"}
+{"key": "s"}
+{"click_on": "Main"}
+{"click_on": "48V:"}
+{"key": "Enter"}
+{"expect": {"state": {"phantom_power": false}}}
+{"click_on": "Presets"}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"screen_contains": "OFF → 48V ON", "style": {"text": "48V ON", "fg": "C_WARN"}, "no_packets": true}}
+{"key": "Esc"}
+{"expect": {"state": {"phantom_power": false}, "no_packets": true}}

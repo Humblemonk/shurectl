@@ -1,0 +1,33 @@
+{"scenario": "preset-load-confirm", "models": "all", "modes": ["fake"]}
+{"click_on": "Presets"}
+{"key": "s"}
+{"expect": {"status": "Saved to \"Preset 1\"."}}
+{"device": {"gain_tenths": 300}}
+{"tick": 1000}
+{"expect": {"state": {"gain_tenths": 300}}}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"confirming_preset_load": 0, "screen_contains": ["Load \"Preset 1\"?", "30 dB → 24 dB", "[ Load ]", "[ Cancel ]"], "no_packets": true}}
+{"key": "Esc"}
+{"expect": {"confirming_preset_load": null, "status": "Preset load cancelled.", "screen_not_contains": "[ Load ]", "no_packets": true}}
+{"key": "Enter"}
+{"key": "j"}
+{"expect": {"confirming_preset_load": null, "focus": "PresetActions(0)", "status": "Preset load cancelled.", "no_packets": true}}
+{"key": "Enter"}
+{"click_on": "[ Cancel ]"}
+{"expect": {"confirming_preset_load": null, "status": "Preset load cancelled.", "no_packets": true}}
+{"key": "Enter"}
+{"click_on": "Load \"Preset 1\"?"}
+{"expect": {"confirming_preset_load": 0, "no_packets": true}}
+{"key": "Esc"}
+{"click_on": "[Enter] Load"}
+{"expect": {"confirming_preset_load": 0, "no_packets": true}}
+{"click_on": "[Enter] Load"}
+{"expect": {"confirming_preset_load": null, "status": "Preset load cancelled.", "no_packets": true}}
+{"click_on": "[Enter] Load"}
+{"click_on": "[ Load ]"}
+{"expect": {"confirming_preset_load": null, "status": "Loaded \"Preset 1\".", "state": {"gain_tenths": 240}}}
+{"key": "Enter"}
+{"expect": {"screen_contains": "Matches the device: loading changes nothing.", "no_packets": true}}
+{"key": "Enter"}
+{"expect": {"status": "Loaded \"Preset 1\".", "state": {"gain_tenths": 240}}}

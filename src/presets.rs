@@ -485,6 +485,58 @@ impl PresetSlot {
     }
 }
 
+// ── Loading ───────────────────────────────────────────────────────────────────
+
+impl PresetSlot {
+    /// This preset as a load applies it. An unread Playback Level (the MV6's,
+    /// `App::playback_unread()`) stays unread: a preset's 0 means "not saved",
+    /// so neither the screen nor the device gets it. A copy, so the stored
+    /// preset keeps its value.
+    pub fn for_load(&self, playback_unread: bool) -> PresetSlot {
+        PresetSlot {
+            playback_mix: if playback_unread {
+                0
+            } else {
+                self.playback_mix
+            },
+            ..self.clone()
+        }
+    }
+}
+
+/// Apply `slot` to `state`, fitted to `model`. Returns whether the preset's
+/// Monitor Mix applies, for `apply_preset_to_device()`.
+pub fn apply_preset_to_state(
+    slot: &PresetSlot,
+    state: &mut DeviceState,
+    model: DeviceModel,
+) -> bool {
+    let monitor_mix_before = state.monitor_mix;
+    slot.apply_to_device_state(state);
+    // A balance and a Mic Level share the field but not the meaning: keep the
+    // device's own Monitor Mix rather than translate one into the other.
+    let monitor_mix_applies = !slot
+        .monitor_mix_is_mic_level
+        .is_some_and(|mic_level| mic_level != model.has_playback_mix());
+    if !monitor_mix_applies {
+        state.monitor_mix = monitor_mix_before;
+    }
+    // Show the gain and EQ the device will actually get: presets are
+    // shared across models, so one saved elsewhere may be out of
+    // range or off this model's step grid.
+    state.gain_tenths = model.snap_gain_tenths(state.gain_tenths);
+    for band in &mut state.eq_bands {
+        band.gain_db = model.snap_eq_gain_tenths(band.gain_db);
+    }
+    // A lock flag from a model with Gain Lock would sit hidden here
+    // and be saved into this model's presets, then lock the gain
+    // wherever one of those is loaded.
+    if !model.has_gain_lock() {
+        state.mv6_gain_locked = false;
+    }
+    monitor_mix_applies
+}
+
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 /// Returns `shurectl/` under the platform config directory, creating it if absent.

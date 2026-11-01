@@ -16,9 +16,9 @@ use crate::meter::MeterInput;
 use crate::mouse::{HitMap, Target};
 use crate::picker::{Picker, PickerRow};
 use crate::protocol::{
-    AutoGain, AutoTone, CompressorPreset, DeviceModel, EQ_BAND_FREQS, EqPreset, HpfFrequency,
-    InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme, MicPosition, MicPreset,
-    ReverbType, format_gain,
+    AutoGain, AutoTone, CompressorPreset, DeviceModel, DeviceState, EQ_BAND_FREQS, EqPreset,
+    HpfFrequency, InputMode, LedBehavior, LedLiveTheme, LedPulsingTheme, LedSolidTheme,
+    MicPosition, MicPreset, ReverbType, format_gain,
 };
 
 /// Keep hit regions beside the layout that draws them, not in a second layout.
@@ -244,6 +244,8 @@ fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     }
 
     draw_status(f, app, chunks[3]);
+    // Over the tab's content only: the tabs and status bar stay in view.
+    draw_preset_load_box(f, app, chunks[2]);
 
     if app.help_visible {
         draw_help_overlay(f, size);
@@ -1369,9 +1371,7 @@ fn tone_label(tone: i8) -> String {
 }
 
 /// A row's value, or None when the row doesn't apply in the current mode.
-fn summary_value(app: &App, row: SummaryRow) -> Option<Span<'static>> {
-    let ds = &app.device_state;
-    let model = app.device_model;
+fn summary_value(ds: &DeviceState, model: DeviceModel, row: SummaryRow) -> Option<Span<'static>> {
     let manual = ds.mode == InputMode::Manual;
     let text = |value: String| Span::styled(value, Style::default().fg(C_TEXT));
     let on_off = |on: bool| {
@@ -1500,7 +1500,7 @@ fn draw_main_right(f: &mut UiFrame, app: &App, area: Rect) {
     let mut lines = vec![Line::from("")];
     let mut last_group = None;
     for &row in summary_rows(app.device_model) {
-        let Some(value) = summary_value(app, row) else {
+        let Some(value) = summary_value(&app.device_state, app.device_model, row) else {
             continue;
         };
         if last_group.is_some_and(|group| group != row.group()) {
@@ -2317,7 +2317,7 @@ fn eq_band_column(
             Style::default().fg(if gain_foc { C_FOCUS } else { C_DIM }),
         ),
         Span::styled(
-            format!("{:+.1} dB", eq.gain_db as f32 / 10.0),
+            eq_gain_text(eq.gain_db),
             if gain_foc {
                 Style::default().fg(C_FOCUS).add_modifier(Modifier::BOLD)
             } else {
@@ -3637,7 +3637,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         Line::from(""),
         heading("  Presets tab"),
         help_row("Enter (on name)", "Rename preset"),
-        help_row("Enter (on actions)", "Load preset to device"),
+        help_row("Enter (on actions)", "Load preset (shows changes first)"),
         help_row("s", "Save current settings to slot"),
         help_row("d / Delete", "Delete preset"),
         Line::from(""),
@@ -3675,6 +3675,304 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
             .style(Style::default().bg(C_SURFACE)),
     );
     f.render_widget(help, popup_area);
+}
+
+/// An EQ band's gain, from tenths of a dB: "+2.0 dB".
+fn eq_gain_text(gain_tenths: i16) -> String {
+    format!("{:+.1} dB", f32::from(gain_tenths) / 10.0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preset load box
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Width of the load box's labels, colon excluded: the longest is "Playback Level".
+const LOAD_LABEL_WIDTH: usize = 15;
+
+/// A setting a preset load would change, as the load box lists it.
+#[derive(Debug, PartialEq)]
+struct LoadChange {
+    label: String,
+    old: String,
+    new: String,
+    /// Phantom power switching on: shown as a caution.
+    caution: bool,
+}
+
+/// The settings that loading would change from `current` to `target`: the
+/// model's Summary rows in their order and wording (mute aside, which loads
+/// leave alone), then what the Summary doesn't show. `playback_read` is false
+/// while the Playback Level is unread, as a load leaves it then.
+fn load_changes(
+    current: &DeviceState,
+    target: &DeviceState,
+    model: DeviceModel,
+    playback_read: bool,
+) -> Vec<LoadChange> {
+    let mut changes = Vec::new();
+    let mut add = |name: &str, old: String, new: String, caution: bool| {
+        if old != new {
+            changes.push(LoadChange {
+                label: format!("{name:<LOAD_LABEL_WIDTH$}: "),
+                old,
+                new,
+                caution,
+            });
+        }
+    };
+    let text = |span: Span<'static>| span.content.into_owned();
+    for &row in summary_rows(model) {
+        if row == SummaryRow::Muted {
+            continue;
+        }
+        // A row the new state hides (Gain in Auto) has nothing to show.
+        let Some(new) = summary_value(target, model, row).map(text) else {
+            continue;
+        };
+        let old = summary_value(current, model, row).map_or_else(|| "–".to_string(), text);
+        let name = row.label().trim_end_matches([' ', ':']);
+        let caution = row == SummaryRow::Phantom && target.phantom_power;
+        add(name, old, new, caution);
+    }
+    let percent = |value: u8| format!("{value}%");
+    let monitor_mix = if model.has_playback_mix() {
+        "Mic Level"
+    } else {
+        "Monitor Mix"
+    };
+    add(
+        monitor_mix,
+        percent(current.monitor_mix),
+        percent(target.monitor_mix),
+        false,
+    );
+    if model.has_playback_mix() && playback_read {
+        add(
+            "Playback Level",
+            percent(current.playback_mix),
+            percent(target.playback_mix),
+            false,
+        );
+    }
+    let (eq_bands, band_switches) = match model {
+        DeviceModel::Mvx2u => (true, true),
+        DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 => (true, false),
+        DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => (false, false),
+    };
+    if eq_bands {
+        for (index, (old, new)) in current.eq_bands.iter().zip(&target.eq_bands).enumerate() {
+            let band = index + 1;
+            add(
+                &format!("EQ Band {band}"),
+                eq_gain_text(old.gain_db),
+                eq_gain_text(new.gain_db),
+                false,
+            );
+            if band_switches {
+                let on_off = |on: bool| if on { "ON" } else { "OFF" }.to_string();
+                add(
+                    &format!("EQ Band {band} On"),
+                    on_off(old.enabled),
+                    on_off(new.enabled),
+                    false,
+                );
+            }
+        }
+    }
+    let led_panel = match model {
+        DeviceModel::Mv7Plus => true,
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7 => false,
+    };
+    if led_panel {
+        let shown = |value: &dyn std::fmt::Display| value.to_string();
+        let rgb = |[r, g, b]: [u8; 3]| format!("#{r:02X}{g:02X}{b:02X}");
+        add(
+            "LED Behavior",
+            shown(&current.led_behavior),
+            shown(&target.led_behavior),
+            false,
+        );
+        add(
+            "LED Brightness",
+            shown(&current.led_brightness),
+            shown(&target.led_brightness),
+            false,
+        );
+        add(
+            "LED Live Theme",
+            shown(&current.led_live_theme),
+            shown(&target.led_live_theme),
+            false,
+        );
+        add(
+            "LED Solid Theme",
+            shown(&current.led_solid_theme),
+            shown(&target.led_solid_theme),
+            false,
+        );
+        add(
+            "LED Pulse Theme",
+            shown(&current.led_pulsing_theme),
+            shown(&target.led_pulsing_theme),
+            false,
+        );
+        for (name, old, new) in [
+            ("LED Solid", current.led_solid_rgb, target.led_solid_rgb),
+            (
+                "LED Pulsing",
+                current.led_pulsing_rgb,
+                target.led_pulsing_rgb,
+            ),
+            (
+                "LED Edge",
+                current.led_live_edge_rgb,
+                target.led_live_edge_rgb,
+            ),
+            (
+                "LED Middle",
+                current.led_live_middle_rgb,
+                target.led_live_middle_rgb,
+            ),
+            (
+                "LED Interior",
+                current.led_live_interior_rgb,
+                target.led_live_interior_rgb,
+            ),
+        ] {
+            add(name, rgb(old), rgb(new), false);
+        }
+    }
+    changes
+}
+
+/// The preset load box: what loading the slot would change, and Load and
+/// Cancel buttons. Its buttons sit at its right edge, clear of the preset's
+/// own Load button at the left of the card, so the second click of a
+/// double-click on that button lands outside the box and cancels.
+fn draw_preset_load_box(f: &mut UiFrame, app: &App, area: Rect) {
+    let Some(index) = app.confirming_preset_load else {
+        return;
+    };
+    let Some(slot) = &app.presets[index] else {
+        return;
+    };
+    // The state the load would leave, fitted exactly as the load fits it.
+    // A copy: the shown state changes only when the load runs.
+    let mut target = app.device_state.clone();
+    crate::presets::apply_preset_to_state(
+        &slot.for_load(app.playback_unread()),
+        &mut target,
+        app.device_model,
+    );
+    let changes = load_changes(
+        &app.device_state,
+        &target,
+        app.device_model,
+        !app.playback_unread(),
+    );
+
+    // Two border rows, a blank row above and below the list, and the buttons.
+    const FRAME_ROWS: u16 = 5;
+    let width = 64u16.min(area.width.saturating_sub(4));
+    let max_height = area.height.saturating_sub(2);
+    let room = usize::from(max_height.saturating_sub(FRAME_ROWS));
+    let mut lines = vec![Line::from("")];
+    if changes.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " Matches the device: loading changes nothing.",
+            Style::default().fg(C_DIM),
+        )));
+    } else {
+        // Leave a row for "…and N more" when they don't all fit.
+        let shown = if changes.len() > room {
+            room.saturating_sub(1)
+        } else {
+            changes.len()
+        };
+        for change in &changes[..shown] {
+            let new_color = if change.caution { C_WARN } else { C_TEXT };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {}", change.label), Style::default().fg(C_DIM)),
+                Span::styled(change.old.clone(), Style::default().fg(C_DIM)),
+                Span::styled(" → ", Style::default().fg(C_DIM)),
+                Span::styled(change.new.clone(), Style::default().fg(new_color)),
+            ]));
+        }
+        if shown < changes.len() {
+            lines.push(Line::from(Span::styled(
+                format!(" …and {} more", changes.len() - shown),
+                Style::default().fg(C_DIM),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+
+    const LOAD: &str = "[ Load ]";
+    const CANCEL: &str = "[ Cancel ]";
+    const GAP: u16 = 2;
+    let height = (lines.len() as u16 + 3).min(max_height);
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Span::styled(
+            format!("  Load \"{}\"?  ", slot.name),
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            "  Enter load · Esc cancel  ",
+            Style::default().fg(C_DIM),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(C_DIM))
+        .style(Style::default().bg(C_SURFACE));
+    let inner = block.inner(popup);
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+
+    // The buttons on the box's last inner row, right-aligned.
+    let buttons_row = Rect {
+        y: inner.bottom().saturating_sub(1),
+        height: 1,
+        ..inner
+    };
+    let cancel_width = CANCEL.len() as u16;
+    let load_width = LOAD.len() as u16;
+    let cancel = Rect {
+        x: buttons_row.right().saturating_sub(cancel_width + 1),
+        width: cancel_width,
+        ..buttons_row
+    };
+    let load = Rect {
+        x: cancel.x.saturating_sub(load_width + GAP),
+        width: load_width,
+        ..buttons_row
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            LOAD,
+            Style::default()
+                .fg(Color::Black)
+                .bg(C_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )),
+        load,
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(CANCEL, Style::default().fg(C_TEXT))),
+        cancel,
+    );
+    f.hits.add(popup, Target::LoadBox);
+    f.hits.add(load, Target::LoadButton);
+    f.hits.add(cancel, Target::CancelButton);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3998,7 +4296,109 @@ mod tests {
                 app.device_state.mv6_gain_locked = true;
                 visit(&format!("{model:?} gain check {name}"), &app);
             }
+            for (name, app) in preset_load_states(model) {
+                visit(&format!("{model:?} preset load {name}"), &app);
+            }
         }
+    }
+
+    /// The preset load box open on slot 1: with a preset that changes every
+    /// setting it can (the most rows, so overflow at 80x24), and with one that
+    /// matches the device.
+    fn preset_load_states(model: DeviceModel) -> Vec<(&'static str, App)> {
+        let current = App {
+            device_model: model,
+            active_tab: Tab::Presets,
+            focus: Focus::PresetActions(0),
+            confirming_preset_load: Some(0),
+            ..App::default()
+        };
+        let mut changed = current.device_state.clone();
+        changed.mode = InputMode::Manual;
+        changed.gain_tenths = 400;
+        changed.phantom_power = true;
+        changed.compressor = CompressorPreset::Heavy;
+        changed.denoiser_enabled = true;
+        changed.monitor_mix = 30;
+        changed.playback_mix = 70;
+        changed.tone = 3;
+        for (band, gain) in changed.eq_bands.iter_mut().zip([-40, -20, 0, 20, 40]) {
+            band.gain_db = gain;
+            band.enabled = !band.enabled;
+        }
+        changed.led_behavior = LedBehavior::Pulsing;
+        changed.led_solid_rgb = [255, 0, 0];
+        changed.led_pulsing_rgb = [0, 255, 0];
+        changed.led_live_edge_rgb = [0, 0, 255];
+        let preset = |state: &DeviceState| {
+            let mut app = App {
+                device_model: model,
+                active_tab: Tab::Presets,
+                focus: Focus::PresetActions(0),
+                confirming_preset_load: Some(0),
+                ..App::default()
+            };
+            app.presets[0] = Some(crate::presets::PresetSlot::from_device_state(
+                "Podcast", state, model,
+            ));
+            app
+        };
+        let matching = preset(&current.device_state);
+        vec![("changes", preset(&changed)), ("matches", matching)]
+    }
+
+    #[test]
+    fn load_changes_lists_what_a_load_would_change() {
+        let current = DeviceState {
+            mode: InputMode::Manual,
+            gain_tenths: 240,
+            ..DeviceState::default()
+        };
+        assert!(load_changes(&current, &current, DeviceModel::Mvx2uGen2, true).is_empty());
+
+        let mut target = current.clone();
+        target.gain_tenths = 400;
+        target.phantom_power = true;
+        target.monitor_mix = 80;
+        target.playback_mix = 20;
+        target.eq_bands[1].gain_db = 20;
+        target.muted = !current.muted;
+        let changes = load_changes(&current, &target, DeviceModel::Mvx2uGen2, true);
+        let rows: Vec<_> = changes
+            .iter()
+            .map(|change| {
+                format!(
+                    "{}{} → {}{}",
+                    change.label,
+                    change.old,
+                    change.new,
+                    if change.caution { " (caution)" } else { "" }
+                )
+            })
+            .collect();
+        // Summary order and wording; mute left out, as loads leave it alone.
+        assert_eq!(
+            rows,
+            [
+                "Gain           : 24 dB → 40 dB",
+                "Phantom        : OFF → 48V ON (caution)",
+                format!("Mic Level      : {}% → 80%", current.monitor_mix).as_str(),
+                format!("Playback Level : {}% → 20%", current.playback_mix).as_str(),
+                "EQ Band 2      : +0.0 dB → +2.0 dB",
+            ]
+        );
+        // An unread Playback Level is left out, as the load leaves it.
+        let unread = load_changes(&current, &target, DeviceModel::Mvx2uGen2, false);
+        assert!(
+            !unread
+                .iter()
+                .any(|change| change.label.starts_with("Playback"))
+        );
+        // Models without bands or Playback Level list neither.
+        let mv7 = load_changes(&current, &target, DeviceModel::Mv7, true);
+        assert!(!mv7.iter().any(|change| change.label.starts_with("EQ Band")
+            || change.label.starts_with("Playback")
+            || change.label.starts_with("Phantom")));
     }
 
     /// The gain check card's states: listening, and each kind of result.
@@ -4257,6 +4657,13 @@ mod tests {
                     "Wheel: adjust",
                     "Esc to close",
                 ] {
+                    assert!(text.contains(row), "{label}: {row:?} missing\n{text}");
+                }
+                return;
+            }
+            if app.confirming_preset_load.is_some() {
+                // The box covers the tab: its title, buttons and keys show.
+                for row in ["Load \"Podcast\"?", "[ Load ]", "[ Cancel ]", "Enter load"] {
                     assert!(text.contains(row), "{label}: {row:?} missing\n{text}");
                 }
                 return;

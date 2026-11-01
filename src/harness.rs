@@ -647,6 +647,7 @@ impl Harness {
             "editing": app.editing_name(),
             "name_draft": app.name_draft,
             "confirming_factory_reset": app.confirming_factory_reset,
+            "confirming_preset_load": app.confirming_preset_load,
             "connected": app.device_connected,
             "quit": app.should_quit,
             "fits": self.fits,
@@ -777,7 +778,8 @@ impl Harness {
             | "editing"
             | "quit"
             | "fits"
-            | "confirming_factory_reset" => compare(&app[key], expected),
+            | "confirming_factory_reset"
+            | "confirming_preset_load" => compare(&app[key], expected),
             "status" => {
                 let status = app["status"].as_str().unwrap_or_default();
                 if status.contains(text()) {
@@ -902,7 +904,11 @@ impl Harness {
             .iter()
             .filter_map(|&(_, target)| match target {
                 Target::Control(focus) => Some(focus),
-                Target::Tab(_) | Target::PresetAction(..) => None,
+                Target::Tab(_)
+                | Target::PresetAction(..)
+                | Target::LoadButton
+                | Target::CancelButton
+                | Target::LoadBox => None,
             })
             .collect();
         for focus in controls {

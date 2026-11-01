@@ -24,7 +24,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 - LED (MV7+): every Behavior, and every Theme per Behavior; Custom RGB under Solid and Live
   (Edge, Middle, Interior)
 - Mouse: click targets on the EQ, Reverb, LED, Presets and Info tabs and in Auto; a second
-  click on a toggle fires it; preset Load/Delete arming by click; resize while editing a name
+  click on a toggle fires it; preset Save and Delete arming by click; resize while editing a name
 - Connection: recovery from an I/O failure with `r`; poll timing (no disconnect before the
   first poll); `r` in demo mode
 - Presets: an empty slot; name length limit; `s` and `d` on the name row; loading while
@@ -122,7 +122,9 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
-| `preset-save-load-delete` | all | fake, demo | `s` saves the current settings, Enter loads them back but leaves mute alone (`r` reads it back), `d` deletes without sending |
+| `preset-save-load-delete` | all | fake, demo | `s` saves the current settings, Enter and Enter in the load box load them back but leave mute alone (`r` reads it back), `d` deletes without sending |
+| `preset-load-confirm` | all | fake | Enter on Load opens the load box listing what would change (a gain set on the device) and sends nothing; Esc, another key, Cancel and a click on a slot's Load button behind it each cancel; a click on the box's text does nothing; the box's Load button loads; a matching preset says so |
+| `preset-load-confirm-phantom` | MVX2U, MVX2U Gen 2 | fake, demo | A preset that switches 48V on shows it in the caution colour, and cancelling sends nothing |
 | `preset-name-edit` | all | fake, demo | Renaming takes typed text including `q`; Ctrl-C doesn't quit while editing; Esc or clicking away cancels |
 | `preset-load-unlocks-relocks` | MV6, MV6 Gen 2, MVX2U Gen 2 | fake | Loading under Gain Lock sends unlock → GAIN → re-lock, in that order, and the gain applies |
 | `preset-old-file-keeps-fields` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | A pre-Playback-Level preset file (`fixtures/presets-v2.9`) loads without zeroing Playback Level |

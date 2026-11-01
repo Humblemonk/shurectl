@@ -98,8 +98,9 @@ only `q` and `Ctrl+C` work (`Ctrl+C` alone while a name is being edited).
 
 ## Presets
 
-On the Presets tab, `s` saves the current settings into the focused slot, `Enter` on its
-actions row loads it onto the device (leaving mute as it is), and `Enter` on its name renames it. Each slot is a
+On the Presets tab, `s` saves the current settings into the focused slot, and `Enter` on its
+name renames it. `Enter` on its actions row shows what loading it would change; `Enter` again
+loads it onto the device (leaving mute as it is), and `Esc` cancels. Each slot is a
 hand-editable file, `preset_1.toml` through `preset_4.toml`, in:
 
 | Platform | Location |
