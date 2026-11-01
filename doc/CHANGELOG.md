@@ -16,7 +16,7 @@ Releases that need you to do something after upgrading have an **Upgrading** not
   cancel. Phantom power switching on shows in amber. A setting the device uses only in the
   other mode is listed too, such as `Gain : 24 dB → 60 dB (in Manual)` for a preset saved
   in Auto Level, because loading writes it, and the device uses that gain once switched to
-  Manual (tested on the MVX2U Gen 2; unconfirmed on other models). `--preset` still loads
+  Manual (tested on the MVX2U Gen 2 and MV6 Gen 2; unconfirmed on other models). `--preset` still loads
   straight away.
 
 ### Changed
