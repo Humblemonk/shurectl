@@ -15,7 +15,8 @@ Releases that need you to do something after upgrading have an **Upgrading** not
   `Enter` or click Load to load it, and `Esc`, any other key or a click outside the box to
   cancel. Phantom power switching on shows in amber. A setting the device uses only in the
   other mode is listed too, such as `Gain : 24 dB → 60 dB (in Manual)` for a preset saved
-  in Auto Level, because loading writes it. `--preset` still loads straight away.
+  in Auto Level, because loading writes it. That the device then uses that gain once
+  switched to Manual is unconfirmed on hardware. `--preset` still loads straight away.
 
 ### Changed
 

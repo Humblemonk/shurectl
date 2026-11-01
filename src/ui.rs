@@ -3719,7 +3719,7 @@ fn load_writes_every_mode(model: DeviceModel) -> bool {
 
 /// A Summary row's value in `state`, and when it takes effect: `None` for
 /// now, or a note such as "in Manual" for a value `state` holds but its
-/// mode or tone mode doesn't use. Such values are looked up only where the
+/// mode doesn't use. Such values are looked up only where the
 /// load writes them anyway (`load_writes_every_mode()`). `None` when the row
 /// has no value in any of them.
 fn row_as_loaded(
@@ -3741,7 +3741,7 @@ fn row_as_loaded(
     if !load_writes_every_mode(model) {
         return None;
     }
-    // Copies of the state in the mode, then the tone mode, that uses the row.
+    // A copy of the state in the mode that uses the row.
     let mut other_mode = state.clone();
     let note = match state.mode {
         InputMode::Manual => {
@@ -3753,15 +3753,7 @@ fn row_as_loaded(
             "in Manual"
         }
     };
-    if let Some(span) = shown(&other_mode) {
-        return Some((span, Some(note)));
-    }
-    let mut simple_tone = state.clone();
-    simple_tone.tone_advanced = false;
-    (state.tone_advanced && row == SummaryRow::Tone)
-        .then(|| shown(&simple_tone))
-        .flatten()
-        .map(|span| (span, Some("in Simple tone")))
+    shown(&other_mode).map(|span| (span, Some(note)))
 }
 
 /// The settings that loading would change from `current` to `target`: the
@@ -3824,6 +3816,24 @@ fn load_changes(
             "Denoiser Level",
             format!("{}%", current.denoiser_level),
             format!("{}% (when on)", target.denoiser_level),
+            C_TEXT,
+        );
+    }
+    // The MV6 Gen 2's Summary shows Tone as "5-band EQ" while its 5-band EQ is
+    // in use; the load writes the Tone slider either way.
+    let tone_modes = match model {
+        DeviceModel::Mv6Gen2 => true,
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv7
+        | DeviceModel::Mv7Plus => false,
+    };
+    if tone_modes && target.tone_advanced && current.tone != target.tone {
+        add(
+            "Tone Slider",
+            tone_label(current.tone),
+            format!("{} (in Simple tone)", tone_label(target.tone)),
             C_TEXT,
         );
     }
@@ -4564,6 +4574,39 @@ mod tests {
             [
                 "Denoiser Level : 80% → 40% (when on)",
                 "Mic Level      : 50% → 30%",
+            ]
+        );
+    }
+
+    #[test]
+    fn load_changes_show_the_mv6_gen2_tone_slider_behind_the_5_band_eq() {
+        let current = DeviceState {
+            mode: InputMode::Manual,
+            tone_advanced: true,
+            ..DeviceState::default()
+        };
+        let brighter = DeviceState {
+            tone: 3,
+            ..current.clone()
+        };
+        let model = DeviceModel::Mv6Gen2;
+        // Both on the 5-band EQ: the slider's change still shows.
+        let rows = change_rows(&load_changes(&current, &brighter, model, true));
+        assert_eq!(
+            rows,
+            ["Tone Slider    : Natural → 30% Bright (in Simple tone)"]
+        );
+        // Simple to Advanced: the mode, and the slider behind it.
+        let simple = DeviceState {
+            tone_advanced: false,
+            ..current.clone()
+        };
+        let rows = change_rows(&load_changes(&simple, &brighter, model, true));
+        assert_eq!(
+            rows,
+            [
+                "Tone           : Natural → 5-band EQ",
+                "Tone Slider    : Natural → 30% Bright (in Simple tone)",
             ]
         );
     }
