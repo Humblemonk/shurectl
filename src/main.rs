@@ -642,11 +642,18 @@ fn run_event_loop(
             *meter_stream = None;
             app.meter_input = None;
         }
+        // A device back from lost has its input back too, however it came back.
+        if !was_connected && app.device_connected {
+            app.meter_restart_pending = true;
+        }
         // A new handle may be a replugged device, whose input comes back as a
         // new one; `r` asks again when the meter isn't on the device's own
         // input. The old stream goes first, so two never run at once. A device
-        // shown as lost gets no stream: the next reconnect asks again.
-        if std::mem::take(&mut app.meter_restart_pending) && !app.demo_mode {
+        // shown as lost gets no stream: the next reconnect asks again. While a
+        // gain check listens, the restart waits for it to end, so one check
+        // never hears two inputs or a gap.
+        if app.meter_restart_pending && app.gain_check_listening().is_none() && !app.demo_mode {
+            app.meter_restart_pending = false;
             *meter_stream = None;
             app.meter_input = None;
             if app.device_connected {
@@ -1634,10 +1641,9 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
                 skipped_note(&skipped)
             ));
             // The device's input may have come up after it did (a replug):
-            // look for it again unless the meter already has it, or a gain
-            // check is listening to the meter as it is.
-            app.meter_restart_pending |= app.gain_check_listening().is_none()
-                && !matches!(app.meter_input, Some(meter::MeterInput::Device(_)));
+            // look for it again unless the meter already has it.
+            app.meter_restart_pending |=
+                !matches!(app.meter_input, Some(meter::MeterInput::Device(_)));
             return Ok(());
         }
         Err(e) => e,
