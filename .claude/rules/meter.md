@@ -33,8 +33,11 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
 - `main.rs` stops the meter when the device is lost, so it never shows another input the
   system moves the stream to, and starts it again whenever `reconnect()` replaces the handle
   (`App::meter_restart_pending`; `r` replaces it without the device ever showing as lost).
-  After an unplug and replug, the meter read again with no `r` (MVX2U Gen 2 under PipeWire,
-  tested 2026-10-31).
+  Tested 2026-10-31 on the MVX2U Gen 2 under PipeWire, with an MV6 Gen 2 as the default
+  input: unplugged, the meter showed no reading while the MV6 Gen 2 was spoken into; after a
+  replug it read again with no `r`; `r` kept it reading; a gain check stopped on unplug and
+  worked after the replug. A replug quick enough to skip the disconnect couldn't be made by
+  hand, as the live poll noticed every unplug first.
 - `start_meter()` returns `MeterStatus`. The caller must keep the `Stream` in
   `MeterStatus::Running` alive; dropping it stops capture.
 - The meter does not start in demo mode.
