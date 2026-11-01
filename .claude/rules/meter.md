@@ -27,7 +27,8 @@ Flow: cpal callback → `peak_dbfs_x10()` → `peak_window` → read by `ui.rs` 
 - **macOS and Windows:** matching by product string or serial is unconfirmed on hardware
 - The meter reads after the OS input volume, i.e. what apps record.
 - `main.rs` starts the meter again after a reconnect, as the old stream's input left with the
-  device (whether the restarted stream hears the replugged mic is unconfirmed on hardware).
+  device. After an unplug and replug, the meter read again with no `r` (MVX2U Gen 2 under
+  PipeWire, tested 2026-10-31).
 - `start_meter()` returns `MeterStatus`. The caller must keep the `Stream` in
   `MeterStatus::Running` alive; dropping it stops capture.
 - The meter does not start in demo mode.

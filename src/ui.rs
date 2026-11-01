@@ -1731,23 +1731,21 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
         }
     };
 
-    // ── Silent / no-device state ──────────────────────────────────────────────
-    if short_raw == METER_SILENT {
+    // ── Bar reading ───────────────────────────────────────────────────────────
+    // Without data (demo mode, no audio yet, or the device unplugged) the bar
+    // is empty but keeps the same layout, peak box and ruler included.
+    let (bar_label, bar_color, bar_ratio) = if short_raw == METER_SILENT {
         let label = if app.demo_mode { "no device" } else { "---" };
-        let empty = Gauge::default()
-            .block(meter_block(app, area.width))
-            .gauge_style(Style::default().fg(C_DIM).bg(C_SURFACE))
-            .ratio(0.0)
-            .label(label);
-        f.render_widget(empty, area);
-        return;
-    }
-
-    let short_db = short_raw as f32 / 10.0;
-    let long_db = long_raw as f32 / 10.0;
-    let floor = METER_FLOOR_DB;
-
-    let bar_ratio = ((short_db - floor) / (0.0 - floor)).clamp(0.0, 1.0) as f64;
+        (label.to_string(), C_DIM, 0.0)
+    } else {
+        let short_db = short_raw as f32 / 10.0;
+        let floor = METER_FLOOR_DB;
+        (
+            format!("{short_db:+.1} dBFS"),
+            meter_color(short_db),
+            ((short_db - floor) / (0.0 - floor)).clamp(0.0, 1.0) as f64,
+        )
+    };
 
     // ── Layout: bar + peak box on top row, ruler below ────────────────────────
     //
@@ -1772,18 +1770,18 @@ fn draw_meter(f: &mut UiFrame, app: &App, area: Rect) {
         .split(rows[0]);
 
     // ── Bar gauge ─────────────────────────────────────────────────────────────
-    let bar_color = meter_color(short_db);
     let gauge = Gauge::default()
         .block(meter_block(app, cols[0].width))
         .gauge_style(Style::default().fg(bar_color).bg(C_SURFACE))
         .ratio(bar_ratio)
-        .label(format!("{short_db:+.1} dBFS"));
+        .label(bar_label);
     f.render_widget(gauge, cols[0]);
 
     // ── Peak-hold numeric readout (long window) ───────────────────────────────
     let (hold_text, hold_color) = if long_raw == METER_SILENT {
         ("  ---   ".to_string(), C_DIM)
     } else {
+        let long_db = long_raw as f32 / 10.0;
         (format!("{long_db:+.1}"), meter_color(long_db))
     };
     let readout = Paragraph::new(Line::from(vec![

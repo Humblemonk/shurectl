@@ -16,6 +16,9 @@ Releases that need you to do something after upgrading have an **Upgrading** not
   it listens to, or says "System default input" when it can't find the device's own, as on
   Linux without PipeWire or PulseAudio. Tested on the MVX2U Gen 2 under PipeWire;
   unconfirmed on macOS and Windows.
+- With no audio to show (the device unplugged, or before the first reading), the level
+  meter keeps its peak box and dB scale and shows `---`, instead of one empty bar over the
+  whole area.
 
 ## 2.15.0 — 2026-10-31
 
