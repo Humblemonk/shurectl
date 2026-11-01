@@ -76,7 +76,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `config-lock` | MVX2U, MV7 | fake, demo | Enter toggles Config Lock and the block shows LOCKED or Unlocked |
 | `config-lock-packets` | MVX2U | fake, demo | Config Lock sends LOCK |
 | `mv6-gen2-mic-preset` | MV6 Gen 2 | fake | Enter cycles Mic Preset through Speech, Singing and Instrument; ←/→ do nothing |
-| `mode-auto-locks-eq` | MVX2U | fake | Switching to Auto sends MODE and shows EQ and Dynamics as locked (🔒), and Tab skips them |
+| `mode-auto-locks-eq` | MVX2U | fake | Switching to Auto sends MODE and shows EQ and Dynamics as locked (🔒) with the tab bar intact (the harness reads the drawn frame, not the backend's copy, which kept a stale cell after each 🔒), and Tab skips them |
 | `gain-check` | all | fake | `g` replaces the Summary with the Gain check card and sends nothing; after 10 s it shows the loudest peak and a gain to try, follows a gain set elsewhere, says "Heard nothing." without input, restarts on a gain change, `g` or Esc cancels, and leaving Manual stops it |
 | `gain-check-from-the-meter` | MVX2U, MV7, MV7+ | fake | The Level meter comes right after Gain in the focus ring; Enter on it starts and cancels the gain check |
 | `gain-check-from-the-meter-gain-lock` | MVX2U Gen 2, MV6, MV6 Gen 2 | fake | The same, with Gain Lock between Gain and the Level meter |
