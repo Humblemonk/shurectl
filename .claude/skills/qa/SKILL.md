@@ -67,6 +67,7 @@ exploring continues.
 | `screen_hash` | The `renders_match_golden` hash, for a pinned screen |
 | `style: {"text": "Muted", "fg": "C_ERROR"}` | Color of the text's first cell, by palette name |
 | `tab`, `focus`, `status` (substring), `status_is_error`, `help_visible`, `editing`, `quit`, `confirming_factory_reset` | `App` fields |
+| `confirming_preset_load` | The slot whose load box is open (`0`), or `null` when none is |
 | `fits` | `ui::fits()` for the last frame: `false` below 80x24 (`MIN_SIZE`), where only the size notice draws and keys only quit |
 | `connected` | `App::device_connected`, and the header agrees |
 | `state: {"muted": true}` | `DeviceState` fields (see the `state` query for names) |
@@ -84,6 +85,8 @@ Read **Cross-Device UI Consistency** in `AGENTS.md` first. Then, for every model
 1. Walk every tab with Tab and BackTab, and every focus with Up/Down (`focus_ring`).
 2. On each focus, press Left, Right and Enter, and check the status message, the
    screen and the packets. Every visible, focusable control must do something.
+   Enter on a preset's Load only opens the load box listing what would change; a
+   second Enter (or a click on its `[ Load ]`) loads, and any other key cancels.
 3. Repeat the Main tab at heights 24, 30, 40 and 50 with `click_targets`. Below 80x24 only
    a notice draws (`terminal-too-small`).
 4. Compare models: the same control must have the same label, units, formatting,
