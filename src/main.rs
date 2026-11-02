@@ -233,6 +233,7 @@ fn main() -> Result<()> {
         } else {
             Vec::new()
         };
+        let none_found = cli.device.is_none() && found.is_empty();
         let open_result = if let Some(ref selector) = cli.device {
             ShureDevice::open_selected(selector)
         } else if let [only] = found.as_slice() {
@@ -249,10 +250,16 @@ fn main() -> Result<()> {
         };
         // No fallback to demo mode: it showed an MVX2U whatever the user had,
         // hid this error behind the TUI, and never connected a device plugged
-        // in later. Returning drops the picker's TUI before the error prints.
+        // in later. No TUI is up here: the picker reports a failed open itself.
         match open_result {
             Ok(d) => (Some(d), false, None),
-            Err(e) => anyhow::bail!("{e:#}\nTo try the UI without a device, run: shurectl --demo"),
+            Err(e) => {
+                eprintln!("Error: {e:#}");
+                if none_found {
+                    eprintln!("To try the UI without a device, run: shurectl --demo");
+                }
+                std::process::exit(1);
+            }
         }
     };
 
