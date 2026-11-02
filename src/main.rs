@@ -247,13 +247,12 @@ fn main() -> Result<()> {
             // None found: open() says so, with the access hint.
             ShureDevice::open()
         };
+        // No fallback to demo mode: it showed an MVX2U whatever the user had,
+        // hid this error behind the TUI, and never connected a device plugged
+        // in later. Returning drops the picker's TUI before the error prints.
         match open_result {
             Ok(d) => (Some(d), false, None),
-            Err(e) => {
-                eprintln!("Warning: {e}");
-                eprintln!("Launching in demo mode. Use --demo to suppress this warning.");
-                (None, true, None)
-            }
+            Err(e) => anyhow::bail!("{e:#}\nTo try the UI without a device, run: shurectl --demo"),
         }
     };
 

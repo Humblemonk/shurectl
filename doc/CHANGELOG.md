@@ -6,6 +6,17 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.16.1 — 2026-11-02
+
+shurectl says why it can't open your device instead of starting demo mode.
+
+### Changed
+
+- With no device found, or one that can't be opened, shurectl now prints why and exits,
+  instead of starting demo mode. The demo always showed an MVX2U whatever mic you had, hid
+  the error behind the TUI, and never connected a mic plugged in afterwards. Run
+  `shurectl --demo` to try the UI without a device.
+
 ## 2.16.0 — 2026-11-01
 
 Loading a preset shows what it would change before it loads, and the level meter listens to
