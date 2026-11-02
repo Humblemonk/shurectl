@@ -1,6 +1,7 @@
 //! Device picker: the screen shown at startup when `--device` names none and
 //! there are several supported devices connected, or none yet. With none it
-//! waits, and `main.rs` opens the first one plugged in (`only_device()`).
+//! waits, and `main.rs` opens one plugged in by itself when it is the only
+//! one and it opened cleanly (`only_device()`).
 //! This is its state and keys; `ui::draw_picker()` draws it, and `main.rs`
 //! opens the device it returns.
 

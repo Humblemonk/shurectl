@@ -14,8 +14,8 @@ of starting demo mode.
 ### Added
 
 - Started with no device connected, shurectl waits on its device picker and opens your mic
-  as soon as you plug it in. If several are plugged in by then, you pick one as usual. Press
-  `q` to quit.
+  a few seconds after you plug it in. If several are plugged in by then, or it can't be
+  opened yet, they're listed and you pick one as usual. Press `q` to quit.
 
 ### Changed
 

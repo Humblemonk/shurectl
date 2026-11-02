@@ -9,7 +9,7 @@
 //!   - Shure MV7+         (USB/XLR dynamic microphone)
 //!
 //! Usage:
-//!   shurectl                   # Connect to device, launch TUI
+//!   shurectl                   # Connect to device, launch TUI; waits for one
 //!   shurectl --demo            # Demo MVX2U (default model) without a device
 //!   shurectl --demo mv6        # Demo MV6 without a device
 //!   shurectl --demo mvx2u-gen2 # Demo MVX2U Gen 2 without a device
@@ -90,7 +90,8 @@ struct Cli {
 
     /// Open a specific device by its HID path or its serial, as --list shows
     /// them. Without this flag, the only detected device is opened; with
-    /// several, the TUI asks which, and the other commands need this flag.
+    /// several, the TUI asks which, and the other commands need this flag;
+    /// with none, the TUI waits for one to be plugged in.
     /// A path can change when the device is replugged; a serial doesn't.
     #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
     device: Option<String>,
@@ -185,7 +186,7 @@ fn main() -> Result<()> {
     }
 
     if cli.list {
-        let devs = device::list_devices();
+        let devs = list_devices_or_exit();
         if devs.is_empty() {
             println!("No supported Shure devices found.");
             #[cfg(target_os = "linux")]
@@ -229,7 +230,7 @@ fn main() -> Result<()> {
         (None, model)
     } else {
         let found = if cli.device.is_none() {
-            device::list_devices()
+            list_devices_or_exit()
         } else {
             Vec::new()
         };
@@ -342,6 +343,15 @@ impl Tui {
     }
 }
 
+/// The supported devices connected, or exit with why they can't be listed.
+/// Startup only, before the TUI is entered.
+fn list_devices_or_exit() -> Vec<device::DeviceInfo> {
+    device::list_devices().unwrap_or_else(|e| {
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
+    })
+}
+
 /// Show the device picker until a device opens, or `None` when the user
 /// quits. Nothing is written: listing reads each device's serial and name,
 /// as `--list` does, and a device that won't open says why and stays listed.
@@ -369,17 +379,33 @@ fn pick_device(
         let waiting = picker.rows.is_empty();
         let next_poll =
             (last_poll + PRESENCE_POLL_INTERVAL).saturating_duration_since(Instant::now());
-        if waiting && !event::poll(next_poll)? {
+        // Polled when due even while events keep arriving, such as mouse
+        // motion on Windows, as `run_event_loop()` does.
+        if waiting && next_poll.is_zero() {
             last_poll = Instant::now();
-            let found = device::list_devices();
-            let present = !found.is_empty();
-            if poll_step(false, present, seen_last_poll) == PollStep::Reconnect {
-                scan_into(terminal, &mut picker, found)?;
-                if let Some(device) = open_only_device(terminal, &mut picker)? {
-                    return Ok(Some(device));
+            // A failed enumeration says nothing about the device: say why,
+            // and leave the boot wait as it was.
+            match device::list_devices() {
+                Ok(found) => {
+                    // While waiting, only a failed enumeration shows an error;
+                    // this one worked, so go back to "Waiting for…".
+                    if picker.status_is_error {
+                        picker.set_rows(Vec::new());
+                    }
+                    let present = !found.is_empty();
+                    if poll_step(false, present, seen_last_poll) == PollStep::Reconnect {
+                        scan_into(terminal, &mut picker, found)?;
+                        if let Some(device) = open_only_device(terminal, &mut picker)? {
+                            return Ok(Some(device));
+                        }
+                    }
+                    seen_last_poll = present;
                 }
+                Err(e) => picker.set_err(one_line(&e)),
             }
-            seen_last_poll = present;
+            continue;
+        }
+        if waiting && !event::poll(next_poll)? {
             continue;
         }
         let command = match event::read()? {
@@ -413,7 +439,10 @@ fn pick_device(
                 }
             }
             Some(picker::Command::Rescan) => {
-                scan_into(terminal, &mut picker, device::list_devices())?;
+                match device::list_devices() {
+                    Ok(found) => scan_into(terminal, &mut picker, found)?,
+                    Err(e) => picker.set_err(one_line(&e)),
+                }
                 // A device plugged in after this scan still gets its boot poll.
                 seen_last_poll = false;
                 if waiting && let Some(device) = open_only_device(terminal, &mut picker)? {
