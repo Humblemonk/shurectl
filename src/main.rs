@@ -314,8 +314,11 @@ fn main() -> Result<()> {
 
     drop(tui);
 
+    // Only a failed terminal ends the loop with an error; device errors show in
+    // the status bar. Exits 1 like the startup failures.
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
     }
 
     Ok(())
