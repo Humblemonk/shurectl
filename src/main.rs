@@ -218,7 +218,7 @@ fn main() -> Result<()> {
     let presets = presets::load_all_presets();
     // Entered early only for the device picker; startup warnings print first otherwise.
     let mut tui = None;
-    let (mut device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
+    let (mut device, device_model) = if let Some(ref model_str) = cli.demo {
         let model = match parse_demo_model(model_str) {
             Ok(m) => m,
             Err(e) => {
@@ -226,46 +226,41 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
-        (None, true, Some(model))
+        (None, model)
     } else {
         let found = if cli.device.is_none() {
             device::list_devices()
         } else {
             Vec::new()
         };
-        let none_found = cli.device.is_none() && found.is_empty();
         let open_result = if let Some(ref selector) = cli.device {
             ShureDevice::open_selected(selector)
         } else if let [only] = found.as_slice() {
             ShureDevice::open_path(&only.path)
-        } else if found.len() > 1 {
+        } else {
+            // Several to choose from, or none yet: the picker waits for one.
             let tui = tui.insert(Tui::enter()?);
             match pick_device(&mut tui.terminal, found)? {
                 Some(device) => Ok(device),
                 None => return Ok(()),
             }
-        } else {
-            // None found: open() says so, with the access hint.
-            ShureDevice::open()
         };
-        // No fallback to demo mode: it showed an MVX2U whatever the user had,
-        // hid this error behind the TUI, and never connected a device plugged
-        // in later. No TUI is up here: the picker reports a failed open itself.
+        // No fallback to demo mode: it showed an MVX2U whatever the user had
+        // and hid this error behind the TUI. No TUI is up here: the picker
+        // reports a failed open itself.
         match open_result {
-            Ok(d) => (Some(d), false, None),
+            Ok(d) => {
+                let model = d.model;
+                (Some(d), model)
+            }
             Err(e) => {
                 eprintln!("Error: {e:#}");
-                if none_found {
-                    eprintln!("To try the UI without a device, run: shurectl --demo");
-                }
                 std::process::exit(1);
             }
         }
     };
-
-    let device_model = demo_model
-        .or_else(|| device.as_ref().map(|d| d.model))
-        .unwrap_or(DeviceModel::Mvx2u);
+    // Only `--demo` runs without a device.
+    let demo_mode = device.is_none();
 
     let mut app = App {
         demo_mode,
@@ -350,12 +345,20 @@ impl Tui {
 /// Show the device picker until a device opens, or `None` when the user
 /// quits. Nothing is written: listing reads each device's serial and name,
 /// as `--list` does, and a device that won't open says why and stays listed.
+/// While none is listed, the OS device list is checked every
+/// `PRESENCE_POLL_INTERVAL`, with no HID traffic, and a device found there
+/// is read one poll later, giving it time to boot as a reconnect does
+/// (`poll_step()`). The only device found then opens by itself.
 fn pick_device(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     found: Vec<device::DeviceInfo>,
 ) -> Result<Option<ShureDevice>> {
     let mut picker = picker::Picker::new(Vec::new());
-    scan_into(terminal, &mut picker, found)?;
+    if !found.is_empty() {
+        scan_into(terminal, &mut picker, found)?;
+    }
+    let mut last_poll = Instant::now();
+    let mut seen_last_poll = false;
     loop {
         let mut rows = Vec::new();
         let mut fits = true;
@@ -363,6 +366,22 @@ fn pick_device(
             fits = ui::fits(f.area());
             rows = ui::draw_picker(f, &picker);
         })?;
+        let waiting = picker.rows.is_empty();
+        let next_poll =
+            (last_poll + PRESENCE_POLL_INTERVAL).saturating_duration_since(Instant::now());
+        if waiting && !event::poll(next_poll)? {
+            last_poll = Instant::now();
+            let found = device::list_devices();
+            let present = !found.is_empty();
+            if poll_step(false, present, seen_last_poll) == PollStep::Reconnect {
+                scan_into(terminal, &mut picker, found)?;
+                if let Some(device) = open_only_device(terminal, &mut picker)? {
+                    return Ok(Some(device));
+                }
+            }
+            seen_last_poll = present;
+            continue;
+        }
         let command = match event::read()? {
             // Below the minimum size only the notice shows, so keys only quit.
             Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
@@ -389,30 +408,61 @@ fn pick_device(
         };
         match command {
             Some(picker::Command::Open(index)) => {
-                // Stays on screen while the device's settings are read, which
-                // can take a few seconds.
-                let row = &picker.rows[index];
-                // Two of one model are told apart by name or serial.
-                let which = row
-                    .name
-                    .as_deref()
-                    .or(row.serial.as_deref())
-                    .map(|which| format!(" ({which})"))
-                    .unwrap_or_default();
-                picker.set_ok(format!("Opening {}{which}…", row.model.display_name()));
-                terminal.draw(|f| {
-                    ui::draw_picker(f, &picker);
-                })?;
-                match ShureDevice::open_path(&picker.rows[index].path) {
-                    Ok(device) => return Ok(Some(device)),
-                    Err(e) => picker.set_err(one_line(&e)),
+                if let Some(device) = open_picked(terminal, &mut picker, index)? {
+                    return Ok(Some(device));
                 }
             }
             Some(picker::Command::Rescan) => {
                 scan_into(terminal, &mut picker, device::list_devices())?;
+                // A device plugged in after this scan still gets its boot poll.
+                seen_last_poll = false;
+                if waiting && let Some(device) = open_only_device(terminal, &mut picker)? {
+                    return Ok(Some(device));
+                }
             }
             Some(picker::Command::Quit) => return Ok(None),
             None => {}
+        }
+    }
+}
+
+/// Open the only device a scan from an empty picker found, as a single device
+/// opens at startup; `None` when there were several, or it didn't open.
+fn open_only_device(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    picker: &mut picker::Picker,
+) -> Result<Option<ShureDevice>> {
+    match picker.only_device() {
+        Some(index) => open_picked(terminal, picker, index),
+        None => Ok(None),
+    }
+}
+
+/// Open the picker's row `index`, or say in its status bar why it didn't.
+/// "Opening …" stays on screen while the device's settings are read, which
+/// can take a few seconds.
+fn open_picked(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    picker: &mut picker::Picker,
+    index: usize,
+) -> Result<Option<ShureDevice>> {
+    let row = &picker.rows[index];
+    // Two of one model are told apart by name or serial.
+    let which = row
+        .name
+        .as_deref()
+        .or(row.serial.as_deref())
+        .map(|which| format!(" ({which})"))
+        .unwrap_or_default();
+    picker.set_ok(format!("Opening {}{which}…", row.model.display_name()));
+    terminal.draw(|f| {
+        ui::draw_picker(f, picker);
+    })?;
+    match ShureDevice::open_path(&picker.rows[index].path) {
+        Ok(device) => Ok(Some(device)),
+        Err(e) => {
+            picker.set_err(one_line(&e));
+            Ok(None)
         }
     }
 }

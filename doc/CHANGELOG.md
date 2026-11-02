@@ -6,16 +6,23 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## 2.16.1 — 2026-11-02
+## 2.17.0 — 2026-11-02
 
-shurectl says why it can't open your device instead of starting demo mode.
+With no device connected, shurectl waits for one and opens it when you plug it in, instead
+of starting demo mode.
+
+### Added
+
+- Started with no device connected, shurectl waits on its device picker and opens your mic
+  as soon as you plug it in. If several are plugged in by then, you pick one as usual. Press
+  `q` to quit.
 
 ### Changed
 
-- With no device found, or one that can't be opened, shurectl now prints why and exits,
-  instead of starting demo mode. The demo always showed an MVX2U whatever mic you had, hid
-  the error behind the TUI, and never connected a mic plugged in afterwards. Run
-  `shurectl --demo` to try the UI without a device.
+- shurectl no longer starts demo mode when it finds no device, or can't open the one it
+  finds. The demo always showed an MVX2U whatever mic you had, hid the reason behind the
+  TUI, and never connected a mic plugged in afterwards. A device that can't be opened now
+  prints why, and shurectl exits. Run `shurectl --demo` to try the UI without a device.
 
 ## 2.16.0 — 2026-11-01
 

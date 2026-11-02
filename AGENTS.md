@@ -49,7 +49,7 @@ src/
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
   firmware.rs   # Info tab firmware check: background lookup in Shure's online archive
   gain_check.rs # Level meter's Enter or `g`: listens, suggests a gain in a card; never writes
-  picker.rs     # Startup device picker state and keys when several devices are connected
+  picker.rs     # Startup device picker state and keys: several devices connected, or waiting for one
   fake_hid.rs   # Fake device behind device.rs's HidTransport (tests and `--features qa` only)
   harness.rs    # `--qa` JSON-lines driver over the real event loop step (tests and qa only)
 tests/

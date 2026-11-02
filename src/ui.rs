@@ -3507,7 +3507,14 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
             "shurectl",
             Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  Choose a device to open", Style::default().fg(C_TEXT)),
+        Span::styled(
+            if picker.rows.is_empty() {
+                "  Waiting for a device"
+            } else {
+                "  Choose a device to open"
+            },
+            Style::default().fg(C_TEXT),
+        ),
     ]);
     f.render_widget(
         Paragraph::new(header).style(Style::default().bg(C_SURFACE)),
@@ -3573,6 +3580,21 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
         ]);
         f.render_widget(Paragraph::new(tip), text_row(body, 3 * shown + 1));
     }
+    if picker.rows.is_empty() {
+        let lines = [
+            Line::styled(
+                " Plug in a Shure device; it opens as soon as it's found.",
+                Style::default().fg(C_TEXT),
+            ),
+            Line::from(vec![
+                Span::styled(" Try shurectl without one: ", Style::default().fg(C_DIM)),
+                Span::styled("shurectl --demo", Style::default().fg(C_TEXT)),
+            ]),
+        ];
+        for (offset, line) in (0..).step_by(2).zip(lines) {
+            f.render_widget(Paragraph::new(line), text_row(body, offset));
+        }
+    }
 
     // Until a key or click reports something else, a selected device that
     // wouldn't open says why.
@@ -3589,11 +3611,15 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
         status_bar(
             msg,
             color,
-            (
-                " [↑↓] Select  [Enter] Open  [r] Rescan  [q] Quit",
-                " [Enter] Open  [q] Quit",
-                C_DIM,
-            ),
+            if picker.rows.is_empty() {
+                (" [r] Rescan  [q] Quit", " [q] Quit", C_DIM)
+            } else {
+                (
+                    " [↑↓] Select  [Enter] Open  [r] Rescan  [q] Quit",
+                    " [Enter] Open  [q] Quit",
+                    C_DIM,
+                )
+            },
             chunks[2].width,
         ),
         chunks[2],
@@ -4819,6 +4845,11 @@ mod tests {
                 Some(_) | None => picker.status.as_str(),
             };
             assert!(text.contains(status), "{label}: no status\n{text}");
+            if picker.rows.is_empty() {
+                for part in ["it opens as soon as it's found", "shurectl --demo"] {
+                    assert!(text.contains(part), "{label}: {part:?} missing\n{text}");
+                }
+            }
         }
     }
 

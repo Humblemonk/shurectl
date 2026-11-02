@@ -466,24 +466,26 @@ mod tests {
                 app.focus_prev();
             }
             let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-            terminal
+            // Compare the frames drawn, not the backend's buffer, which keeps
+            // stale cells behind wide symbols. Cloned for after the next draw.
+            let keyboard_frame = terminal
                 .draw(|frame| {
                     crate::ui::draw(frame, &app);
                 })
-                .unwrap();
-            // Retain a snapshot of the keyboard-focused frame for comparison.
-            let keyboard_frame = terminal.backend().buffer().clone();
+                .unwrap()
+                .buffer
+                .clone();
             app.focus_next();
             let hits = render(&app, 120, 40);
             assert!(click(&mut app, &hits, Target::Control(Focus::Mode)).is_none());
             assert_eq!(app.focus, Focus::Mode);
             assert_eq!(app.device_state.mode, InputMode::Manual);
-            terminal
+            let clicked_frame = terminal
                 .draw(|frame| {
                     crate::ui::draw(frame, &app);
                 })
                 .unwrap();
-            assert_eq!(terminal.backend().buffer(), &keyboard_frame);
+            assert_eq!(clicked_frame.buffer, &keyboard_frame);
             assert!(matches!(
                 click(&mut app, &hits, Target::Control(Focus::Mode)),
                 Some(DeviceAction::SetMode(InputMode::Auto))
