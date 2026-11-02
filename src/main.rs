@@ -9,7 +9,7 @@
 //!   - Shure MV7+         (USB/XLR dynamic microphone)
 //!
 //! Usage:
-//!   shurectl                   # Connect to device, launch TUI
+//!   shurectl                   # Connect to device, launch TUI; waits for one
 //!   shurectl --demo            # Demo MVX2U (default model) without a device
 //!   shurectl --demo mv6        # Demo MV6 without a device
 //!   shurectl --demo mvx2u-gen2 # Demo MVX2U Gen 2 without a device
@@ -90,7 +90,8 @@ struct Cli {
 
     /// Open a specific device by its HID path or its serial, as --list shows
     /// them. Without this flag, the only detected device is opened; with
-    /// several, the TUI asks which, and the other commands need this flag.
+    /// several, the TUI asks which, and the other commands need this flag;
+    /// with none, the TUI waits for one to be plugged in.
     /// A path can change when the device is replugged; a serial doesn't.
     #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
     device: Option<String>,
@@ -185,7 +186,7 @@ fn main() -> Result<()> {
     }
 
     if cli.list {
-        let devs = device::list_devices();
+        let devs = list_devices_or_exit();
         if devs.is_empty() {
             println!("No supported Shure devices found.");
             #[cfg(target_os = "linux")]
@@ -218,7 +219,7 @@ fn main() -> Result<()> {
     let presets = presets::load_all_presets();
     // Entered early only for the device picker; startup warnings print first otherwise.
     let mut tui = None;
-    let (mut device, demo_mode, demo_model) = if let Some(ref model_str) = cli.demo {
+    let (mut device, device_model) = if let Some(ref model_str) = cli.demo {
         let model = match parse_demo_model(model_str) {
             Ok(m) => m,
             Err(e) => {
@@ -226,10 +227,10 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
-        (None, true, Some(model))
+        (None, model)
     } else {
         let found = if cli.device.is_none() {
-            device::list_devices()
+            list_devices_or_exit()
         } else {
             Vec::new()
         };
@@ -237,29 +238,30 @@ fn main() -> Result<()> {
             ShureDevice::open_selected(selector)
         } else if let [only] = found.as_slice() {
             ShureDevice::open_path(&only.path)
-        } else if found.len() > 1 {
+        } else {
+            // Several to choose from, or none yet: the picker waits for one.
             let tui = tui.insert(Tui::enter()?);
             match pick_device(&mut tui.terminal, found)? {
                 Some(device) => Ok(device),
                 None => return Ok(()),
             }
-        } else {
-            // None found: open() says so, with the access hint.
-            ShureDevice::open()
         };
+        // No fallback to demo mode: it showed an MVX2U whatever the user had
+        // and hid this error behind the TUI. No TUI is up here: the picker
+        // reports a failed open itself.
         match open_result {
-            Ok(d) => (Some(d), false, None),
+            Ok(d) => {
+                let model = d.model;
+                (Some(d), model)
+            }
             Err(e) => {
-                eprintln!("Warning: {e}");
-                eprintln!("Launching in demo mode. Use --demo to suppress this warning.");
-                (None, true, None)
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
             }
         }
     };
-
-    let device_model = demo_model
-        .or_else(|| device.as_ref().map(|d| d.model))
-        .unwrap_or(DeviceModel::Mvx2u);
+    // Only `--demo` runs without a device.
+    let demo_mode = device.is_none();
 
     let mut app = App {
         demo_mode,
@@ -312,8 +314,11 @@ fn main() -> Result<()> {
 
     drop(tui);
 
+    // Only a failed terminal ends the loop with an error; device errors show in
+    // the status bar. Exits 1 like the startup failures.
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
     }
 
     Ok(())
@@ -341,15 +346,32 @@ impl Tui {
     }
 }
 
+/// The supported devices connected, or exit with why they can't be listed.
+/// Startup only, before the TUI is entered.
+fn list_devices_or_exit() -> Vec<device::DeviceInfo> {
+    device::list_devices().unwrap_or_else(|e| {
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
+    })
+}
+
 /// Show the device picker until a device opens, or `None` when the user
 /// quits. Nothing is written: listing reads each device's serial and name,
 /// as `--list` does, and a device that won't open says why and stays listed.
+/// While none is listed, the OS device list is checked every
+/// `PRESENCE_POLL_INTERVAL`, with no HID traffic, and a device found there
+/// is read one poll later, giving it time to boot as a reconnect does
+/// (`poll_step()`). The only device found then opens by itself.
 fn pick_device(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     found: Vec<device::DeviceInfo>,
 ) -> Result<Option<ShureDevice>> {
     let mut picker = picker::Picker::new(Vec::new());
-    scan_into(terminal, &mut picker, found)?;
+    if !found.is_empty() {
+        scan_into(terminal, &mut picker, found)?;
+    }
+    let mut last_poll = Instant::now();
+    let mut seen_last_poll = false;
     loop {
         let mut rows = Vec::new();
         let mut fits = true;
@@ -357,6 +379,38 @@ fn pick_device(
             fits = ui::fits(f.area());
             rows = ui::draw_picker(f, &picker);
         })?;
+        let waiting = picker.rows.is_empty();
+        let next_poll =
+            (last_poll + PRESENCE_POLL_INTERVAL).saturating_duration_since(Instant::now());
+        // Polled when due even while events keep arriving, such as mouse
+        // motion on Windows, as `run_event_loop()` does.
+        if waiting && next_poll.is_zero() {
+            last_poll = Instant::now();
+            // A failed enumeration says nothing about the device: say why,
+            // and leave the boot wait as it was.
+            match device::list_devices() {
+                Ok(found) => {
+                    // While waiting, only a failed enumeration shows an error;
+                    // this one worked, so go back to "Waiting for…".
+                    if picker.status_is_error {
+                        picker.set_rows(Vec::new());
+                    }
+                    let present = !found.is_empty();
+                    if poll_step(false, present, seen_last_poll) == PollStep::Reconnect {
+                        scan_into(terminal, &mut picker, found)?;
+                        if let Some(device) = open_only_device(terminal, &mut picker)? {
+                            return Ok(Some(device));
+                        }
+                    }
+                    seen_last_poll = present;
+                }
+                Err(e) => picker.set_err(one_line(&e)),
+            }
+            continue;
+        }
+        if waiting && !event::poll(next_poll)? {
+            continue;
+        }
         let command = match event::read()? {
             // Below the minimum size only the notice shows, so keys only quit.
             Event::Key(key) if key.kind == KeyEventKind::Press && !fits => {
@@ -383,30 +437,64 @@ fn pick_device(
         };
         match command {
             Some(picker::Command::Open(index)) => {
-                // Stays on screen while the device's settings are read, which
-                // can take a few seconds.
-                let row = &picker.rows[index];
-                // Two of one model are told apart by name or serial.
-                let which = row
-                    .name
-                    .as_deref()
-                    .or(row.serial.as_deref())
-                    .map(|which| format!(" ({which})"))
-                    .unwrap_or_default();
-                picker.set_ok(format!("Opening {}{which}…", row.model.display_name()));
-                terminal.draw(|f| {
-                    ui::draw_picker(f, &picker);
-                })?;
-                match ShureDevice::open_path(&picker.rows[index].path) {
-                    Ok(device) => return Ok(Some(device)),
-                    Err(e) => picker.set_err(one_line(&e)),
+                if let Some(device) = open_picked(terminal, &mut picker, index)? {
+                    return Ok(Some(device));
                 }
             }
             Some(picker::Command::Rescan) => {
-                scan_into(terminal, &mut picker, device::list_devices())?;
+                match device::list_devices() {
+                    Ok(found) => scan_into(terminal, &mut picker, found)?,
+                    Err(e) => picker.set_err(one_line(&e)),
+                }
+                // A device plugged in after this scan still gets its boot poll.
+                seen_last_poll = false;
+                if waiting && let Some(device) = open_only_device(terminal, &mut picker)? {
+                    return Ok(Some(device));
+                }
             }
             Some(picker::Command::Quit) => return Ok(None),
             None => {}
+        }
+    }
+}
+
+/// Open the only device a scan from an empty picker found, as a single device
+/// opens at startup; `None` when there were several, or it didn't open.
+fn open_only_device(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    picker: &mut picker::Picker,
+) -> Result<Option<ShureDevice>> {
+    match picker.only_device() {
+        Some(index) => open_picked(terminal, picker, index),
+        None => Ok(None),
+    }
+}
+
+/// Open the picker's row `index`, or say in its status bar why it didn't.
+/// "Opening …" stays on screen while the device's settings are read, which
+/// can take a few seconds.
+fn open_picked(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    picker: &mut picker::Picker,
+    index: usize,
+) -> Result<Option<ShureDevice>> {
+    let row = &picker.rows[index];
+    // Two of one model are told apart by name or serial.
+    let which = row
+        .name
+        .as_deref()
+        .or(row.serial.as_deref())
+        .map(|which| format!(" ({which})"))
+        .unwrap_or_default();
+    picker.set_ok(format!("Opening {}{which}…", row.model.display_name()));
+    terminal.draw(|f| {
+        ui::draw_picker(f, picker);
+    })?;
+    match ShureDevice::open_path(&picker.rows[index].path) {
+        Ok(device) => Ok(Some(device)),
+        Err(e) => {
+            picker.set_err(one_line(&e));
+            Ok(None)
         }
     }
 }

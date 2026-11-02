@@ -63,7 +63,7 @@ macOS and Windows need no setup.
 ## Usage
 
 ```bash
-shurectl                  # Open the TUI; with several devices connected, pick one first
+shurectl                  # Open the TUI; with several devices connected, pick one; with none, wait for one
 shurectl --list           # List detected Shure devices
 shurectl --device <path>  # Connect to a specific device from --list, by path or serial
 shurectl --demo mv7plus   # Try the UI without a device: mvx2u, mvx2u-gen2, mv6, mv6-gen2, mv7, mv7plus
@@ -133,7 +133,7 @@ recording, since both then talk to the device at once. `shurectl --help` explain
 
 ## Troubleshooting
 
-**"Cannot open device"** — device not found or a permissions issue.
+**"Cannot open device", or shurectl keeps waiting for a device** — device not found or a permissions issue.
 Run `shurectl --list` to check detection. On Linux, try `sudo shurectl` to confirm it's a udev permissions issue. On macOS and Windows, ensure no other software (e.g. ShurePlus MOTIV) has exclusive access to the device.
 
 **Header stays `[DISCONNECTED]` with the device plugged in** — shurectl can see the

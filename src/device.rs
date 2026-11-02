@@ -1656,19 +1656,19 @@ fn shure_devices(api: &HidApi) -> Vec<(&hidapi::DeviceInfo, DeviceModel)> {
         .collect()
 }
 
-/// Probe the system for supported Shure devices without opening them.
-pub fn list_devices() -> Vec<DeviceInfo> {
-    let Ok(api) = HidApi::new() else {
-        return vec![];
-    };
-    shure_devices(&api)
+/// Probe the system for supported Shure devices without opening them. Fails
+/// only when hidapi can't start, which says nothing about the devices, so
+/// callers report it rather than treat it as none connected.
+pub fn list_devices() -> Result<Vec<DeviceInfo>> {
+    let api = HidApi::new().context("Failed to initialise hidapi")?;
+    Ok(shure_devices(&api)
         .into_iter()
         .map(|(d, model)| DeviceInfo {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or(UNKNOWN_SERIAL).to_owned(),
             model,
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

@@ -67,7 +67,7 @@ exploring continues.
 | `screen_hash` | The `renders_match_golden` hash, for a pinned screen |
 | `style: {"text": "Muted", "fg": "C_ERROR"}` | Color of the text's first cell, by palette name |
 | `tab`, `focus`, `status` (substring), `status_is_error`, `help_visible`, `editing`, `quit`, `confirming_factory_reset` | `App` fields |
-| `confirming_preset_load` | The slot whose load box is open (`0`), or `null` when none is |
+| `confirming_preset_load` | The 0-based slot whose load box is open (`0` for the first preset; the UI and `--preset` count from 1), or `null` when none is |
 | `fits` | `ui::fits()` for the last frame: `false` below 80x24 (`MIN_SIZE`), where only the size notice draws and keys only quit |
 | `connected` | `App::device_connected`, and the header agrees |
 | `state: {"muted": true}` | `DeviceState` fields (see the `state` query for names) |

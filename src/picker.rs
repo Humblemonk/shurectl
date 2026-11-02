@@ -1,6 +1,9 @@
-//! Device picker: the screen shown at startup when several supported devices
-//! are connected and `--device` names none. This is its state and keys;
-//! `ui::draw_picker()` draws it, and `main.rs` opens the device it returns.
+//! Device picker: the screen shown at startup when `--device` names none and
+//! there are several supported devices connected, or none yet. With none it
+//! waits, and `main.rs` opens one plugged in by itself when it is the only
+//! one and it opened cleanly (`only_device()`).
+//! This is its state and keys; `ui::draw_picker()` draws it, and `main.rs`
+//! opens the device it returns.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -59,11 +62,22 @@ impl Picker {
             .unwrap_or(0);
         self.rows = rows;
         let found = match self.rows.len() {
-            0 => "No supported Shure devices found. Plug one in and press r.".to_string(),
+            0 => "Waiting for a Shure device…".to_string(),
             1 => "1 Shure device found.".to_string(),
             n => format!("{n} Shure devices found."),
         };
         self.set_ok(found);
+    }
+
+    /// The row of the only device listed, when that device read its labels
+    /// without a problem. `main.rs` asks after a scan that started
+    /// with no devices listed, so a mic plugged in while the picker waits
+    /// opens by itself, as a single device does at startup.
+    pub fn only_device(&self) -> Option<usize> {
+        match self.rows.as_slice() {
+            [only] if only.problem.is_none() => Some(0),
+            _ => None,
+        }
     }
 
     fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
@@ -191,10 +205,25 @@ mod tests {
     #[test]
     fn an_empty_list_opens_nothing() {
         let mut picker = Picker::new(Vec::new());
-        assert!(picker.status.contains("No supported Shure devices"));
+        assert!(picker.status.contains("Waiting for a Shure device"));
         picker.handle_key(KeyCode::Down, NONE);
         assert_eq!(picker.selected, 0);
         assert_eq!(picker.handle_key(KeyCode::Enter, NONE), None);
+    }
+
+    #[test]
+    fn only_a_single_device_that_opened_cleanly_opens_by_itself() {
+        let mut picker = Picker::new(Vec::new());
+        assert_eq!(picker.only_device(), None);
+        picker.set_rows(sample_rows());
+        assert_eq!(picker.only_device(), None);
+        let mut rows: Vec<_> = sample_rows().into_iter().take(1).collect();
+        picker.set_rows(rows);
+        assert_eq!(picker.only_device(), Some(0));
+        rows = sample_rows().into_iter().take(1).collect();
+        rows[0].problem = Some("Cannot open /dev/hidraw3: device busy".into());
+        picker.set_rows(rows);
+        assert_eq!(picker.only_device(), None);
     }
 
     #[test]
