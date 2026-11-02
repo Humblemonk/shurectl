@@ -3583,11 +3583,14 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     if picker.rows.is_empty() {
         let lines = [
             Line::styled(
-                " Plug in a Shure device; it opens as soon as it's found.",
+                " Connect your Shure device to get started.",
                 Style::default().fg(C_TEXT),
             ),
             Line::from(vec![
-                Span::styled(" Try shurectl without one: ", Style::default().fg(C_DIM)),
+                Span::styled(
+                    " No device handy? Try the demo: ",
+                    Style::default().fg(C_DIM),
+                ),
                 Span::styled("shurectl --demo", Style::default().fg(C_TEXT)),
             ]),
         ];
@@ -4846,7 +4849,7 @@ mod tests {
             };
             assert!(text.contains(status), "{label}: no status\n{text}");
             if picker.rows.is_empty() {
-                for part in ["it opens as soon as it's found", "shurectl --demo"] {
+                for part in ["Connect your Shure device", "Try the demo: shurectl --demo"] {
                     assert!(text.contains(part), "{label}: {part:?} missing\n{text}");
                 }
             }
