@@ -35,6 +35,11 @@ paru -S shurectl        # or: yay -S shurectl
 brew install humblemonk/shurectl/shurectl
 ```
 
+**Prebuilt binaries (Linux, macOS, Windows)** — download the archive for your system from the
+[latest release](https://github.com/Humblemonk/shurectl/releases/latest), unpack it and put
+`shurectl` somewhere on your `PATH`. On Linux, also install the
+[udev rules](#linux-allow-access-without-root).
+
 **Cargo**
 
 ```bash
@@ -154,6 +159,10 @@ sets its own gain in Auto Level mode, so the slider is hidden. Switch to Manual 
 **MV7: MOTIV stops showing the mic's settings** — The MV7 has a single command channel
 that MOTIV and shurectl share. Quit MOTIV before using shurectl with an MV7; if MOTIV
 already lost the mic, quit it, replug the mic, and reopen it.
+
+**macOS: "shurectl" can't be opened because Apple cannot verify it** — the prebuilt binary
+isn't signed by Apple. Run `xattr -d com.apple.quarantine shurectl` once, or install with
+Homebrew instead.
 
 **PipeWire/PulseAudio volume vs. device gain** — This tool controls the **hardware DSP gain**
 on the device itself, not the OS capture volume level. Both can be set independently.
