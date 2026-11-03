@@ -88,6 +88,9 @@ jobs:
 
       - name: Package
         id: pkg
+        env:
+          # With --no-xattrs below: no macOS metadata in the tarball for GNU tar to warn about.
+          COPYFILE_DISABLE: "1"
         run: |
           NAME="shurectl-${TAG}-${TARGET}"
           BIN="target/$TARGET/release/shurectl"
@@ -102,7 +105,7 @@ jobs:
 
           case "$TARGET" in
             *windows*) ARCHIVE="$NAME.zip"; 7z a "$ARCHIVE" "$NAME" ;;
-            *) ARCHIVE="$NAME.tar.gz"; tar czf "$ARCHIVE" "$NAME" ;;
+            *) ARCHIVE="$NAME.tar.gz"; tar --no-xattrs -czf "$ARCHIVE" "$NAME" ;;
           esac
 
           if command -v sha256sum > /dev/null; then
