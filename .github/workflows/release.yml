@@ -1,0 +1,119 @@
+name: Release binaries
+
+# Builds shurectl for each platform and attaches the archives to the GitHub release.
+# Runs when a release is published; run it by hand to backfill an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build, e.g. v2.17.0"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 for an older glibc (2.35), so the binary runs on more distros.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          # One binary for Apple silicon and Intel Macs, joined with lipo.
+          - os: macos-latest
+            target: universal-apple-darwin
+          # Static CRT, so the .exe doesn't need the Visual C++ redistributable.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rustflags: "-C target-feature=+crt-static"
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # gh release upload
+
+    # Windows defaults to PowerShell; Git Bash runs the steps there.
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TARGET: ${{ matrix.target }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          persist-credentials: false
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::Tag $TAG doesn't match Cargo.toml version $VERSION"
+            exit 1
+          fi
+
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+
+      # No --features: probe and qa must never ship (AGENTS.md, Layering rules).
+      - name: Build
+        run: |
+          case "$TARGET" in
+            universal-apple-darwin)
+              rustup target add aarch64-apple-darwin x86_64-apple-darwin
+              cargo build --release --locked --target aarch64-apple-darwin
+              cargo build --release --locked --target x86_64-apple-darwin
+              mkdir -p target/universal-apple-darwin/release
+              lipo -create -output target/universal-apple-darwin/release/shurectl \
+                target/aarch64-apple-darwin/release/shurectl \
+                target/x86_64-apple-darwin/release/shurectl
+              ;;
+            *)
+              cargo build --release --locked --target "$TARGET"
+              ;;
+          esac
+
+      - name: Package
+        id: pkg
+        run: |
+          NAME="shurectl-${TAG}-${TARGET}"
+          BIN="target/$TARGET/release/shurectl"
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          "$BIN" --version
+
+          mkdir "$NAME"
+          cp "$BIN" README.md LICENSE doc/CHANGELOG.md "$NAME/"
+          case "$TARGET" in
+            *linux*) cp 62-shure.rules "$NAME/" ;;
+          esac
+
+          case "$TARGET" in
+            *windows*) ARCHIVE="$NAME.zip"; 7z a "$ARCHIVE" "$NAME" ;;
+            *) ARCHIVE="$NAME.tar.gz"; tar czf "$ARCHIVE" "$NAME" ;;
+          esac
+
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.pkg.outputs.archive }}
+        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber --repo "$GITHUB_REPOSITORY"
