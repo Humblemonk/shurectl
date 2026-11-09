@@ -7,10 +7,11 @@ Single-crate Rust binary. Prefer the simple, obvious solution over clever abstra
 
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
 `protocol.md` for `protocol.rs`/`src/protocol/`/`device.rs`/`probe.rs` (HID packet format,
-usbmon debugging), `meter.md` for `meter.rs`/`main.rs`, `presets.md` for `presets.rs`,
-`ui.md` for `ui.rs` (MOTIV Mix palette and controls). Claude Code loads these only when a
-matching file is read, so anything a reviewer must know from a diff alone belongs in
-**Review** below.
+usbmon debugging), `meter.md` for `meter.rs` and the meter code in `main.rs`, `presets.md`
+for `presets.rs` and the preset load wherever it lives (`apply_binary_preset()` in `main.rs`,
+`load_mv7_preset()` in `device.rs`, the load box in `ui.rs`), `ui.md` for `ui.rs` (MOTIV Mix
+palette and controls). Claude Code loads these only when a matching file is read, so
+anything a reviewer must know from a diff alone belongs in **Review** below.
 
 ## Commands
 
@@ -26,7 +27,7 @@ Run `scripts/check.sh` before calling any change complete. It runs clippy and
 Change the gate in the script, not in docs or CI. Without `--features probe,qa`, clippy
 skips `shurectl-probe` and the `--qa` harness.
 
-- CI also runs jscpd (budget 5% in `.github/linters/.jscpd.json`, ~2% actual):
+- CI also runs jscpd (budget 3% in `.github/linters/.jscpd.json`, 1.6% on 2026-11-09):
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared
   helper; don't raise the threshold.
 
@@ -66,8 +67,9 @@ tests/
 - `apply_action()` in `main.rs` is the *only* place that writes to the device. Never call
   `device.rs` from `ui.rs`, `app.rs` or `mouse.rs`. Mouse input only maps to key actions.
 - Raw protocol byte values live *only* in `protocol.rs` and its submodules in
-  `src/protocol/`, as named constants. Declare a new submodule with `#[path]` like the
-  others, or `shurectl-probe` won't build.
+  `src/protocol/`, as named constants. The one exception is `src/bin/probe.rs`, which keeps
+  its own USB IDs, GET command bytes and `KNOWN_FEATURES` address table for its sweep.
+  Declare a new submodule with `#[path]` like the others, or `shurectl-probe` won't build.
 - `shurectl-probe`, `--qa` and `fake_hid.rs` must never ship to end users via `cargo install`
   or Homebrew. Keep the `probe`/`qa` features and `cfg(any(test, feature = "qa"))` gates intact.
 - Never write firmware-update packets. Those byte sequences are intentionally omitted (see
@@ -160,8 +162,9 @@ Shared across all models unless the hardware makes it impossible:
 - **Keybindings**: Tab/Shift-Tab cycles tabs, ↑/↓ moves focus, ←/→ adjusts, Enter/Space
   toggles, `?` help. No key only one model responds to. A readme shortcut that works on
   some devices only says which
-- **Focus traversal**: mode → mute → gain → gain lock → gain check (the Level meter, Manual
-  only) → monitor mix → playback level → device extras. Models skip entries they lack; they
+- **Focus traversal**: mode → mute → gain → gain lock → gain check (the Level meter) →
+  monitor mix → playback level → device extras. The three gain entries are Manual only; in
+  Auto the model's Auto Level controls take their place. Models skip entries they lack; they
   don't reorder them because it "reads better" there
 - **Summary**: the Main tab's Summary is one ordered `SummaryRow` list; a model picks its
   rows in `summary_rows()` but can't reorder them
@@ -201,7 +204,8 @@ Shared across all models unless the hardware makes it impossible:
 - `anyhow::Result<T>` for all fallible functions
 - Prefer borrowing; justify every `.clone()`
 - Exhaustive match arms; no wildcard `_` that silently swallows variants. Check models with
-  `DeviceModel::has_*()` or an exhaustive match, never a model name
+  `DeviceModel::has_*()` or an exhaustive match, never with `==`, `matches!` or a `_` arm
+  beside a model name, which a new model slips past
 - Meaningful names (`gain_db` not `g`); delete replaced code, no versioned function names
 - Validate packet arguments before encoding (clamp, don't panic)
 - `ratatui`: use `Frame::render_widget()`, not direct buffer writes. `crossterm`: handle
@@ -217,7 +221,8 @@ Shared across all models unless the hardware makes it impossible:
 | User-visible behaviour (keys, focus, clicks, status, packet order, reconnects) | A scenario in `tests/scenarios/`, run on every model in its header, with a fake device and in demo mode. Record one with `shurectl --qa` (the `qa` skill, `.claude/skills/qa/SKILL.md`) |
 | `ui.rs` rendering changes | `renders_match_golden` must pass unchanged for a refactor. For an intended change, rerun with `UPDATE_GOLDEN=1` and check the listed screens in `--demo`. `every_screen_fits_the_min_size` fails when a screen no longer fits 80×24 (`MIN_SIZE`), or a focus hint is cut mid-word instead of going through `with_hint()` |
 | Preset save or load changes (`presets.rs`, `apply_binary_preset()`, `load_mv7_preset()`) | `preset_loads_match_golden` loads every preset source on every model, checks its rules (see the test) and compares the SETs with `tests/fixtures/preset-loads.golden`. For an intended change, rerun with `UPDATE_GOLDEN=1` and read the diff |
-| `main()` / CLI args | No tests |
+| One-shot commands (`cli.rs`) | A unit test in `cli.rs` against the fake device: what is sent, and what is refused with which reason |
+| Argument parsing in `main()` (clap) | No tests. `pty_smoke` in `tests/e2e.rs` only starts the real TUI and quits it |
 
 Performance is not a concern (~100 ms input-driven tick); benchmark only a bottleneck found.
 
@@ -232,24 +237,24 @@ rather than promoting a lower one.
 
 - **P0**: harms hardware, ears or privacy: 48V switched on without the user asking (ribbon
   mics), a gain or level jump from a write based on default or stale state (the 36 dB default
-  gain, 996c882), the mic live while the UI shows Muted, a packet with the wrong encoding or
-  address for the model (a800e26), any firmware-update packet
+  gain, 996c882, 2.12.0), the mic live while the UI shows Muted, a packet with the wrong
+  encoding or address for the model (a800e26, 2.9.0), any firmware-update packet
 - **P1**: a setting written, read back or shown wrong on some model (48V switched off
   included), a preset load that stops or skips settings, a panic, a failure reported wrong
   either way, a control visible but inert (see Hiding vs. locking)
 - **P2**: users notice, but nothing is written or shown wrong: misleading status, help or
   readme wording, a refusal without its reason, a cross-model UI divergence, noticeable
   slowness. Also a broken Rust rule or regression trap that makes a P0/P1 likely later
-  (`_` over `DeviceModel`, a raw byte outside `protocol.rs` and `src/protocol/`, `unwrap()`
-  in production)
+  (`_` over `DeviceModel`, a raw byte outside `protocol.rs`, `src/protocol/` and the probe's
+  own tables, `unwrap()` in production)
 - **P3**: no effect on users yet: naming, comments, duplication within the jscpd budget,
   refactor preferences. List them in one line at the end, or leave them out
 
 **Regression traps.** Check every diff that touches these:
 
 - **Readback order**: changing a `getters` slice, `reports_after_confirm()`, or reply routing
-  can shift every later GET by one packet (481dc76). Replies route by address; the prefix
-  byte routes only FEAT_MIX 0x03 (Playback Mix; evidence in `.claude/rules/protocol.md`).
+  can shift every later GET by one packet (481dc76, 2.10.0). Replies route by address; the
+  prefix byte routes only FEAT_MIX 0x03 (Playback Mix; evidence in `.claude/rules/protocol.md`).
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
   left at its default (36 dB gain). It drains queued input first, and
   `send_get_past_strays()` skips reports that can't be the GET's answer (a late reply, or on
@@ -259,20 +264,22 @@ rather than promoting a lower one.
   or missing from some firmware: its field is an `Option` left `None`, so nothing shows,
   saves or writes a default.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
-  writes the gain, then re-locks straight away (835c213, 551a5ae). Don't reorder it.
+  writes the gain, then re-locks straight away (835c213 in 2.9.1, 551a5ae in 2.10.0). Don't
+  reorder it.
 - **New `PresetSlot` field**: files saved before it existed, or on a model without it, must
-  not zero the setting on load (73476a4). A per-model setting is an `Option`, saved only in
-  `from_device_state()`'s `match` for models that have it. Check `#[serde(default)]` and
-  `apply_to_device_state()`.
+  not zero the setting on load (73476a4, 2.9.1). A per-model setting is an `Option`, saved
+  only in `from_device_state()`'s `match` for models that have it. Check `#[serde(default)]`
+  and `apply_to_device_state()`.
 - **Failed writes**: `recover_from_failure()` puts back the key's `before` snapshot only for
   one write that clearly didn't land (`Disconnected`, or the MV7's `Rejected`). A timeout, or
   a preset load or `f` that stopped partway, re-reads the device or marks the state unread.
   `step()` writes a pending wheel adjustment before the next event changes the screen, so
   each snapshot holds only its own change.
 - **Model checks**: a wildcard `_` over `DeviceModel` sent the MV6 Gen 2 the wrong EQ
-  encoding (a800e26). See Rust Rules.
+  encoding (a800e26, 2.9.0). See Rust Rules.
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
-  check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f). Below 80×24 only a notice draws.
+  check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f, 2.10.0). Below 80×24 only a notice
+  draws.
 - **Colors** (`.claude/rules/ui.md`): `C_*` constants only, no raw `Color::Rgb` (MV7+ LED
   sliders excepted). Lime only for focus and active states; values stay white. Red and amber
   mean errors and cautions, never decoration. Readable text needs 4.5:1; `C_DISABLED` doesn't.
@@ -314,9 +321,18 @@ rather than promoting a lower one.
   evidence: a usbmon capture, a probe run or a test on hardware, with the model and date
   ("probed 2026-10-12 on the MV6 Gen 2"). Without evidence it says "unconfirmed". An
   explanation that fits a result is not evidence: "the MV6 answers its Mic Level only after
-  a SET" explained a probe bug and was repeated for six months (0c3a0de).
+  a SET" explained a probe bug and was repeated for six months (0c3a0de, 2.13.2).
+- The maintainer tests on an MV6 Gen 2 and an MVX2U Gen 2 (as of 2026-10-16). For a change
+  tests can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device steps
+  with the expected result for those two. Say plainly when a change can only be checked on
+  another model; evidence from those comes from owners running `shurectl-probe`.
 - When a cross-model UI divergence is unavoidable, name the affected models in the commit/PR
   body.
+- Commit messages follow **Commits** in `CONTRIBUTING.md`: a plain imperative subject saying
+  what changes for the user, with no type prefix; the body says why and names the models.
+- `doc/CHANGELOG.md` lists only changes users can see or feel. Draft an entry under the next
+  version's heading (`## 2.17.1 — YYYY-MM-DD`), never under "Unreleased"; ask for the
+  version when `Cargo.toml` isn't already past the newest heading.
 - Review a change that touches device writes, readback, presets or a release in a session
   that didn't write it: give it the diff, the intent and the hardware results, not the
   author's conclusions about whether the code is right. Pick the `/code-review` level (other
@@ -328,4 +344,6 @@ rather than promoting a lower one.
   - `high`: where a P0 could come from: packet bytes, addresses or MV7 commands in
     `protocol.rs` or `src/protocol/mv7_text.rs`, reply routing or a `getters` slice, the
     mute, gain, level or 48V write paths, the Gain Lock order in `apply_binary_preset()`,
-    `recover_from_failure()`. Also a release, over every commit since the last tag.
+    `recover_from_failure()`. Also a release, over every commit since the last one: its
+    `vX.Y.Z` tag or, where the tag is missing, the last commit whose subject starts
+    `Release x.y.z:` (`git log --grep='^Release '`).
