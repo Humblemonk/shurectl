@@ -1,5 +1,5 @@
 {
-  "threshold": 5,
+  "threshold": 3,
   "minTokens": 50,
   "absolute": true,
   "gitignore": true,

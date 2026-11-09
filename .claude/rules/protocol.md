@@ -70,29 +70,31 @@ CRC-16/ANSI covers 0x11 up to the CRC
   (`resync_after_mode()`). On the MV7 an unanswered `micMute` skips the poll's other lines.
   The MV6's unconfirmed Playback Level GET (#99) isn't polled. A TUI write pushes the poll
   back a second because whether a device applies a write before acking it is unconfirmed
-- **Live poll on hardware** (`read_live()`): on
-  the MV6 Gen 2 under Linux, a pressed mute button sends no input report, and the poll shows
-  the press (tested 2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed
-  from the command line showed in a running TUI, and the next arrow key stepped from the new
-  gain (tested 2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button
-  press still showed (tested 2026-10-25). On the MV7+, a gain change from the command line
-  showed within about a second (reported by mike-callahan, 2026-10-27), and so did muting and
-  unmuting with a tap on the touch panel; Mic Level 40 and Playback Level 30 set from the
-  command line read back as such (firmware 1.6.0.1 on Debian, reported by mike-callahan,
-  2026-10-31). The MV7+'s touch panel has no gain slide (checked in MOTIV on macOS, same
-  report); a probe of page 0x01 before and after a swipe differed only in mute. On the MVX2U
-  Gen 2, switching to Auto, talking, then back to Manual and pressing → raised the gain 1 dB
-  from its Manual value, so the gain GET in Auto reads the Manual gain, not a moving auto
-  gain (tested 2026-10-28); the same on the MV6 Gen 2 (tested 2026-10-31) and the MV7+
-  (`--json` in Auto after talking read the Manual 20 dB, firmware 1.6.0.1, reported by
-  mike-callahan, 2026-10-31). A gain SET in Auto is kept as the Manual gain: on the MVX2U
-  Gen 2 a preset saved in Auto at 40 dB, loaded in Auto over a Manual gain of 25 dB, left
-  40 dB after a switch to Manual (tested 2026-10-31), and the same on the MV6 Gen 2
-  (tested 2026-10-31); unconfirmed on the MVX2U Gen 1, MV6 and MV7+.
-  Unconfirmed elsewhere: whether the MVX2U Gen 1 and MV6
-  report a press, whether their GETs reflect changes made elsewhere, whether the gain GET in
-  Auto reads the Manual gain on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a
-  mode change), and whether the MV7 answers each line within the poll's 200 ms
+- **Live poll on hardware** (`read_live()`), by behaviour:
+  - *A change made elsewhere shows in a running TUI.* On the MV6 Gen 2 under Linux, a
+    pressed mute button sends no input report, and the poll shows the press (tested
+    2026-10-23). On the MVX2U Gen 2, gain, Monitor Mix, mode and mute changed from the
+    command line showed, and the next arrow key stepped from the new gain (tested
+    2026-10-24). On the MV6 Gen 2, the same held for gain and mute, and a button press still
+    showed (tested 2026-10-25). On the MV7+, a gain change from the command line showed
+    within about a second (reported by mike-callahan, 2026-10-27), and so did muting and
+    unmuting with a tap on the touch panel; Mic Level 40 and Playback Level 30 set from the
+    command line read back as such (firmware 1.6.0.1 on Debian, reported by mike-callahan,
+    2026-10-31). The MV7+'s touch panel has no gain slide (checked in MOTIV on macOS, same
+    report); a probe of page 0x01 before and after a swipe differed only in mute
+  - *The gain GET in Auto reads the Manual gain, not a moving auto gain.* On the MVX2U
+    Gen 2, switching to Auto, talking, then back to Manual and pressing → raised the gain
+    1 dB from its Manual value (tested 2026-10-28); the same on the MV6 Gen 2 (tested
+    2026-10-31). On the MV7+, `--json` in Auto after talking read the Manual 20 dB (firmware
+    1.6.0.1, reported by mike-callahan, 2026-10-31)
+  - *A gain SET in Auto is kept as the Manual gain.* On the MVX2U Gen 2, a preset saved in
+    Auto at 40 dB, loaded in Auto over a Manual gain of 25 dB, left 40 dB after a switch to
+    Manual (tested 2026-10-31), and the same on the MV6 Gen 2 (tested 2026-10-31).
+    Unconfirmed on the MVX2U Gen 1, MV6 and MV7+
+  - *Unconfirmed elsewhere:* whether the MVX2U Gen 1 and MV6 report a press, whether their
+    GETs reflect changes made elsewhere, whether the gain GET in Auto reads the Manual gain
+    on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a mode change), and whether
+    the MV7 answers each line within the poll's 200 ms
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
 
 ## Original MV7: text shell, not binary packets

@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/presets.rs"
+  - "src/main.rs"
 ---
 
 # Presets
@@ -40,7 +41,7 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
   and get band gains alone
 - **New fields** need `#[serde(default)]`, and `apply_to_device_state()` must keep the
   current value when the field is missing. Older files otherwise zero it on load (Playback
-  Mix 0 = not saved, 73476a4)
+  Mix 0 = not saved, 73476a4, 2.9.1)
 - **Monitor Mix** is a balance on the MVX2U Gen 1 and MV7 but the Mic Level elsewhere.
   `monitor_mix_is_mic_level` records which (`from_device_state()` takes the model), and
   `apply_preset_to_state()` skips a Monitor Mix of the other kind, without writing it.
