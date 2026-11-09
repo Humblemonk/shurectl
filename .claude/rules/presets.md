@@ -2,6 +2,8 @@
 paths:
   - "src/presets.rs"
   - "src/main.rs"
+  - "src/device.rs"
+  - "src/ui.rs"
 ---
 
 # Presets

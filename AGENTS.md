@@ -22,11 +22,10 @@ cargo run -- --list             # list connected devices
 scripts/check.sh                # verification gate; CI runs the same script
 ```
 
-Run `scripts/check.sh` before calling any change complete. It runs clippy and
-`cargo build`, both `--all-targets --features probe,qa`, then `cargo fmt --check`,
-`cargo test` and the end-to-end scenarios, and any warning fails it, test code included.
-Change the gate in the script, not in docs or CI. Without `--features probe,qa`, clippy
-skips `shurectl-probe` and the `--qa` harness.
+Run `scripts/check.sh` before calling any change complete. It runs clippy and `cargo build`
+with `--all-targets --features probe,qa` (without them clippy skips `shurectl-probe` and
+the `--qa` harness), then `cargo fmt --check`, `cargo test` and the end-to-end scenarios;
+any warning fails it, test code included. Change the gate in the script, not in docs or CI.
 
 - CI also runs jscpd (budget 3% in `.github/linters/.jscpd.json`, 1.6% on 2026-11-09):
   `npx jscpd -c .github/linters/.jscpd.json .`. Fix duplication by extending a shared
@@ -262,6 +261,9 @@ rather than promoting a lower one.
 - A read confirmed only on a device's current firmware being required: shurectl supports only
   the latest firmware Shure ships (maintainer decision 2026-10-27), so "may fail on older
   firmware" isn't a finding. The MV7+ Mute Button's pre-1.4.0 handling (2.14.0) predates this
+- `_` arms beside a model name in `focus_next()` and `focus_prev()`, and their final
+  `_ => self.focus`: a model they miss gets a wrong focus order, which `--demo` shows at
+  once. A new model sets them by hand (new-device steps in `CONTRIBUTING.md`)
 
 ## Workflow
 
@@ -273,16 +275,14 @@ rather than promoting a lower one.
   ("probed 2026-10-12 on the MV6 Gen 2"). Without evidence it says "unconfirmed". An
   explanation that fits a result is not evidence: "the MV6 answers its Mic Level only after
   a SET" explained a probe bug and was repeated for six months (0c3a0de, 2.13.2).
-- The maintainer tests on an MV6 Gen 2 and an MVX2U Gen 2 (as of 2026-10-16). For a change
-  tests can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device steps
-  with the expected result for those two. Say plainly when a change can only be checked on
-  another model; evidence from those comes from owners running `shurectl-probe`.
+- The maintainer tests on an MV6 Gen 2 and an MVX2U Gen 2 (as of 2026-10-16). For what tests
+  can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device steps with
+  the expected result. Say when only another model can check it (owners run `shurectl-probe`).
 - Commit messages follow **Commits** in `CONTRIBUTING.md`: a plain imperative subject saying
   what changes for the user, with no type prefix. The commit or PR body says why and names
   the models affected, always so for an unavoidable cross-model UI divergence.
-- `doc/CHANGELOG.md` lists only changes users can see or feel. Draft an entry under the next
-  version's heading (`## 2.17.1 — YYYY-MM-DD`), never under "Unreleased"; ask for the
-  version when `Cargo.toml` isn't already past the newest heading.
+- `doc/CHANGELOG.md` lists only changes users can see or feel. Draft under the next version's
+  heading (`## x.y.z — YYYY-MM-DD`), not "Unreleased"; ask for it unless `Cargo.toml` has it.
 - Review a change that touches device writes, readback, presets or a release in a session
   that didn't write it: give it the diff, the intent and the hardware results, not the
   author's conclusions about whether the code is right. Pick the `/code-review` level (other
