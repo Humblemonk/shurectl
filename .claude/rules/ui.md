@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/ui.rs"
+  - "src/app.rs"
 ---
 
 # UI look
@@ -57,8 +58,38 @@ in the header. `every_screen_fits_the_min_size` checks the demo states with empt
 compares sets of words, so a word cut in one place passes if it shows elsewhere. Dynamics
 cards go through `draw_card_grid()`, which wraps them onto more rows rather than clip a title.
 
+**Shared across all models** unless the hardware makes it impossible (the rule, its intended
+differences and Hiding vs. locking are under Cross-Device UI Consistency in `AGENTS.md`):
+
+- **Tab set and order**: `Tab::ALL` is the source of truth. Models filter it, never reorder it
+- **Keybindings**: Tab/Shift-Tab cycles tabs, ↑/↓ moves focus, ←/→ adjusts, Enter/Space
+  toggles, `?` help. No key only one model responds to. A readme shortcut that works on
+  some devices only says which
+- **Focus traversal**: mode → mute → gain → gain lock → gain check (the Level meter) →
+  monitor mix → playback level → device extras. The three gain entries are Manual only; in
+  Auto the model's Auto Level controls take their place. Models skip entries they lack; they
+  don't reorder them because it "reads better" there
+- **Summary**: the Main tab's Summary is one ordered `SummaryRow` list; a model picks its
+  rows in `summary_rows()` but can't reorder them
+- **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
+  everywhere. dB values, percentages, and enum names render through the same code path
+- **Status and error wording**: same phrasing for the same condition on every model
+
+**Before adding anything model-specific, in order:**
+
+1. Do other models have this capability under a different vendor name? Use the existing
+   shurectl name and control. Vendor naming stops at `protocol.rs` and `src/protocol/`.
+2. Can an existing shared helper render it? Extend the helper (see Shared drawing helpers
+   below).
+3. A per-model `draw_*` fork, if genuinely required, keeps its siblings' block order,
+   borders and spacing; don't start it by copying one and tweaking strings.
+4. Update every `DeviceModel` match (`reset_focus_for_tab()`, `focus_next()`, `focus_prev()`,
+   the `draw_main_left_*` variants, `summary_rows()`, `draw_info_tab()`, preset
+   serialization), then check `--demo` on all six models.
+
 **Shared drawing helpers.** A control that exists on more than one model is drawn through
-one of these; extend it with a parameter rather than forking a near-copy:
+one of these; extend it with a parameter rather than forking a near-copy, and pass behaviour
+in rather than hardcoding a model name in it:
 `draw_mode_mute_row()` (`draw_mode_block()`, `draw_mute_block()`), `draw_gain_gauge()`,
 `draw_monitor_mix_gauge()`, `draw_gain_lock_block()`, `draw_config_lock_block()`,
 `draw_phantom_block()`, `draw_auto_controls()`, `segmented_span()`, `draw_main_shared()`;

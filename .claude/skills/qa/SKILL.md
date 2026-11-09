@@ -80,7 +80,8 @@ In demo mode the packet keys are skipped, not failed.
 
 ## A QA pass
 
-Read **Cross-Device UI Consistency** in `AGENTS.md` first. Then, for every model:
+Read **Cross-Device UI Consistency** in `AGENTS.md` and **Shared across all models** in
+`.claude/rules/ui.md` first. Then, for every model:
 
 1. Walk every tab with Tab and BackTab, and every focus with Up/Down (`focus_ring`).
 2. On each focus, press Left, Right and Enter, and check the status message, the

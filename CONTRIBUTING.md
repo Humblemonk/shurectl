@@ -28,9 +28,9 @@ ship.
 ## Project rules
 
 `AGENTS.md` is the authoritative guide to the architecture, layering rules, cross-device UI
-rules, coding standards and the checklist for adding a command. File-specific detail (HID
-packet format, meter, presets, UI palette) lives in `.claude/rules/`. Read them before a
-non-trivial change.
+rules and coding standards. File-specific detail (HID packet format and the checklist for
+adding a command, meter, presets, UI palette and what every model shares) lives in
+`.claude/rules/`. Read them before a non-trivial change.
 
 If you use an AI coding assistant, make sure it loads them too:
 
@@ -72,7 +72,7 @@ The module doc comment in `src/bin/probe.rs` explains the packet classes and kno
 1. Capture USB traffic with usbmon/Wireshark against ShurePlus MOTIV
 2. Run the probe against the device to enumerate responding feature addresses
 3. Cross-reference captures with probe output to confirm address → feature mappings
-4. Implement each command as in **Adding a New Command** in `AGENTS.md`
+4. Implement each command as in **Adding a new command** in `.claude/rules/protocol.md`
 5. Add newly confirmed addresses to `KNOWN_FEATURES` in `src/bin/probe.rs`
 
 When protocol behaviour is uncertain, capture first. Don't guess.
