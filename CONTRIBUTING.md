@@ -74,7 +74,8 @@ The module doc comment in `src/bin/probe.rs` explains the packet classes and kno
 3. Cross-reference captures with probe output to confirm address → feature mappings
 4. Add a `DeviceModel` variant in `src/protocol.rs` and decide every match the compiler
    then lists. `focus_next()` and `focus_prev()` in `src/app.rs` still compile, as they end
-   in `_` arms, so give the model its focus order there by hand and walk it in `--demo`
+   in `_` arms, so give the model its focus order there by hand, in the order under
+   **Focus traversal** in `.claude/rules/ui.md`, and walk it in `--demo`
 5. Implement each command as in **Adding a new command** in `.claude/rules/protocol.md`
 6. Add newly confirmed addresses to `KNOWN_FEATURES` in `src/bin/probe.rs`
 
