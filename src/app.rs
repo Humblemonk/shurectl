@@ -330,23 +330,24 @@ impl App {
     /// everywhere but the MV7+, LED on models without LED settings). Hidden tabs
     /// are left out of the tab bar entirely.
     pub fn is_tab_hidden(&self, tab: Tab) -> bool {
-        matches!(
-            (tab, self.device_model),
-            (
-                Tab::Reverb,
-                DeviceModel::Mv6
-                    | DeviceModel::Mv6Gen2
-                    | DeviceModel::Mvx2u
-                    | DeviceModel::Mvx2uGen2
-                    | DeviceModel::Mv7
-            ) | (
-                Tab::Led,
-                DeviceModel::Mv6
-                    | DeviceModel::Mv6Gen2
-                    | DeviceModel::Mvx2u
-                    | DeviceModel::Mvx2uGen2
-            )
-        )
+        match tab {
+            Tab::Reverb => match self.device_model {
+                DeviceModel::Mv7Plus => false,
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv6Gen2
+                | DeviceModel::Mv7 => true,
+            },
+            Tab::Led => match self.device_model {
+                DeviceModel::Mv7 | DeviceModel::Mv7Plus => false,
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv6Gen2 => true,
+            },
+            Tab::Main | Tab::Eq | Tab::Dynamics | Tab::Presets | Tab::Info => false,
+        }
     }
 
     /// Whether a preset or device name is being typed.
@@ -512,15 +513,19 @@ impl App {
     /// MVX2U Gen 2 and the MV6s: EQ and Dynamics are always accessible regardless of mode.
     /// Hidden tabs count as locked so tab cycling skips them.
     pub fn is_tab_locked(&self, tab: Tab) -> bool {
+        let locked_in_auto = match self.device_model {
+            DeviceModel::Mvx2u | DeviceModel::Mv7 => true,
+            DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => false,
+        };
+        let auto_managed = match tab {
+            Tab::Eq | Tab::Dynamics => true,
+            Tab::Main | Tab::Reverb | Tab::Led | Tab::Presets | Tab::Info => false,
+        };
         self.is_tab_hidden(tab)
-            || matches!(
-                (tab, self.device_model, self.device_state.mode),
-                (
-                    Tab::Eq | Tab::Dynamics,
-                    DeviceModel::Mvx2u | DeviceModel::Mv7,
-                    InputMode::Auto
-                )
-            )
+            || (auto_managed && locked_in_auto && self.device_state.mode == InputMode::Auto)
     }
 
     /// Select a visible, available tab (shared by keyboard and mouse navigation).
@@ -595,7 +600,15 @@ impl App {
             },
             (Tab::Reverb, _) => Focus::ReverbOutput,
             (Tab::Led, DeviceModel::Mv7) => Focus::LedLiveMeter,
-            (Tab::Led, _) => Focus::LedBehavior,
+            // The models without LED settings never show the tab (`is_tab_hidden()`).
+            (
+                Tab::Led,
+                DeviceModel::Mv7Plus
+                | DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv6Gen2,
+            ) => Focus::LedBehavior,
             (Tab::Presets, _) => Focus::PresetName(0),
             (Tab::Info, model) if model.has_device_rename() => Focus::DeviceName,
             (Tab::Info, _) => Focus::FactoryReset,
