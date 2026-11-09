@@ -263,7 +263,7 @@ rather than promoting a lower one.
   firmware" isn't a finding. The MV7+ Mute Button's pre-1.4.0 handling (2.14.0) predates this
 - `_` arms beside a model name in `focus_next()` and `focus_prev()`, and their final
   `_ => self.focus`: a model they miss gets a wrong focus order, which `--demo` shows at
-  once. A new model updates them anyway (`.claude/rules/ui.md`)
+  once. A new model sets them by hand (new-device steps in `CONTRIBUTING.md`)
 
 ## Workflow
 
