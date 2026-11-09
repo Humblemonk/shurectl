@@ -19,7 +19,25 @@
 //!   each block into pages 0x1xx and 0x2xx by itself, so only the base ID is written.
 //!
 //! Confirmed against firmware 0.0.52.0 (package 1.2.19) by probing the shell and
-//! against the command strings MOTIV Mix sends. The Limiter block (`1F`) is not:
+//! against the command strings MOTIV Mix sends.
+//!
+//! # Clone-class firmware
+//!
+//! Some third-party mics report the MV7+ product name on the MV7's USB ID and
+//! run an MV7-class shell (probed 2026-11-09: `fwVersion=0.0.52.0`,
+//! `pkgVersion=1.2.19`, `iProduct="Shure MV7+"`). It has two parsing
+//! differences, both worked around here so the same commands suit stock and
+//! clone firmware:
+//!
+//! - `dspMode` reads `0` where stock firmware reports `1` (Manual), and it
+//!   parses only the first character of a mode number, so `02` sets 0. This
+//!   module reads 0 as Manual and sends the number unpadded; the stock shell
+//!   accepts either form.
+//! - `inputGain` only parses a value with a decimal point and silently ignores
+//!   `24`. Every gain is sent with one decimal place; the stock shell already
+//!   parses decimal gains for its 1.5 dB steps.
+//!
+//! The Limiter block (`1F`) is not:
 //! its ID and values come from Shure's `DSP-Settings-MV7.xml` and the block table
 //! decoded by schlarpc/shure-mv7-firmware-re, and nobody has read or written it
 //! on an MV7 (unconfirmed). Toggling MOTIV's limiter changed no block shurectl
@@ -209,19 +227,21 @@ pub fn snap_gain(gain_tenths: u16) -> u16 {
 
 pub fn set_gain(gain_tenths: u16) -> TextCommand {
     let snapped = snap_gain(gain_tenths);
-    let value = match snapped % 10 {
-        0 => (snapped / 10).to_string(),
-        tenths => format!("{}.{tenths}", snapped / 10),
-    };
+    // Always one decimal place. A clone-class MV7 shell parses only values
+    // with a decimal point and silently ignores "24" (probe 2026-11-09); the
+    // stock shell already parses decimal gains for its 1.5 dB steps.
+    let value = format!("{}.{}", snapped / 10, snapped % 10);
     TextCommand::named(INPUT_GAIN, Some(&value))
 }
 
 /// Mode, mic position and tone are one setting on the MV7, so every change to
 /// any of them sends all three.
 pub fn set_dsp_mode(mode: InputMode, position: MicPosition, tone: AutoTone) -> TextCommand {
-    // MOTIV zero-pads the mode number; the shell accepts it either way.
+    // MOTIV zero-pads the mode number and the stock MV7 accepts either form,
+    // but a clone-class shell parses only the first character: "02" sets 0
+    // (probe 2026-11-09). Send it unpadded, which both forms accept.
     let number = dsp_mode_number(mode, position, tone);
-    TextCommand::named(DSP_MODE, Some(&format!("{number:02}")))
+    TextCommand::named(DSP_MODE, Some(&number.to_string()))
 }
 
 pub fn set_lock(locked: bool) -> TextCommand {
@@ -337,7 +357,11 @@ fn dsp_mode_number(mode: InputMode, position: MicPosition, tone: AutoTone) -> u8
 }
 
 fn apply_dsp_mode(number: u8, state: &mut DeviceState) -> bool {
-    if number == DSP_MODE_MANUAL {
+    // 0 is outside the stock MV7's documented 1..=7 range, but a clone-class
+    // shell reports it (probe 2026-11-09) and its DSP treats it like Manual:
+    // the mode-preset block 34 reads Off for both 0 and 1. Reading it as
+    // Manual keeps the startup readback working; Manual always writes as 1.
+    if number == 0 || number == DSP_MODE_MANUAL {
         state.mode = InputMode::Manual;
         return true;
     }
@@ -773,8 +797,13 @@ mod tests {
         }
     }
 
+    /// The exact lines the shell is sent. MOTIV zero-pads the mode number and
+    /// writes whole-dB gains without a decimal, but the stock shell accepts
+    /// both forms while a clone-class shell parses only the first mode
+    /// character and only gains with a decimal point (probe 2026-11-09), so
+    /// the clone-safe form is what goes on the wire.
     #[test]
-    fn set_lines_match_what_motiv_sends() {
+    fn set_lines_are_the_clone_safe_forms_of_what_motiv_sends() {
         assert_eq!(set_mute(false).line, "micMute off");
         assert_eq!(set_lock(true).line, "lock on");
         assert_eq!(set_live_meter(false).line, "meterMode off");
@@ -791,11 +820,11 @@ mod tests {
         assert_eq!(set_eq(EqPreset::PresenceBoost).line, "setBlock 31 00000002");
         assert_eq!(
             set_dsp_mode(InputMode::Manual, MicPosition::Far, AutoTone::Bright).line,
-            "dspMode 01"
+            "dspMode 1"
         );
         assert_eq!(
             set_dsp_mode(InputMode::Auto, MicPosition::Far, AutoTone::Dark).line,
-            "dspMode 06"
+            "dspMode 6"
         );
     }
 
@@ -830,17 +859,19 @@ mod tests {
     #[test]
     fn set_gain_snaps_down_to_the_hardware_grid() {
         // Observed on the device: 25 → 24, 20 → 19.5, 10 → 9, 35.5 → 34.5.
-        assert_eq!(set_gain(250).line, "inputGain 24");
+        // Every value carries one decimal place, which the stock shell accepts
+        // and a clone-class shell requires (it ignores "24"; probe 2026-11-09).
+        assert_eq!(set_gain(250).line, "inputGain 24.0");
         assert_eq!(set_gain(200).line, "inputGain 19.5");
-        assert_eq!(set_gain(100).line, "inputGain 9");
+        assert_eq!(set_gain(100).line, "inputGain 9.0");
         assert_eq!(set_gain(355).line, "inputGain 34.5");
         assert_eq!(set_gain(285).line, "inputGain 28.5");
-        assert_eq!(set_gain(0).line, "inputGain 0");
+        assert_eq!(set_gain(0).line, "inputGain 0.0");
     }
 
     #[test]
     fn set_gain_clamps_to_36_db() {
-        assert_eq!(set_gain(600).line, "inputGain 36");
+        assert_eq!(set_gain(600).line, "inputGain 36.0");
         assert_eq!(snap_gain(u16::MAX), 360);
     }
 
@@ -945,10 +976,26 @@ mod tests {
     #[test]
     fn dsp_mode_rejects_out_of_range_values() {
         let mut state = DeviceState::default();
-        for reply in ["dspMode=0", "dspMode=8", "dspMode=x"] {
+        for reply in ["dspMode=8", "dspMode=x", "dspMode="] {
             assert!(!apply_reply(reply, &mut state), "{reply}");
         }
         assert_eq!(state, DeviceState::default());
+    }
+
+    /// A clone-class MV7 shell reports `dspMode=0` (probe 2026-11-09), outside
+    /// the stock shell's documented 1..=7. Its DSP mode-preset block reads Off
+    /// for 0, as for 1, so 0 is Manual. Reading it as anything else fails the
+    /// whole startup readback on such a device.
+    #[test]
+    fn dsp_mode_zero_reads_as_manual() {
+        let mut state = DeviceState::default();
+        assert!(apply_reply("dspMode=0", &mut state));
+        assert_eq!(state.mode, InputMode::Manual);
+        // Manual writes as 1, so a Manual mic never gets a 0 written back.
+        assert_eq!(
+            set_dsp_mode(InputMode::Manual, MicPosition::Near, AutoTone::Natural).line,
+            "dspMode 1"
+        );
     }
 
     #[test]

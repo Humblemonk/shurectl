@@ -10,7 +10,7 @@
 {"key": "s"}
 {"click_on": "Main"}
 {"key": "Right"}
-{"expect": {"focus": "Gain", "text_sent": "inputGain 27", "state": {"gain_tenths": 270}}}
+{"expect": {"focus": "Gain", "text_sent": "inputGain 27.0", "state": {"gain_tenths": 270}}}
 {"click_on": "Presets"}
 {"key": "Down"}
 {"key": "Enter"}
@@ -20,4 +20,4 @@
 {"click_on": "Main"}
 {"click_on": "Mode:"}
 {"key": "Enter"}
-{"expect": {"text_sent": "dspMode 02", "state": {"mode": "Auto"}, "status": "Mode → Auto Level", "status_is_error": false}}
+{"expect": {"text_sent": "dspMode 2", "state": {"mode": "Auto"}, "status": "Mode → Auto Level", "status_is_error": false}}

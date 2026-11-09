@@ -128,6 +128,14 @@ and the binary `send_set()`/`send_get_past_strays()` refuse to run on the MV7.
 - MOTIV and shurectl share one command channel, and shurectl's live poll sends `micMute`,
   `dspMode`, the gain and the Monitor Mix block every second (stopping after `micMute` when
   it goes unanswered). Quit MOTIV before testing against the MV7
+- Clone-class firmware (probed 2026-11-09 on an Alibaba MV7+ clone: PID `0x1012`,
+  `iProduct="Shure MV7+"`, `fwVersion=0.0.52.0`, `pkgVersion=1.2.19`) speaks the same shell
+  with two parsing differences. `dspMode` reads `0` for Manual and parses only the first
+  character of a mode number (`02` sets 0), so `set_dsp_mode()` sends it unpadded and
+  `apply_dsp_mode()` reads 0 as Manual. `inputGain` only parses values with a decimal point
+  and ignores `24`, so `set_gain()` always sends one. The stock shell accepts both forms. Its
+  `setBlock` echoes only 19, 1F, 22 and 31 (the blocks MOTIV's MV7 UI uses); blocks 02, 03,
+  21, 32, 33, 34 and 99 read back but are not writable, so don't add controls for them
 
 ## Debugging on real hardware
 
