@@ -63,8 +63,10 @@ CRC-16/ANSI covers 0x11 up to the CRC
   (byte 6 = `2d`, byte 8 = `00`; payload `00 00 01`, 16 bytes from MOTIV, then the mic's
   `00 10` value), which the mic doesn't answer. In every session's capture (mike-callahan,
   2026-10-31). shurectl works without it; don't send it
-- **Live poll per model** (the design is under Live poll in `AGENTS.md`): the binary models
-  drain queued input before each poll. In Auto a gain change is kept but not announced.
+- **Live poll per model** (the design is under Live poll in `AGENTS.md`): each value is one
+  GET, kept only when `answers_at_its_address()`, or one text line on the MV7. The binary
+  models drain queued input before each poll. While the other settings are unread the poll
+  still runs, announcing only mute. In Auto a gain change is kept but not announced.
   After any mode switch the MV7 re-reads everything; after a switch to Manual the MVX2U
   Gen 1 and MV6, whose gain read in Auto is unconfirmed, re-read the gain
   (`resync_after_mode()`). On the MV7 an unanswered `micMute` skips the poll's other lines.
@@ -96,6 +98,31 @@ CRC-16/ANSI covers 0x11 up to the CRC
     on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a mode change), and whether
     the MV7 answers each line within the poll's 200 ms
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
+
+## Adding a new command
+
+In order, without skipping steps:
+
+1. `protocol.rs`: `FEAT_*` constant, `cmd_get_*`/`cmd_set_*` constructors, an
+   `apply_response()` branch decoding into `DeviceState`, and one roundtrip test (see
+   **Testing** in `AGENTS.md`)
+2. `device.rs`: typed `get_*`/`set_*` methods on `ShureDevice`. If it's part of full
+   readback, add the getter to the `getters` slice in the `get_state_*()` function of every
+   model that supports it, and its UI name to `GET_LABELS` in `protocol.rs`
+   (`every_readback_query_names_its_setting` fails until you do)
+3. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it
+   (`get_state_reads_back_the_seeded_state_on_every_model` fails until you do)
+4. `app.rs`: `DeviceAction` variant if user-triggerable, wired into `adjust_focused()` or
+   `toggle_focused()`, and listed in `App::offers()`; `main.rs`: handle it in
+   `apply_action()`. It gets no command-line flag: see **Command line** in `AGENTS.md`
+5. `ui.rs`: UI element if needed, following **Cross-Device UI Consistency** in `AGENTS.md`
+   and `.claude/rules/ui.md`
+6. `presets.rs`: if it's a DSP setting, add it to `PresetSlot`, `from_device_state()` and
+   `apply_to_device_state()` (see the **New `PresetSlot` field** trap under Review in
+   `AGENTS.md`)
+7. `README.md`: a row in the collapsed Device support table, with the models that have it,
+   and the key table if a shortcut changed. Keep the top of the readme for install and first
+   run; don't add sections there
 
 ## Original MV7: text shell, not binary packets
 

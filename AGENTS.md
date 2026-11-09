@@ -7,11 +7,12 @@ Single-crate Rust binary. Prefer the simple, obvious solution over clever abstra
 
 File-specific detail lives in `.claude/rules/`. Read the matching file before editing:
 `protocol.md` for `protocol.rs`/`src/protocol/`/`device.rs`/`probe.rs` (HID packet format,
-usbmon debugging), `meter.md` for `meter.rs` and the meter code in `main.rs`, `presets.md`
-for `presets.rs` and the preset load wherever it lives (`apply_binary_preset()` in `main.rs`,
-`load_mv7_preset()` in `device.rs`, the load box in `ui.rs`), `ui.md` for `ui.rs` (MOTIV Mix
-palette and controls). Claude Code loads these only when a matching file is read, so
-anything a reviewer must know from a diff alone belongs in **Review** below.
+the checklist for adding a command, usbmon debugging), `meter.md` for `meter.rs` and the
+meter code in `main.rs`, `presets.md` for `presets.rs` and the preset load wherever it lives
+(`apply_binary_preset()` in `main.rs`, `load_mv7_preset()` in `device.rs`, the load box in
+`ui.rs`), `ui.md` for `ui.rs` and `app.rs` (MOTIV Mix palette, controls, what every model
+shares). Claude Code loads these only when a matching file is read, so anything a reviewer
+must know from a diff alone belongs in **Review** below.
 
 ## Commands
 
@@ -84,57 +85,34 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
 **Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second while
-connected (`read_live()`: one GET each, kept only when `answers_at_its_address()`; one text
-line each on the MV7), so a change made elsewhere shows without `r` and the next arrow key
-steps from the device's value, not a stale one. It only reads: an unusable answer is ignored
-and a `Disconnected` error marks the device disconnected. A mode change re-reads everything,
-and so does `resync_after_mode()` after a mode switch from the TUI or `--mode`, as far as
-the model needs. While the other settings are unread it still runs, announcing only mute. A
-TUI write pushes the next poll back a second (`send_from_tui()`). Per-model exceptions and
-hardware results: `.claude/rules/protocol.md`.
+connected (`read_live()`), so a change made elsewhere shows without `r` and the next arrow
+key steps from the device's value, not a stale one. It only reads: an unusable answer is
+ignored and a `Disconnected` error marks the device disconnected. A mode change it sees
+re-reads everything; a mode switch from the TUI or `--mode` re-reads what the model needs
+(`resync_after_mode()`). A TUI write pushes the next poll back a second (`send_from_tui()`).
+Per-model exceptions and hardware results: `.claude/rules/protocol.md`.
 
 **Mute** is a fixed write (`ActionKind`), allowed before a readback in the TUI and CLI,
 because refusing it would leave the mic live. A mute whose outcome nothing could read back
 shows as OFF, never Muted over a live mic (`recover_from_failure()`).
 
-## Adding a New Command
+**Focus model:** `Tab` is the panel, `Focus` the control in it. `adjust_focused()` (←/→) and
+`toggle_focused()` (Enter/Space) return `Option<DeviceAction>`; `None` is a UI-only change.
+Name editing lives in `main.rs::key_action()`: chars (`q` included) append, Enter commits, Esc
+or a click away cancels.
 
-In order, without skipping steps:
-
-1. `protocol.rs`: `FEAT_*` constant, `cmd_get_*`/`cmd_set_*` constructors, an
-   `apply_response()` branch decoding into `DeviceState`, and one roundtrip test (see
-   **Testing**)
-2. `device.rs`: typed `get_*`/`set_*` methods on `ShureDevice`. If it's part of full
-   readback, add the getter to the `getters` slice in the `get_state_*()` function of every
-   model that supports it, and its UI name to `GET_LABELS` in `protocol.rs`
-   (`every_readback_query_names_its_setting` fails until you do)
-3. `fake_hid.rs`: add the setting to `features()` so the fake stores and answers it
-   (`get_state_reads_back_the_seeded_state_on_every_model` fails until you do)
-4. `app.rs`: `DeviceAction` variant if user-triggerable, wired into `adjust_focused()` or
-   `toggle_focused()`, and listed in `App::offers()`; `main.rs`: handle it in
-   `apply_action()`. It gets no command-line flag: see **Command line**
-5. `ui.rs`: UI element if needed, following **Cross-Device UI Consistency**
-6. `presets.rs`: if it's a DSP setting, add it to `PresetSlot`, `from_device_state()` and
-   `apply_to_device_state()` (see the **New `PresetSlot` field** trap under Review)
-7. `README.md`: a row in the collapsed Device support table, with the models that have it,
-   and the key table if a shortcut changed. Keep the top of the readme for install and first
-   run; don't add sections there
+**Adding a command:** follow the seven-step checklist in `.claude/rules/protocol.md`, in
+order. Two of its steps are enforced by tests that fail until they are done.
 
 ## Command line
 
 The CLI stays small: one-shot commands for scripts, hotkeys and Stream Deck buttons, with no
 long-running modes and no general get/set (maintainer decisions 2026-10-23 and 2026-10-24, after
 #58 and #126). `--json` prints identity, mute and the settings as `PresetSlot` serializes them
-(EQ band gains converted from tenths to dB), so a new setting shows there through step 6 with no
-extra work. Only mute, preset loading, mode, gain, Monitor Mix and Playback Level are written;
+(EQ band gains converted from tenths to dB), so a new preset field shows there with no extra
+work. Only mute, preset loading, mode, gain, Monitor Mix and Playback Level are written;
 don't add another, or a flag that repeats one. Every write goes through `apply_action()` behind
 `App::offers()` (`cli.rs`), so the CLI changes only what the TUI would change right now.
-
-## TUI / Focus Model
-
-`Tab` is the panel, `Focus` the control in it. `adjust_focused()` (←/→) and `toggle_focused()`
-(Enter/Space) return `Option<DeviceAction>`; `None` is a UI-only change. Name editing lives in
-`main.rs::key_action()`: chars (`q` included) append, Enter commits, Esc or a click away cancels.
 
 ## Cross-Device UI Consistency
 
@@ -156,24 +134,9 @@ Intended differences (hardware, not divergence; don't flag them):
 - EQ and Dynamics locked in Auto only on the MVX2U Gen 1 and MV7 (`is_tab_locked()`)
 - Tabs and controls hidden per model, as the readme's Device support table lists
 
-Shared across all models unless the hardware makes it impossible:
-
-- **Tab set and order**: `Tab::ALL` is the source of truth. Models filter it, never reorder it
-- **Keybindings**: Tab/Shift-Tab cycles tabs, ↑/↓ moves focus, ←/→ adjusts, Enter/Space
-  toggles, `?` help. No key only one model responds to. A readme shortcut that works on
-  some devices only says which
-- **Focus traversal**: mode → mute → gain → gain lock → gain check (the Level meter) →
-  monitor mix → playback level → device extras. The three gain entries are Manual only; in
-  Auto the model's Auto Level controls take their place. Models skip entries they lack; they
-  don't reorder them because it "reads better" there
-- **Summary**: the Main tab's Summary is one ordered `SummaryRow` list; a model picks its
-  rows in `summary_rows()` but can't reorder them
-- **Labels, units, formatting**: "Gain", "Monitor Mix", "Denoiser" are spelled the same
-  everywhere. dB values, percentages, and enum names render through the same code path
-- **Drawing helpers** (listed in `.claude/rules/ui.md`): extend a shared helper with a
-  parameter rather than forking a near-copy, and pass behaviour in rather than hardcoding a
-  model name in it
-- **Status and error wording**: same phrasing for the same condition on every model
+What every model shares (tab order, keys, focus traversal, Summary order, labels, drawing
+helpers, status wording) and the steps to take before adding anything model-specific are in
+`.claude/rules/ui.md`. Read it before changing `ui.rs` or `app.rs`.
 
 **Hiding vs. locking** (the convention from `draw_tabs()`, applied to controls too):
 
@@ -182,17 +145,6 @@ Shared across all models unless the hardware makes it impossible:
 - Supported but currently unavailable → show it with 🔒 and a notice (EQ/Dynamics on Gen 1
   in Auto mode, via `draw_tab_locked_notice()`)
 - Never leave a control visible and focusable but inert. It reads as a bug
-
-**Before adding anything model-specific, in order:**
-
-1. Do other models have this capability under a different vendor name? Use the existing
-   shurectl name and control. Vendor naming stops at `protocol.rs` and `src/protocol/`.
-2. Can an existing shared helper render it? Extend the helper (see Drawing helpers above).
-3. A per-model `draw_*` fork, if genuinely required, keeps its siblings' block order,
-   borders and spacing; don't start it by copying one and tweaking strings.
-4. Update every `DeviceModel` match (`reset_focus_for_tab()`, `focus_next()`, `focus_prev()`,
-   the `draw_main_left_*` variants, `summary_rows()`, `draw_info_tab()`, preset
-   serialization), then check `--demo` on all six models.
 
 ## Rust Rules
 
@@ -278,8 +230,7 @@ rather than promoting a lower one.
 - **Model checks**: a wildcard `_` over `DeviceModel` sent the MV6 Gen 2 the wrong EQ
   encoding (a800e26, 2.9.0). See Rust Rules.
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
-  check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f, 2.10.0). Below 80×24 only a notice
-  draws.
+  check heights from 24 (`MIN_SIZE`) up to 50 (bc3bb3f, 2.10.0). Below 80×24 only a notice draws.
 - **Colors** (`.claude/rules/ui.md`): `C_*` constants only, no raw `Color::Rgb` (MV7+ LED
   sliders excepted). Lime only for focus and active states; values stay white. Red and amber
   mean errors and cautions, never decoration. Readable text needs 4.5:1; `C_DISABLED` doesn't.
@@ -326,10 +277,9 @@ rather than promoting a lower one.
   tests can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device steps
   with the expected result for those two. Say plainly when a change can only be checked on
   another model; evidence from those comes from owners running `shurectl-probe`.
-- When a cross-model UI divergence is unavoidable, name the affected models in the commit/PR
-  body.
 - Commit messages follow **Commits** in `CONTRIBUTING.md`: a plain imperative subject saying
-  what changes for the user, with no type prefix; the body says why and names the models.
+  what changes for the user, with no type prefix. The commit or PR body says why and names
+  the models affected, always so for an unavoidable cross-model UI divergence.
 - `doc/CHANGELOG.md` lists only changes users can see or feel. Draft an entry under the next
   version's heading (`## 2.17.1 — YYYY-MM-DD`), never under "Unreleased"; ask for the
   version when `Cargo.toml` isn't already past the newest heading.
