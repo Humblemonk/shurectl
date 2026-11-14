@@ -6,6 +6,10 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.17.1 — 2026-11-14
+
+Dependency updates. No user-facing changes.
+
 ## 2.17.0 — 2026-11-02
 
 With no device connected, shurectl waits for one and opens it when you plug it in, instead
