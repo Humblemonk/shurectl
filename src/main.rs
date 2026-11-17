@@ -209,6 +209,10 @@ fn main() -> Result<()> {
                     d.model.display_name(),
                     serial
                 );
+                if d.not_genuine {
+                    println!("    {}.", device::NOT_GENUINE);
+                    println!("    {}", device::NOT_GENUINE_WHY.join(" "));
+                }
             }
         }
         return Ok(());
@@ -234,12 +238,15 @@ fn main() -> Result<()> {
         } else {
             Vec::new()
         };
+        // A device refused as not genuine doesn't make the user choose.
+        let openable: Vec<_> = found.iter().filter(|found| !found.not_genuine).collect();
         let open_result = if let Some(ref selector) = cli.device {
             ShureDevice::open_selected(selector)
-        } else if let [only] = found.as_slice() {
+        } else if let [only] = openable.as_slice() {
             ShureDevice::open_path(&only.path)
         } else {
             // Several to choose from, or none yet: the picker waits for one.
+            // A device refused as not genuine is listed there, with why.
             let tui = tui.insert(Tui::enter()?);
             match pick_device(&mut tui.terminal, found)? {
                 Some(device) => Ok(device),
@@ -358,7 +365,7 @@ fn list_devices_or_exit() -> Vec<device::DeviceInfo> {
 /// Show the device picker until a device opens, or `None` when the user
 /// quits. Nothing is written: listing reads each device's serial and name,
 /// as `--list` does, and a device that won't open says why and stays listed.
-/// While none is listed, the OS device list is checked every
+/// While none that can be opened is listed, the OS device list is checked every
 /// `PRESENCE_POLL_INTERVAL`, with no HID traffic, and a device found there
 /// is read one poll later, giving it time to boot as a reconnect does
 /// (`poll_step()`). The only device found then opens by itself.
@@ -379,7 +386,9 @@ fn pick_device(
             fits = ui::fits(f.area());
             rows = ui::draw_picker(f, &picker);
         })?;
-        let waiting = picker.rows.is_empty();
+        // Also with only a device refused as not genuine listed, so a
+        // genuine one plugged in instead still opens by itself.
+        let waiting = picker.is_waiting();
         let next_poll =
             (last_poll + PRESENCE_POLL_INTERVAL).saturating_duration_since(Instant::now());
         // Polled when due even while events keep arriving, such as mouse
@@ -390,19 +399,31 @@ fn pick_device(
             // and leave the boot wait as it was.
             match device::list_devices() {
                 Ok(found) => {
-                    // While waiting, only a failed enumeration shows an error;
-                    // this one worked, so go back to "Waiting for…".
-                    if picker.status_is_error {
-                        picker.set_rows(Vec::new());
-                    }
-                    let present = !found.is_empty();
-                    if poll_step(false, present, seen_last_poll) == PollStep::Reconnect {
+                    // Only a device that can be opened gets the boot wait.
+                    let present = found.iter().any(|found| !found.not_genuine);
+                    let step = poll_step(false, present, seen_last_poll);
+                    seen_last_poll = present;
+                    if step == PollStep::Reconnect {
                         scan_into(terminal, &mut picker, found)?;
                         if let Some(device) = open_only_device(terminal, &mut picker)? {
                             return Ok(Some(device));
                         }
+                        continue;
                     }
-                    seen_last_poll = present;
+                    // Refused devices are listed from the OS list alone, so
+                    // one plugged in or unplugged shows at this poll. While
+                    // waiting, only a failed enumeration shows an error; this
+                    // one worked, so go back to the count or "Waiting for…".
+                    let refused: Vec<_> = found
+                        .into_iter()
+                        .filter(|found| found.not_genuine)
+                        .collect();
+                    let listed = picker.rows.iter().map(|row| row.path.as_str());
+                    if picker.status_is_error
+                        || !listed.eq(refused.iter().map(|found| found.path.as_str()))
+                    {
+                        picker.set_rows(picker_rows(refused));
+                    }
                 }
                 Err(e) => picker.set_err(one_line(&e)),
             }
@@ -479,6 +500,10 @@ fn open_picked(
     index: usize,
 ) -> Result<Option<ShureDevice>> {
     let row = &picker.rows[index];
+    if row.not_genuine {
+        picker.set_err(device::NOT_GENUINE);
+        return Ok(None);
+    }
     // Two of one model are told apart by name or serial.
     let which = row
         .name
@@ -522,18 +547,25 @@ fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
         .into_iter()
         .map(|found| {
             let usb_serial = (found.serial != device::UNKNOWN_SERIAL).then_some(found.serial);
-            match ShureDevice::open_path(&found.path) {
+            let opened = if found.not_genuine {
+                Err(device::NOT_GENUINE.to_string())
+            } else {
+                ShureDevice::open_path(&found.path).map_err(|e| one_line(&e))
+            };
+            match opened {
                 Ok(dev) => picker::PickerRow {
                     serial: dev.read_factory_serial().or(usb_serial),
                     name: dev.read_device_name(),
                     problem: None,
+                    not_genuine: false,
                     path: found.path,
                     model: found.model,
                 },
-                Err(e) => picker::PickerRow {
+                Err(problem) => picker::PickerRow {
                     serial: usb_serial,
                     name: None,
-                    problem: Some(one_line(&e)),
+                    problem: Some(problem),
+                    not_genuine: found.not_genuine,
                     path: found.path,
                     model: found.model,
                 },

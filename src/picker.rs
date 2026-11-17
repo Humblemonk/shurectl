@@ -2,6 +2,8 @@
 //! there are several supported devices connected, or none yet. With none it
 //! waits, and `main.rs` opens one plugged in by itself when it is the only
 //! one and it opened cleanly (`only_device()`).
+//! A device refused as not genuine (`device::NOT_GENUINE`) is listed here
+//! too, even alone, so its owner reads why instead of a failed readback.
 //! This is its state and keys; `ui::draw_picker()` draws it, and `main.rs`
 //! opens the device it returns.
 
@@ -19,8 +21,11 @@ pub struct PickerRow {
     /// The user-set device name, on models that have one.
     pub name: Option<String>,
     /// Why the device couldn't be opened to read its labels, such as MOTIV
-    /// holding it. Opening it may still work later.
+    /// holding it. Opening it may still work later, unless it is `not_genuine`.
     pub problem: Option<String>,
+    /// Refused as not genuine (`device::NOT_GENUINE`, also its `problem`):
+    /// it is never opened, and the picker says why under the devices.
+    pub not_genuine: bool,
 }
 
 pub struct Picker {
@@ -59,6 +64,10 @@ impl Picker {
             .rows
             .get(self.selected)
             .and_then(|old| rows.iter().position(|row| row.path == old.path))
+            // A refused device stays selected only while nothing else is
+            // listed, so a device that can be opened shows its own status.
+            .filter(|kept| !rows[*kept].not_genuine)
+            .or_else(|| rows.iter().position(|row| !row.not_genuine))
             .unwrap_or(0);
         self.rows = rows;
         let found = match self.rows.len() {
@@ -73,11 +82,25 @@ impl Picker {
     /// without a problem. `main.rs` asks after a scan that started
     /// with no devices listed, so a mic plugged in while the picker waits
     /// opens by itself, as a single device does at startup.
+    /// Devices refused as not genuine don't count: the user has nothing to
+    /// choose between.
     pub fn only_device(&self) -> Option<usize> {
-        match self.rows.as_slice() {
-            [only] if only.problem.is_none() => Some(0),
+        let mut openable = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.not_genuine);
+        match (openable.next(), openable.next()) {
+            (Some((index, only)), None) if only.problem.is_none() => Some(index),
             _ => None,
         }
+    }
+
+    /// Whether no listed device can be opened: none is listed, or only ones
+    /// refused as not genuine. `main.rs` then keeps watching for one plugged
+    /// in, which opens by itself.
+    pub fn is_waiting(&self) -> bool {
+        self.rows.iter().all(|row| row.not_genuine)
     }
 
     fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
@@ -138,6 +161,7 @@ pub fn sample_rows() -> Vec<PickerRow> {
             serial: Some("3EK26001276".into()),
             name: Some("Podcast mic".into()),
             problem: None,
+            not_genuine: false,
         },
         PickerRow {
             path: "/dev/hidraw5".into(),
@@ -145,6 +169,7 @@ pub fn sample_rows() -> Vec<PickerRow> {
             serial: Some("4FA19000331".into()),
             name: None,
             problem: None,
+            not_genuine: false,
         },
     ]
 }
@@ -224,6 +249,28 @@ mod tests {
         rows[0].problem = Some("Cannot open /dev/hidraw3: device busy".into());
         picker.set_rows(rows);
         assert_eq!(picker.only_device(), None);
+        // A refused device beside it doesn't stop the only real one opening.
+        rows = sample_rows();
+        rows[0].problem = Some("Not genuine".into());
+        rows[0].not_genuine = true;
+        picker.set_rows(rows);
+        assert_eq!(picker.only_device(), Some(1));
+    }
+
+    #[test]
+    fn a_picker_with_only_refused_devices_still_waits() {
+        let mut picker = Picker::new(Vec::new());
+        assert!(picker.is_waiting());
+        let mut rows = sample_rows();
+        rows[0].not_genuine = true;
+        picker.set_rows(rows);
+        assert!(!picker.is_waiting());
+        // The device that can be opened is selected, not the refused one.
+        assert_eq!(picker.selected, 1);
+        let mut rows: Vec<_> = sample_rows().into_iter().take(1).collect();
+        rows[0].not_genuine = true;
+        picker.set_rows(rows);
+        assert!(picker.is_waiting());
     }
 
     #[test]
