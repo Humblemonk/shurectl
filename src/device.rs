@@ -193,7 +193,7 @@ impl HidTransport for HidapiTransport {
     fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
         match same_devices(&api, model, serial).as_slice() {
-            [(info, _)] => open_hid(&api, info, "device")
+            [(info, found)] => open_hid(&api, info, *found, "device")
                 .map_err(|e| anyhow!("{}", e.to_string().replace('\n', " "))),
             [] => Err(Disconnected(format!("{} not found", model.display_name())).into()),
             [_, _, ..] => Err(anyhow!(
@@ -204,9 +204,38 @@ impl HidTransport for HidapiTransport {
     }
 }
 
+/// The status line for a device shurectl refuses as not genuine: the picker's
+/// row status, and the first line of the error from opening one.
+pub const NOT_GENUINE: &str = "Not a genuine Shure device: shurectl won't open it";
+
+/// Why, after [`NOT_GENUINE`]: the picker shows it under the devices.
+pub const NOT_GENUINE_WHY: [&str; 2] = [
+    "It has the Shure MV7's USB ID but calls itself an MV7+. A genuine MV7+ has",
+    "its own USB ID. shurectl works only with genuine Shure hardware.",
+];
+
+/// Whether a device with `model`'s USB ID is not the Shure device it claims
+/// to be, going by the product string in the OS device list. Nothing is sent
+/// to the device. `false` when it reports no product string.
+fn is_not_genuine(info: &hidapi::DeviceInfo, model: DeviceModel) -> bool {
+    info.product_string()
+        .is_some_and(|product| model.contradicted_by_product(product))
+}
+
 /// Open the HID device at `info`'s path, non-blocking. `what` names it in the
-/// error: "device", or the path the user gave with `--device`.
-fn open_hid(api: &HidApi, info: &hidapi::DeviceInfo, what: &str) -> Result<Box<dyn HidTransport>> {
+/// error: "device", or the path the user gave with `--device`. A device that
+/// is not genuine is refused before it is opened: its shell parses commands
+/// differently (`dspMode`, `inputGain`; probed 2026-11-09 by its owner, #139),
+/// so a readback fails and its mode and whole-dB gain writes were ignored.
+fn open_hid(
+    api: &HidApi,
+    info: &hidapi::DeviceInfo,
+    model: DeviceModel,
+    what: &str,
+) -> Result<Box<dyn HidTransport>> {
+    if is_not_genuine(info, model) {
+        return Err(anyhow!("{NOT_GENUINE}.\n{}", NOT_GENUINE_WHY.join(" ")));
+    }
     let path = info.path().to_string_lossy();
     let c_path = std::ffi::CString::new(path.as_ref())
         .map_err(|_| anyhow!("Device path contains a null byte: {path}"))?;
@@ -274,19 +303,31 @@ impl ShureDevice {
 
     /// Open the first (and only) Shure device found on the system.
     ///
-    /// Returns an error if zero or more than one Shure device is detected.
+    /// Returns an error if zero or more than one Shure device is detected,
+    /// not counting one refused as not genuine beside one that isn't.
     /// Use `--device` to select a specific device when multiple are present;
     /// the TUI shows its device picker (`main.rs::pick_device()`) instead.
     pub fn open() -> Result<Self> {
         let api = HidApi::new().context("Failed to initialise hidapi")?;
         let found = shure_devices(&api);
+        // A device refused as not genuine doesn't make the user choose; alone,
+        // it is opened so that the refusal says why.
+        let genuine: Vec<_> = found
+            .iter()
+            .filter(|(info, model)| !is_not_genuine(info, *model))
+            .collect();
+        let candidates = if genuine.is_empty() {
+            found.iter().collect()
+        } else {
+            genuine
+        };
 
-        match found.len() {
+        match candidates.len() {
             0 => Err(anyhow!(
                 "No Shure MVX2U, MVX2U Gen 2, MV6, MV6 Gen 2, MV7, or MV7+ device found.\nHint: {ACCESS_HINT}."
             )),
             1 => {
-                let (info, model) = found[0];
+                let (info, model) = *candidates[0];
                 Self::open_info(&api, info, model)
             }
             n => Err(anyhow!(
@@ -312,7 +353,10 @@ impl ShureDevice {
     }
 
     fn open_info(api: &HidApi, info: &hidapi::DeviceInfo, model: DeviceModel) -> Result<Self> {
-        Ok(Self::with_transport(model, open_hid(api, info, "device")?))
+        Ok(Self::with_transport(
+            model,
+            open_hid(api, info, model, "device")?,
+        ))
     }
 
     /// Open a Shure device at a specific HID device path.
@@ -342,7 +386,10 @@ impl ShureDevice {
             ));
         };
 
-        Ok(Self::with_transport(model, open_hid(&api, info, path)?))
+        Ok(Self::with_transport(
+            model,
+            open_hid(&api, info, model, path)?,
+        ))
     }
 
     /// Open the device `--device` names: a HID path from `--list`, or a
@@ -373,6 +420,9 @@ impl ShureDevice {
         if matches.is_empty() {
             matches = found
                 .iter()
+                // A refused device has no serial to ask for, and its refusal
+                // would hide why another couldn't be opened.
+                .filter(|(info, model)| !is_not_genuine(info, *model))
                 .filter(|(info, model)| match Self::open_info(&api, info, *model) {
                     Ok(dev) => dev
                         .read_factory_serial()
@@ -1614,6 +1664,9 @@ pub struct DeviceInfo {
     pub path: String,
     pub serial: String,
     pub model: DeviceModel,
+    /// Refused as not genuine ([`NOT_GENUINE`]): listed so its owner sees
+    /// why, never opened.
+    pub not_genuine: bool,
 }
 
 /// The model of a HID device if it is a supported Shure device.
@@ -1667,6 +1720,7 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>> {
             path: d.path().to_string_lossy().into_owned(),
             serial: d.serial_number().unwrap_or(UNKNOWN_SERIAL).to_owned(),
             model,
+            not_genuine: is_not_genuine(d, model),
         })
         .collect())
 }

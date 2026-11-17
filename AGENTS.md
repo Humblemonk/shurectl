@@ -50,7 +50,7 @@ src/
   bin/probe.rs  # Maintainer-only HID address sweeper, built only under `--features probe`
   firmware.rs   # Info tab firmware check: background lookup in Shure's online archive
   gain_check.rs # Level meter's Enter or `g`: listens, suggests a gain in a card; never writes
-  picker.rs     # Startup device picker state and keys: several devices connected, or waiting for one
+  picker.rs     # Startup device picker state and keys: several devices connected, waiting for one, or one refused
   fake_hid.rs   # Fake device behind device.rs's HidTransport (tests and `--features qa` only)
   harness.rs    # `--qa` JSON-lines driver over the real event loop step (tests and qa only)
 tests/
@@ -275,7 +275,7 @@ rather than promoting a lower one.
   ("probed 2026-10-12 on the MV6 Gen 2"). Without evidence it says "unconfirmed". An
   explanation that fits a result is not evidence: "the MV6 answers its Mic Level only after
   a SET" explained a probe bug and was repeated for six months (0c3a0de, 2.13.2).
-- The maintainer tests on an MV6 Gen 2 and an MVX2U Gen 2 (as of 2026-10-16). For what tests
+- The maintainer tests on an MVX2U Gen 2 only (as of 2026-11-16; the MV6 Gen 2 is gone). For what tests
   can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device steps with
   the expected result. Say when only another model can check it (owners run `shurectl-probe`).
 - Commit messages follow **Commits** in `CONTRIBUTING.md`: a plain imperative subject saying

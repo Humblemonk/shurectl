@@ -246,6 +246,23 @@ impl DeviceModel {
         }
     }
 
+    /// Whether a USB product string names a different Shure product than this
+    /// model's product ID does, which no genuine device does. One pair is
+    /// known: a counterfeit "Shure MV7+" on the original MV7's product ID,
+    /// where a genuine MV7+ has its own (probed 2026-11-09 by its owner, #139).
+    /// What a genuine device of each model reports is unconfirmed, so nothing
+    /// else is compared; a wrong guess would lock out a genuine device.
+    pub fn contradicted_by_product(self, product: &str) -> bool {
+        match self {
+            DeviceModel::Mv7 => product.to_ascii_uppercase().contains("MV7+"),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => false,
+        }
+    }
+
     /// Maximum manual gain in tenths of a dB for this device.
     pub fn max_gain_tenths(&self) -> u16 {
         match self {
@@ -4023,6 +4040,22 @@ mod tests {
         assert_eq!(DeviceModel::from_pid(0x1012), Some(DeviceModel::Mv7));
         assert_eq!(DeviceModel::from_pid(0x1019), Some(DeviceModel::Mv7Plus));
         assert_eq!(DeviceModel::from_pid(0x0000), None);
+    }
+
+    /// The one contradiction known (#139): the MV7's product ID with the
+    /// MV7+'s name. No other model is refused whatever it calls itself.
+    #[test]
+    fn only_an_mv7_calling_itself_an_mv7_plus_contradicts_its_product() {
+        assert!(DeviceModel::Mv7.contradicted_by_product("Shure MV7+"));
+        assert!(DeviceModel::Mv7.contradicted_by_product("shure mv7+"));
+        assert!(!DeviceModel::Mv7.contradicted_by_product("Shure MV7"));
+        assert!(!DeviceModel::Mv7.contradicted_by_product(""));
+        for pid in [PID, MVX2U_GEN2_PID, MV6_PID, MV6_GEN2_PID, MV7_PLUS_PID] {
+            let model = DeviceModel::from_pid(pid).expect("a supported product ID");
+            for product in ["Shure MV7+", "Shure MV7", "Shure MV6", "Anything"] {
+                assert!(!model.contradicted_by_product(product), "{model:?}");
+            }
+        }
     }
 
     // ── MV6 gain lock ─────────────────────────────────────────────────────────

@@ -3483,7 +3483,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
 // Device picker
 // ─────────────────────────────────────────────────────────────────────────────
 /// The device picker (`picker.rs`), shown before the main screen when several
-/// devices are connected: one bordered row per device, the selected one in
+/// devices are connected, none is, or one is refused: one bordered row per device, the selected one in
 /// the focus border, and how to skip the picker next time. Returns each drawn
 /// row's area with its index in `picker.rows`, for clicks.
 pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
@@ -3510,6 +3510,8 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
         Span::styled(
             if picker.rows.is_empty() {
                 "  Waiting for a device"
+            } else if picker.is_waiting() {
+                "  No device shurectl can open"
             } else {
                 "  Choose a device to open"
             },
@@ -3527,9 +3529,11 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     let fit = usize::from((body.height.saturating_sub(2) / 3).max(1));
     let first = (picker.selected + 1).saturating_sub(fit);
     // The name column, or "Can't open" for a device that wouldn't open (it
-    // has no name then); the reason shows in the status bar when selected.
+    // has no name then) and "Not genuine" for one shurectl refuses; the
+    // reason shows in the status bar when selected.
     fn middle(row: &PickerRow) -> (&str, Color) {
         match (&row.problem, row.name.as_deref()) {
+            _ if row.not_genuine => ("Not genuine", C_WARN),
             (Some(_), _) => ("Can't open", C_WARN),
             (None, name) => (name.unwrap_or_default(), C_TEXT),
         }
@@ -3566,11 +3570,14 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     }
 
     let shown = areas.len() as u16;
-    if let Some(serial) = picker
-        .rows
-        .get(picker.selected)
-        .and_then(|row| row.serial.as_deref())
-    {
+    let selected = picker.rows.get(picker.selected);
+    if selected.is_some_and(|row| row.not_genuine) {
+        // In place of the tip, which would skip the picker to a refusal.
+        for (offset, why) in (3 * shown + 1..).zip(crate::device::NOT_GENUINE_WHY) {
+            let line = Line::styled(format!(" {why}"), Style::default().fg(C_TEXT));
+            f.render_widget(Paragraph::new(line), text_row(body, offset));
+        }
+    } else if let Some(serial) = selected.and_then(|row| row.serial.as_deref()) {
         let tip = Line::from(vec![
             Span::styled(" Skip this next time: ", Style::default().fg(C_DIM)),
             Span::styled(
@@ -3614,7 +3621,8 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
         status_bar(
             msg,
             color,
-            if picker.rows.is_empty() {
+            // Nothing listed can be opened, so Enter isn't offered.
+            if picker.is_waiting() {
                 (" [r] Rescan  [q] Quit", " [q] Quit", C_DIM)
             } else {
                 (
@@ -4758,7 +4766,8 @@ mod tests {
     }
 
     /// The device picker's screens: two devices, either one selected; one
-    /// that couldn't be opened, with the longest name; and none.
+    /// that couldn't be opened, with the longest name; one refused as not
+    /// genuine; and none.
     fn picker_screens() -> Vec<(&'static str, Picker)> {
         use crate::picker::{PickerRow, sample_rows};
 
@@ -4772,16 +4781,26 @@ mod tests {
             serial: None,
             name: None,
             problem: Some("Cannot open /dev/hidraw7: device busy".into()),
+            not_genuine: false,
         });
         let mut problem = Picker::new(rows);
         problem.selected = 2;
         let mut refused = Picker::new(sample_rows());
         refused.set_err("Cannot open /dev/hidraw3: device busy");
+        let not_genuine = Picker::new(vec![PickerRow {
+            path: "/dev/hidraw4".into(),
+            model: DeviceModel::Mv7,
+            serial: Some("MV7#1-0123456789abcdef".into()),
+            name: None,
+            problem: Some(crate::device::NOT_GENUINE.into()),
+            not_genuine: true,
+        }]);
         vec![
             ("picker first", Picker::new(sample_rows())),
             ("picker second", second),
             ("picker problem", problem),
             ("picker refused", refused),
+            ("picker not genuine", not_genuine),
             ("picker empty", Picker::new(Vec::new())),
         ]
     }
@@ -4822,7 +4841,13 @@ mod tests {
                     .into();
                 let mut expected = vec![row.model.display_name()];
                 expected.extend(row.name.as_deref());
-                expected.extend(row.problem.as_ref().map(|_| "Can't open"));
+                expected.extend(row.problem.as_ref().map(|_| {
+                    if row.not_genuine {
+                        "Not genuine"
+                    } else {
+                        "Can't open"
+                    }
+                }));
                 expected.push(row.serial.as_deref().unwrap_or("unknown"));
                 for part in expected {
                     assert!(
@@ -4831,11 +4856,13 @@ mod tests {
                     );
                 }
             }
-            if let Some(serial) = picker
-                .rows
-                .get(picker.selected)
-                .and_then(|row| row.serial.as_deref())
-            {
+            let selected = picker.rows.get(picker.selected);
+            if selected.is_some_and(|row| row.not_genuine) {
+                for why in crate::device::NOT_GENUINE_WHY {
+                    assert!(text.contains(why), "{label}: {why:?} missing\n{text}");
+                }
+                assert!(!text.contains("Skip this next time"), "{label}\n{text}");
+            } else if let Some(serial) = selected.and_then(|row| row.serial.as_deref()) {
                 let tip = format!("Skip this next time: shurectl --device {serial}");
                 assert!(text.contains(&tip), "{label}: no tip\n{text}");
             }

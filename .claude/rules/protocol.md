@@ -97,6 +97,14 @@ CRC-16/ANSI covers 0x11 up to the CRC
     GETs reflect changes made elsewhere, whether the gain GET in Auto reads the Manual gain
     on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a mode change), and whether
     the MV7 answers each line within the poll's 200 ms
+- **Counterfeits are refused, not supported** (maintainer decision 2026-11-09, #139).
+  `open_hid()` refuses a device whose product string contradicts its product ID
+  (`DeviceModel::contradicted_by_product()`), from the OS device list, before any HID
+  traffic; `--list` and the picker still show it, with why. One pair is known: PID `0x1012`
+  (the MV7's) with the product string `Shure MV7+` (probed 2026-11-09 by its owner on
+  macOS, #139; its MV7-class shell misparses `dspMode` and `inputGain`). What genuine
+  devices report as their product string is unconfirmed, so don't widen the check to "the
+  string must name the model" without it; a wrong guess locks out a genuine device
 - `hidapi` uses the `linux-native` feature (`/dev/hidrawN` access).
 
 ## Adding a new command

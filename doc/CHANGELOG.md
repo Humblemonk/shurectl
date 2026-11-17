@@ -6,6 +6,14 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.18.0 — 2026-11-16
+
+### Changed
+
+- A counterfeit "MV7+" that uses the original MV7's USB ID is no longer opened. shurectl
+  lists it on its device picker and in `--list` and says why, instead of failing to read its
+  settings. Plug in a genuine Shure device and it opens as usual.
+
 ## 2.17.1 — 2026-11-14
 
 Dependency updates. No user-facing changes.
