@@ -52,11 +52,10 @@
 //! read last keep their defaults (two `--json` runs at once, MVX2U Gen 2,
 //! 2026-11-19: EQ bands, firmware and serial wrong in both, both exit 0).
 //! Every exchange with a real device therefore runs under [`ShureDevice::exclusive()`],
-//! which holds a lock file shared by every shurectl of this user; whatever the
-//! other process left queued is drained inside it.
+//! which holds that device's lock file, shared by every shurectl of this user;
+//! whatever the other process left queued is drained inside it.
 
 use std::fs::File;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -130,7 +129,8 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 
 /// The error when another shurectl kept the device for all of [`LOCK_WAIT`].
-const DEVICE_BUSY: &str = "Another shurectl is using the device. Try again.";
+/// No closing period: status lines add one before what follows.
+const DEVICE_BUSY: &str = "Another shurectl is busy with this device";
 
 /// A HID read or write failed, or `reopen()` could not find the device: it was
 /// unplugged or its handle went stale. Kept as its own type so `main.rs` can
@@ -186,8 +186,8 @@ pub trait HidTransport {
     /// A new handle to the same device after it was unplugged and plugged back in.
     fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>>;
     /// Whether another process can talk to this device too, so each exchange
-    /// takes the lock file ([`ShureDevice::exclusive()`]). The fake device in
-    /// tests and `--qa` can't, and never touches the lock file.
+    /// takes its lock file ([`ShureDevice::exclusive()`]). The fake device in
+    /// tests and `--qa` can't, and never touches a lock file.
     fn shared_with_other_processes(&self) -> bool {
         false
     }
@@ -328,6 +328,9 @@ pub struct ShureDevice {
     /// How many [`Exclusive`] guards are alive: nested exchanges take the
     /// lock file once, the outermost one.
     exclusive_depth: AtomicUsize,
+    /// This device's lock file ([`open_lock_file()`]), on a transport other
+    /// processes can reach; `None` for the fake, or when it can't be opened.
+    lock: Option<File>,
     /// Whether the outermost guard holds the lock file, and so unlocks it.
     holds_lock: AtomicBool,
 }
@@ -340,7 +343,7 @@ impl Drop for Exclusive<'_> {
         let device = self.0;
         if device.exclusive_depth.fetch_sub(1, Ordering::Relaxed) == 1
             && device.holds_lock.swap(false, Ordering::Relaxed)
-            && let Some(file) = lock_file()
+            && let Some(file) = &device.lock
         {
             // A failed unlock leaves it to the OS, which drops the lock when
             // this process exits.
@@ -349,27 +352,27 @@ impl Drop for Exclusive<'_> {
     }
 }
 
-/// The lock file every shurectl of this user shares, opened once per process:
-/// in `$XDG_RUNTIME_DIR` (a per-user tmpfs on Linux), else the temp directory.
-/// `None` when it can't be opened, and shurectl then runs without it, as
-/// before it had one.
-fn lock_file() -> Option<&'static File> {
-    static LOCK_FILE: OnceLock<Option<File>> = OnceLock::new();
-    LOCK_FILE
-        .get_or_init(|| {
-            let dir = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(std::path::PathBuf::from)
-                .filter(|dir| dir.is_absolute())
-                .unwrap_or_else(std::env::temp_dir);
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(dir.join("shurectl.lock"))
-                .ok()
-        })
-        .as_ref()
+/// The lock file of the device with this USB serial, which every shurectl of
+/// this user opens for it: in `$XDG_RUNTIME_DIR` (a per-user tmpfs on Linux),
+/// else the temp directory. One per device, so a slow exchange with one mic
+/// never holds up another. `None` when it can't be opened, and shurectl then
+/// runs without it, as before it had one.
+fn open_lock_file(serial: &str) -> Option<File> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(std::env::temp_dir);
+    let name: String = serial
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(format!("shurectl-{name}.lock")))
+        .ok()
 }
 
 /// Take `file`'s lock, waiting up to `wait` while another process holds it.
@@ -396,6 +399,10 @@ impl ShureDevice {
             .serial_number()
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
         let product = transport.product();
+        let lock = transport
+            .shared_with_other_processes()
+            .then(|| open_lock_file(&serial_number))
+            .flatten();
         Self {
             transport,
             model,
@@ -403,6 +410,7 @@ impl ShureDevice {
             serial_number,
             product,
             exclusive_depth: AtomicUsize::new(0),
+            lock,
             holds_lock: AtomicBool::new(false),
         }
     }
@@ -415,8 +423,7 @@ impl ShureDevice {
     /// [`LOCK_WAIT`].
     fn exclusive(&self) -> Result<Exclusive<'_>> {
         if self.exclusive_depth.load(Ordering::Relaxed) == 0
-            && self.transport.shared_with_other_processes()
-            && let Some(file) = lock_file()
+            && let Some(file) = &self.lock
         {
             let locked = wait_for_lock(file, LOCK_WAIT)?;
             self.holds_lock.store(locked, Ordering::Relaxed);
@@ -2022,9 +2029,6 @@ mod tests {
         assert_eq!(readback.skipped.len(), 1);
     }
 
-    /// A readback that fails names the setting, so a user's report says which.
-    /// Every GET a binary model reads its state with needs a label in
-    /// `protocol::setting_label()`.
     /// A second shurectl waits while the lock file is held, gives up with the
     /// busy error after the wait, and gets it once it is released. Two handles
     /// on one file stand in for two processes: the lock belongs to the open file.
@@ -2068,6 +2072,9 @@ mod tests {
         assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 0);
     }
 
+    /// A readback that fails names the setting, so a user's report says which.
+    /// Every GET a binary model reads its state with needs a label in
+    /// `protocol::setting_label()`.
     #[test]
     fn every_readback_query_names_its_setting() {
         use crate::fake_hid::{FakeDevice, PacketKind};

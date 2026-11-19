@@ -51,7 +51,7 @@ use std::io;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use crossterm::{
     cursor::Show,
@@ -831,14 +831,14 @@ fn flush_scroll(
     }
 }
 
-/// Write an action from a key, click or wheel. The next live poll waits a
-/// second: whether a device applies a write before acking it is unconfirmed,
-/// so a poll straight after could read the old value and show it as changed
-/// on the device, and the next arrow key would step from it.
 /// A TUI write that takes at least this long pushes the next live poll back
 /// from when it ended rather than when it started (`send_from_tui()`).
 const SLOW_WRITE: Duration = Duration::from_millis(100);
 
+/// Write an action from a key, click or wheel. The next live poll waits a
+/// second: whether a device applies a write before acking it is unconfirmed,
+/// so a poll straight after could read the old value and show it as changed
+/// on the device, and the next arrow key would step from it.
 fn send_from_tui(
     app: &mut App,
     device: &mut Option<ShureDevice>,
@@ -847,6 +847,11 @@ fn send_from_tui(
     now: Instant,
     loop_state: &mut LoopState,
 ) {
+    // A mute still goes through while the settings are unread, and a mode
+    // switch can leave them unread (`resync_after_mode()`): both say so.
+    // Other writes are refused then, with the hint already, and a status such
+    // as "Factory reset sent" or a preset rename shouldn't gain it.
+    let says_unread = matches!(action, DeviceAction::SetMute(_) | DeviceAction::SetMode(_));
     // Timed from when a slow write ends: a preset load takes about a second.
     // `now` is the step's clock (the harness's is fake), so the write's own
     // time is added to it. One under `SLOW_WRITE` moves the poll too little to
@@ -860,11 +865,9 @@ fn send_from_tui(
         } else {
             Duration::ZERO
         };
-    // While the settings are unread, the status says so: after a mute, which
-    // still goes through then, and after a mode switch whose gain re-read
-    // went unanswered (`resync_after_mode()`), which otherwise reads as plain
-    // success. Any other write is refused then, with the hint already.
-    note_unread(app);
+    if says_unread {
+        note_unread(app);
+    }
 }
 
 impl LoopState {
@@ -1281,7 +1284,14 @@ fn apply_action(
                     state.auto_tone,
                 )
             })
-            .and_then(|()| resync_after_mode(app, device, *mode))
+            // The switch landed: say so if only the re-read after it fails, so
+            // a script doesn't take the error as "nothing changed" and switch
+            // again (the MV7 re-reads everything; the MVX2U Gen 1 and MV6 the gain).
+            .and_then(|()| {
+                resync_after_mode(app, device, *mode).with_context(|| {
+                    format!("The mode was switched to {mode}, but the read after the switch failed")
+                })
+            })
         }
         DeviceAction::SetAutoPosition(pos) => {
             app.set_ok(position_line(*pos));
@@ -2699,6 +2709,36 @@ mod tests {
         assert_eq!(app.device_state.auto_tone, protocol::AutoTone::Bright);
         assert_eq!(app.device_state.auto_position, bright.auto_position);
         assert_eq!(app.status_message, "Tone → Bright (changed on the device)");
+    }
+
+    /// A mode switch whose re-read fails says the switch landed, so a
+    /// script or user doesn't switch again: the MV7 re-reads everything after
+    /// one, and here its first line goes unanswered.
+    #[test]
+    fn a_mode_switch_whose_re_read_fails_says_it_switched() {
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let before = app.device_state.clone();
+        fake.faults_mut(|faults| faults.unanswered_line = Some("micMute".into()));
+        apply_action(
+            &mut app,
+            &mut device,
+            DeviceAction::SetMode(InputMode::Auto),
+            Some(before),
+        );
+        assert!(app.status_is_error);
+        assert!(
+            app.status_message.starts_with(
+                "Device error: The mode was switched to Auto Level, but the read after the switch failed."
+            ),
+            "{}",
+            app.status_message
+        );
     }
 
     /// A mode changed elsewhere whose re-read fails says so once, with only

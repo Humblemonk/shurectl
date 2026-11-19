@@ -23,9 +23,11 @@ Releases that need you to do something after upgrading have an **Upgrading** not
   wrong settings. On Linux each one also got the other's replies, so settings read late,
   such as the EQ bands, came back at their defaults with no error, and a preset saved then
   kept them. They now take turns at the device; one that waits more than 5 seconds says
-  another shurectl is using it.
+  another shurectl is busy with it. Tested with two `shurectl --json` at once on the MVX2U
+  Gen 2 under Linux; whether macOS and Windows were affected is unconfirmed.
 - On the MV7, a Mic Position or Tone changed in MOTIV while shurectl runs now shows. Before,
   the next Mic Position or Tone change in shurectl set the other one back to its old value.
+  Unconfirmed on hardware.
 - On the MVX2U and MV6, a switch to Manual whose gain couldn't be read back now says the
   settings need `r`, instead of a plain "Mode → Manual" followed by keys that do nothing.
   After a mode change made elsewhere, the status names the gain the screen shows.

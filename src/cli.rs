@@ -230,7 +230,7 @@ fn execute(
             // Say the switch landed, so a script doesn't take the error as
             // "nothing changed" and toggle again.
             crate::reload_state(&mut app, dev).with_context(|| {
-                format!("The mode was switched to {mode}, but the device couldn't be read back")
+                format!("The mode was switched to {mode}, but the read after the switch failed")
             })?;
         }
     }
