@@ -210,7 +210,7 @@ rather than promoting a lower one.
   left at its default (36 dB gain). It drains queued input first, and
   `send_get_past_strays()` skips reports that can't be the GET's answer (a late reply, or one
   MOTIV caused); a GET that reads only strays fails the readback. Every exchange with the
-  device runs under `ShureDevice::exclusive()`, which holds that device's lock file, shared by
+  device runs under `ShureDevice::exclusive()`, which holds that device's lockfile, shared by
   every shurectl of the user: on Linux each handle gets every report, and two readbacks at
   once left the EQ bands at 0 dB with no error (two `--json` runs at once, MVX2U Gen 2,
   2026-11-19). A new I/O path takes the guard too; `write()` and `read()` `debug_assert!` it,
