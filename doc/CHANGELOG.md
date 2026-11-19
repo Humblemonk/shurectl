@@ -19,6 +19,21 @@ Releases that need you to do something after upgrading have an **Upgrading** not
   step to the next option whichever you clicked, so a click on the already-active Manual
   switched to Auto Level, and a click on Heavy set the Compressor to Light. A click on the
   active option, or elsewhere on the strip or card such as its label, now changes nothing.
+- Two shurectl running at once, such as the TUI and a Stream Deck button, no longer read
+  wrong settings. On Linux each one also got the other's replies, so settings read late,
+  such as the EQ bands, came back at their defaults with no error, and a preset saved then
+  kept them. They now take turns at the device; one that waits more than 5 seconds says
+  another shurectl is using it.
+- On the MV7, a Mic Position or Tone changed in MOTIV while shurectl runs now shows. Before,
+  the next Mic Position or Tone change in shurectl set the other one back to its old value.
+- On the MVX2U and MV6, a switch to Manual whose gain couldn't be read back now says the
+  settings need `r`, instead of a plain "Mode → Manual" followed by keys that do nothing.
+  After a mode change made elsewhere, the status names the gain the screen shows.
+- `shurectl --mode` says the mode was switched when only the read-back after it fails, so a
+  script doesn't take the error to mean nothing changed and switch again.
+- A genuine device beside a refused counterfeit that reports the same USB serial now
+  reconnects after a replug, and shows as unplugged when it is. With only refused devices
+  connected, the one-shot commands say why they're refused instead of asking for `--device`.
 
 ## 2.18.0 — 2026-11-16
 
