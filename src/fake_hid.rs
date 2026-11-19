@@ -123,6 +123,9 @@ pub struct Faults {
     /// MV7 command line left without any reply, as a mic that ignores it,
     /// until cleared.
     pub unanswered_line: Option<String>,
+    /// How long every write takes, as a long preset load does, until cleared.
+    /// Real time: it is for tests of what a slow write does to the timing.
+    pub slow_writes: Option<std::time::Duration>,
 }
 
 type ValueOf = Box<dyn Fn(&DeviceState) -> Vec<u8>>;
@@ -957,6 +960,9 @@ impl HidTransport for FakeHid {
     fn write(&self, packet: &[u8]) -> Result<usize> {
         let mut state = self.state.borrow_mut();
         state.handle_ok(self.generation)?;
+        if let Some(delay) = state.faults.slow_writes {
+            std::thread::sleep(delay);
+        }
         let seq = (state.model != DeviceModel::Mv7)
             .then(|| fake_wire::parse_request(packet))
             .flatten()

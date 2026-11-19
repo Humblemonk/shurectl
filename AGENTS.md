@@ -208,8 +208,13 @@ rather than promoting a lower one.
   prefix byte routes only FEAT_MIX 0x03 (Playback Mix; evidence in `.claude/rules/protocol.md`).
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
   left at its default (36 dB gain). It drains queued input first, and
-  `send_get_past_strays()` skips reports that can't be the GET's answer (a late reply, or on
-  Linux another shurectl's); a GET that reads only strays fails the readback. Whether every
+  `send_get_past_strays()` skips reports that can't be the GET's answer (a late reply, or one
+  MOTIV caused); a GET that reads only strays fails the readback. Every exchange with the
+  device runs under `ShureDevice::exclusive()`, a lock file every shurectl of the user shares:
+  on Linux each handle gets every report, and two readbacks at once left the EQ bands at 0 dB
+  with no error (two `--json` runs at once, MVX2U Gen 2, 2026-11-19). A new I/O path takes the
+  guard too; `write()` and `read()` `debug_assert!` it, so the tests catch one that doesn't.
+  A readback holds one guard from its drain to its last GET. Whether every
   GET is answered at its own address is unconfirmed, so don't add a general address check
   without captures. `query_as()` with `Need::Optional` is for a GET unchecked on that model
   or missing from some firmware: its field is an `Option` left `None`, so nothing shows,

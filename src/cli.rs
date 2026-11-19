@@ -227,7 +227,11 @@ fn execute(
         if mode != switched_from
             && let Some(dev) = device.as_ref()
         {
-            crate::reload_state(&mut app, dev).context("Could not read device state")?;
+            // Say the switch landed, so a script doesn't take the error as
+            // "nothing changed" and toggle again.
+            crate::reload_state(&mut app, dev).with_context(|| {
+                format!("The mode was switched to {mode}, but the device couldn't be read back")
+            })?;
         }
     }
     let mute_to = mute.and_then(|action| match action {
