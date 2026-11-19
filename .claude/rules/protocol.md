@@ -68,7 +68,7 @@ CRC-16/ANSI covers 0x11 up to the CRC
   reply answered the next GET, and the settings read last kept their defaults with no error
   (two `--json` runs at once on the MVX2U Gen 2, 2026-11-19: EQ bands 0 dB, firmware Unknown,
   in 5 of 5 tries). Every exchange therefore runs under `ShureDevice::exclusive()`, which
-  holds the device's lock file (`shurectl-<USB serial>.lock` in `$XDG_RUNTIME_DIR`, else the
+  holds the device's lockfile (`shurectl-<USB serial>.lock` in `$XDG_RUNTIME_DIR`, else the
   temp directory) for up to 5 s of waiting, and drains queued input inside it; a readback
   holds one guard from its drain to its last GET. A new I/O path takes the guard too:
   `write()` and `read()` `debug_assert!` it, and the fake counts guards, so the tests catch
