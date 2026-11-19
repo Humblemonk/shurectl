@@ -63,6 +63,16 @@ CRC-16/ANSI covers 0x11 up to the CRC
   (byte 6 = `2d`, byte 8 = `00`; payload `00 00 01`, 16 bytes from MOTIV, then the mic's
   `00 10` value), which the mic doesn't answer. In every session's capture (mike-callahan,
   2026-10-31). shurectl works without it; don't send it
+- **One shurectl at a time:** on Linux every open handle gets every input report, so two
+  shurectl reading at once took each other's replies: each GET was answered twice, the spare
+  reply answered the next GET, and the settings read last kept their defaults with no error
+  (two `--json` runs at once on the MVX2U Gen 2, 2026-11-19: EQ bands 0 dB, firmware Unknown,
+  in 5 of 5 tries). Every exchange therefore runs under `ShureDevice::exclusive()`, which
+  holds the device's lock file (`shurectl-<USB serial>.lock` in `$XDG_RUNTIME_DIR`, else the
+  temp directory) for up to 5 s of waiting, and drains queued input inside it; a readback
+  holds one guard from its drain to its last GET. A new I/O path takes the guard too:
+  `write()` and `read()` `debug_assert!` it, and the fake counts guards, so the tests catch
+  one that doesn't. The fake never locks. Unconfirmed whether macOS and Windows share reports
 - **Live poll per model** (the design is under Live poll in `AGENTS.md`): each value is one
   GET, kept only when `answers_at_its_address()`, or one text line on the MV7. The binary
   models drain queued input before each poll. While the other settings are unread the poll
