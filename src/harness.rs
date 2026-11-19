@@ -597,25 +597,19 @@ impl Harness {
             ),
             "packets" => Value::Array(self.packets_since(0).iter().map(Packet::to_json).collect()),
             "models" => json!(MODEL_NAMES.map(|(name, _)| name)),
-            "focus_ring" => json!(self.focus_ring()),
+            "focus_ring" => json!(
+                self.app
+                    .focus_ring()
+                    .iter()
+                    .map(|focus| format!("{focus:?}"))
+                    .collect::<Vec<_>>()
+            ),
             "features" => json!(self.fake.as_ref().map(FakeDevice::feature_names)),
             other => bail!(
                 "unknown query \"{other}\"; try screen, screen_styled, state, hitmap, \
                  packets, models, focus_ring or features"
             ),
         })
-    }
-
-    /// Every focus Down visits from the current one, in order.
-    fn focus_ring(&mut self) -> Vec<String> {
-        let (focus, band) = (self.app.focus, self.app.eq_selected_band);
-        let mut ring = Vec::new();
-        while !ring.contains(&self.app.focus) {
-            ring.push(self.app.focus);
-            self.app.focus_next();
-        }
-        (self.app.focus, self.app.eq_selected_band) = (focus, band);
-        ring.iter().map(|f| format!("{f:?}")).collect()
     }
 
     /// Each row as runs of text sharing a style, colors by palette name.
@@ -904,29 +898,51 @@ impl Harness {
     /// order, at its first cell that resolves to it (a later, more specific
     /// region wins where they overlap). Each first click must focus exactly that
     /// control and send nothing (bc3bb3f), and no region may be fully covered.
+    /// Then each option of a segmented strip or option card (`Target::Pill`),
+    /// with focus moved off it first by ↓: a first click on one only focuses it too.
     fn check_click_targets(&mut self) -> Vec<String> {
         use crate::mouse::Target;
         let mut failures = Vec::new();
-        let controls: Vec<_> = self
-            .hits
-            .regions()
-            .iter()
-            .filter_map(|&(_, target)| match target {
-                Target::Control(focus) => Some(focus),
-                Target::Tab(_)
+        let targets = |pills: bool| {
+            move |&(_, target): &(ratatui::layout::Rect, Target)| match target {
+                Target::Control(focus) if !pills => Some((target, focus)),
+                Target::Pill(focus, _) if pills => Some((target, focus)),
+                Target::Control(_)
+                | Target::Pill(..)
+                | Target::Tab(_)
                 | Target::PresetAction(..)
                 | Target::LoadButton
                 | Target::CancelButton
                 | Target::LoadBox => None,
-            })
+            }
+        };
+        let regions = self.hits.regions();
+        let controls: Vec<_> = (regions.iter().filter_map(targets(false)))
+            .chain(regions.iter().filter_map(targets(true)))
             .collect();
-        for focus in controls {
+        for (target, focus) in controls {
+            if self.app.focus == focus && matches!(target, Target::Pill(..)) {
+                // The only control on its tab (the MV7's EQ Preset) is always
+                // focused, so a first click on it can't be checked.
+                if self.app.focus_ring().len() == 1 {
+                    continue;
+                }
+                let down = Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                if let Err(e) = self.event(down) {
+                    failures.push(format!("click_targets: {e:#}"));
+                }
+                if self.app.focus == focus {
+                    failures.push(format!(
+                        "click_targets: Down didn't move focus off {focus:?}"
+                    ));
+                    continue;
+                }
+            }
             if self.app.focus == focus {
                 continue;
             }
             // Each click moves focus and redraws, which can move the regions, so
             // look the control up in the hit map of the frame on screen now.
-            let target = Target::Control(focus);
             let Some(area) = self
                 .hits
                 .regions()

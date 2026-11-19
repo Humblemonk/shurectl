@@ -6,6 +6,20 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.18.1 — 2026-11-18
+
+### Fixed
+
+- A mode switched outside shurectl while it runs, from MOTIV or a Stream Deck button running
+  `shurectl --mode`, no longer moves focus off the control you're on. Focus used to jump from
+  Mute to Mode, so the next `Enter` switched the mode back instead of muting. Focus now moves
+  only when the control is gone in the new mode, such as Gain in Auto Level.
+- A click on an option, in a strip such as Input Mode or Mic Preset or a card such as
+  Compressor, HPF, Reverb Type or the MV7's EQ, now picks the option you click. It used to
+  step to the next option whichever you clicked, so a click on the already-active Manual
+  switched to Auto Level, and a click on Heavy set the Compressor to Light. A click on the
+  active option, or elsewhere on the strip or card such as its label, now changes nothing.
+
 ## 2.18.0 — 2026-11-16
 
 ### Changed

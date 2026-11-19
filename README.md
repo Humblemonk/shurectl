@@ -95,8 +95,9 @@ shurectl --gain +1        # Change gain, mode or a monitor level, or print JSON 
 | `q` / `Ctrl+C` | Quit |
 
 The mouse works too: click a tab to switch to it, click a control to select it and click
-it again to toggle it, or scroll over a slider to adjust it. Factory Reset still needs `Enter`
-to confirm. Most terminals let you hold `Shift` to select text while the mouse is captured.
+it again to toggle it or pick the option you click, or scroll over a slider to adjust it.
+Factory Reset still needs `Enter` to confirm. Most terminals let you hold `Shift` to select
+text while the mouse is captured.
 
 The TUI needs a terminal of at least 80×24. In a smaller one it shows the size it needs, and
 only `q` and `Ctrl+C` work (`Ctrl+C` alone while a name is being edited).

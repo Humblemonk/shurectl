@@ -867,7 +867,8 @@ impl LoopState {
 /// pending wheel adjustment, and poll for the device every
 /// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
 /// below the minimum size only the notice is on screen, so keys only quit and
-/// mouse events are dropped. Mute, mode, gain and the monitor levels are read
+/// mouse events are dropped, as they are when writing a pending wheel
+/// adjustment changed the screen they were aimed at. Mute, mode, gain and the monitor levels are read
 /// every `LIVE_POLL_INTERVAL` (`poll_live()`), and a running gain check takes
 /// the meter's peak.
 /// `now` is passed in so the `--qa` harness can run the
@@ -916,8 +917,22 @@ fn step(
             (&loop_state.pending_scroll, scroll_target),
             (Some(pending), Some(Some(mouse::Target::Control(focus)))) if pending.focus == focus
         );
+        // Writing a pending wheel adjustment can change the mode, a value or
+        // focus after this frame was drawn: a failed write is undone or read
+        // back, and some that land re-read the device (`resync_after_mode()`,
+        // the MV7's Auto Level rows). A mouse event is aimed at the frame on
+        // screen, so it is dropped then: a click on an option counts its steps
+        // from the option shown as active.
+        let mut frame_stale = false;
         if can_act && !same_control {
+            let drawn = loop_state
+                .pending_scroll
+                .is_some()
+                .then(|| (app.device_state.clone(), app.focus, app.active_tab));
             flush_scroll(app, device, loop_state, now);
+            frame_stale = drawn.is_some_and(|(state, focus, tab)| {
+                state != app.device_state || focus != app.focus || tab != app.active_tab
+            });
         }
         let before = can_act.then(|| app.device_state.clone());
         let action = match event {
@@ -927,13 +942,18 @@ fn step(
             }
             // Nothing on the notice is clickable, and a click would still
             // cancel a name edit or a Factory Reset confirmation.
-            Event::Mouse(_) if !fits => None,
+            Event::Mouse(_) if !fits || frame_stale => None,
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 app.armed_preset_action = None;
                 handle_key(app, key.code, key.modifiers)
             }
-            Event::Mouse(event) => mouse::handle_mouse(app, event, hits)
-                .and_then(|key| handle_key(app, key, KeyModifiers::NONE)),
+            Event::Mouse(event) => {
+                let action = mouse::handle_mouse(app, event, hits)
+                    .and_then(|key| handle_key(app, key, KeyModifiers::NONE));
+                // Left over when the click's Enter didn't reach a strip.
+                app.pill_presses = None;
+                action
+            }
             Event::Key(_)
             | Event::Resize(_, _)
             | Event::FocusGained
@@ -2738,6 +2758,98 @@ mod tests {
             .state;
         assert!(!mic.muted);
         assert_eq!(mic.gain_tenths, 255);
+    }
+
+    /// Writing a pending wheel adjustment can change what the frame showed
+    /// before a click aimed at it is handled; here the write fails and the
+    /// device is read back. The click is dropped: it was on Auto Level,
+    /// counted as one step from the Manual shown, and the re-read found Auto
+    /// and moved focus to Mode, so it would have sent Manual to a mic just
+    /// switched to Auto elsewhere.
+    #[test]
+    fn a_click_after_a_failed_wheel_write_changed_the_screen_is_dropped() {
+        let model = DeviceModel::Mv7;
+        let fake = FakeDevice::new(model);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: model,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let draw = |app: &App| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+                .expect("terminal");
+            let mut hits = mouse::HitMap::default();
+            terminal
+                .draw(|frame| hits = ui::draw(frame, app))
+                .expect("draw");
+            hits
+        };
+        let at = |hits: &mouse::HitMap, target| {
+            let (area, _) = hits
+                .regions()
+                .iter()
+                .find(|(_, found)| *found == target)
+                .expect("target drawn");
+            (area.x, area.y)
+        };
+        let mouse = |kind, (column, row)| {
+            Some(Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }))
+        };
+        let now = Instant::now();
+        let mut loop_state = LoopState::new(now);
+        let hits = draw(&app);
+        let gain = at(&hits, mouse::Target::Control(app::Focus::Gain));
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            mouse(MouseEventKind::ScrollUp, gain),
+            now,
+            &mut loop_state,
+        );
+        assert!(loop_state.pending_scroll.is_some());
+        // Switched to Auto elsewhere, and the pending gain write gets no reply.
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            ..DeviceState::default()
+        };
+        fake.set_on_device(fake_hid::LiveField::Mode, &auto);
+        // The line the pending write sends, whatever the gain step is.
+        let pending_gain = protocol::mv7_text::set_gain(app.device_state.gain_tenths).line;
+        fake.faults_mut(|faults| faults.unanswered_line = Some(pending_gain));
+        let hits = draw(&app);
+        let auto_level = at(&hits, mouse::Target::Pill(app::Focus::Mode, 1));
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            mouse(MouseEventKind::Down(MouseButton::Left), auto_level),
+            now,
+            &mut loop_state,
+        );
+        // Without the failed write and its re-read, this tests nothing.
+        assert!(
+            app.status_is_error && app.status_message.contains(READ_BACK_NOTE),
+            "the gain write must fail and be read back: {}",
+            app.status_message
+        );
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        assert_eq!(app.focus, app::Focus::Mode);
+        let mic = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        assert_eq!(mic.mode, InputMode::Auto);
     }
 
     /// Load `slot` on `fake` the way the Presets tab does, from a shown state

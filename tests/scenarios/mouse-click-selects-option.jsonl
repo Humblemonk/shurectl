@@ -1,0 +1,8 @@
+{"scenario": "mouse-click-selects-option", "models": "all", "modes": ["fake"]}
+{"expect": {"focus": "Mode", "state": {"mode": "Manual"}}}
+{"click_on": " Manual "}
+{"expect": {"focus": "Mode", "state": {"mode": "Manual"}, "no_packets": true}}
+{"click_on": "Mode:"}
+{"expect": {"focus": "Mode", "state": {"mode": "Manual"}, "no_packets": true}}
+{"click_on": " Auto Level "}
+{"expect": {"state": {"mode": "Auto"}, "status": "Mode → Auto Level"}}

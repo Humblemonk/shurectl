@@ -1,0 +1,16 @@
+{"scenario": "mode-elsewhere-keeps-focus", "models": "all", "modes": ["fake"]}
+{"key": "Down"}
+{"expect": {"focus": "Mute"}}
+{"device": {"mode": "Auto"}}
+{"tick": 1000}
+{"expect": {"state": {"mode": "Auto"}, "focus": "Mute"}}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true, "mode": "Auto"}}}
+{"device": {"mode": "Manual"}}
+{"tick": 1000}
+{"expect": {"state": {"mode": "Manual"}, "focus": "Mute"}}
+{"key": "Down"}
+{"expect": {"focus": "Gain"}}
+{"device": {"mode": "Auto"}}
+{"tick": 1000}
+{"expect": {"state": {"mode": "Auto"}, "focus": "Mode"}}
