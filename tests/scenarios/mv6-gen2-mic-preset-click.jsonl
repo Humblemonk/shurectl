@@ -1,0 +1,9 @@
+{"scenario": "mv6-gen2-mic-preset-click", "models": ["mv6-gen2"], "modes": ["fake", "demo"]}
+{"click_on": " Speech "}
+{"expect": {"focus": "MicPreset", "no_packets": true}}
+{"click_on": " Speech "}
+{"expect": {"status": "Mic Preset → Speech", "set": {"feature": "MIC_PRESET", "value": "00"}}}
+{"click_on": " Instrument "}
+{"expect": {"status": "Mic Preset → Instrument", "set": {"feature": "MIC_PRESET", "value": "03"}}}
+{"click_on": " Instrument "}
+{"expect": {"status": "Mic Preset → Instrument", "no_packets": true}}

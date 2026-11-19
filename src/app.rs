@@ -199,6 +199,11 @@ pub struct App {
     /// The preset slot and action a first click selected; only a second click on
     /// that same button fires it. Cleared by any other click or any key.
     pub armed_preset_action: Option<(usize, KeyCode)>,
+    /// UI-only: how many Enter presses a click on an option of a segmented
+    /// strip or option card stands for (`mouse::Target::Pill`), so
+    /// `toggle_focused()` lands on the option clicked. `None` is one press, as
+    /// from a key.
+    pub pill_presses: Option<usize>,
     /// Rolling peak windows shared with the cpal capture thread.
     /// `short` (0.3 s) drives the bar; `long` (3.0 s) drives the peak-hold readout.
     pub peak_window: Arc<Mutex<PeakWindow>>,
@@ -245,6 +250,7 @@ impl Default for App {
             confirming_factory_reset: false,
             confirming_preset_load: None,
             armed_preset_action: None,
+            pill_presses: None,
             peak_window: Arc::new(Mutex::new(PeakWindow::new())),
             meter_clock: None,
             latest_firmware: None,
@@ -485,10 +491,11 @@ impl App {
 
     /// Keep the view valid after the device state changed underneath it, such as
     /// a refresh that finds the mode switched. Leave a tab that is now locked, and
-    /// re-pick focus when the mode changed on a tab whose controls depend on it,
-    /// or when the EQ tab swapped the Tone slider for the bands (MV6 Gen 2 tone
-    /// mode). Without this, ←/→ would still adjust controls no longer on screen.
-    /// The Presets tab keeps its focus, so loading a preset leaves you on its slot.
+    /// re-pick focus when the mode changed on a tab whose controls depend on it
+    /// and the focused one is gone, or when the EQ tab swapped the Tone slider
+    /// for the bands (MV6 Gen 2 tone mode). Without this, ←/→ would still adjust
+    /// controls no longer on screen. The Presets tab keeps its focus, so loading
+    /// a preset leaves you on its slot.
     pub fn settle_focus(&mut self, mode_before: InputMode) {
         let eq_focus_hidden = match self.focus {
             Focus::Tone => self.eq_bands_shown(),
@@ -502,8 +509,28 @@ impl App {
             && matches!(self.active_tab, Tab::Main | Tab::Eq | Tab::Dynamics))
             || (self.active_tab == Tab::Eq && eq_focus_hidden)
         {
+            // A control the tab still shows keeps focus, so after a mode
+            // switched elsewhere, Enter meant for Mute doesn't toggle Mode.
+            let kept = self.focus;
             self.reset_focus_for_tab();
+            if self.focus_ring().contains(&kept) {
+                self.focus = kept;
+            }
         }
+    }
+
+    /// Every focus `focus_next()` reaches from the current one, in order. Focus
+    /// is put back afterwards, and so is the selected EQ band, which
+    /// `focus_next()` only reads today but `settle_focus()` must never move.
+    pub fn focus_ring(&mut self) -> Vec<Focus> {
+        let (first, band) = (self.focus, self.eq_selected_band);
+        let mut ring = Vec::new();
+        while !ring.contains(&self.focus) {
+            ring.push(self.focus);
+            self.focus_next();
+        }
+        (self.focus, self.eq_selected_band) = (first, band);
+        ring
     }
 
     /// Returns true when a tab should be inaccessible given the current device state.
@@ -1407,8 +1434,21 @@ impl App {
         }
     }
 
-    /// Toggle the focused boolean control.
+    /// Toggle or cycle the focused control: once for a key, or as many times
+    /// as a clicked pill is from the active one (`pill_presses`), sending only
+    /// the last value. A click on the active pill is no press, and sends nothing.
+    /// Every press goes to the control focused now, so a control whose toggle
+    /// moves focus (Mode) must never be more than one press from any option.
     pub fn toggle_focused(&mut self) -> Option<DeviceAction> {
+        let mut action = None;
+        for _ in 0..self.pill_presses.take().unwrap_or(1) {
+            action = self.toggle_once();
+        }
+        action
+    }
+
+    /// Toggle the focused boolean control, or step it to its next option.
+    fn toggle_once(&mut self) -> Option<DeviceAction> {
         match self.focus {
             Focus::Mode => {
                 self.device_state.mode = match self.device_state.mode {

@@ -45,6 +45,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `mouse-click-targets` | all | fake, demo | Every control's click region focuses that control and sends nothing, at sizes from 80x24 (the minimum) to 120x50 |
 | `terminal-too-small` | all | fake, demo | Below 80x24 only the size notice draws: keys, clicks and the wheel change nothing, `q` is typed into a name being edited rather than quitting, and `q` quits otherwise |
 | `mouse-wheel-adjusts-gain` | all but MV7 | fake | The wheel over Gain steps it ±1 dB; the wheel over Mode only focuses it |
+| `mouse-click-selects-option` | all | fake | A click on the active pill of the focused Input Mode strip, or on its label, sends nothing; a click on the other pill switches to it |
 | `quit` | all | fake, demo | `q` quits without sending anything |
 | `quit-ctrl-c` | all | fake, demo | Ctrl-C quits |
 | `demo-starts-like-shurectl-demo` | all | demo | Demo mode starts where `--demo` does (Auto Level, 36 dB, "Demo mode" status, no serial), switches to Manual and steps gain down from 36 dB |
@@ -60,7 +61,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `mute-toggle` | all but MV7 | fake, demo | Enter and Space toggle Mute, send MUTE, and show `● ON` in the error colour |
 | `mute-follows-the-device` | all | fake | Mute changed on the device itself (its mute button) shows within a second with a status saying so; a mute from shurectl stays as it is |
 | `settings-follow-the-device` | all | fake | Gain, Monitor Mix and mode changed elsewhere (a script, MOTIV) show within a second, several at once in one status |
-| `manual-after-auto-re-reads-gain` | MVX2U, MV6 | fake | A TUI switch from Auto to Manual re-reads the gain and names a change in the status, so → steps from the device's Manual gain, not one read in Auto (unconfirmed on these two models); unanswered, the switch isn't reported as failed and → sends nothing |
+| `mode-elsewhere-keeps-focus` | all | fake | A mode changed elsewhere keeps focus on a control both modes show, so Enter on Mute still mutes; Gain, gone in Auto, moves focus to Mode |
+| `manual-after-auto-re-reads-gain` | MVX2U, MV6 | fake | A TUI switch from Auto to Manual re-reads the gain and names a change in the status, so → steps from the device's Manual gain, not one read in Auto (unconfirmed on these two models); unanswered, the status still names the switch, adds that the settings are unread, and → sends nothing |
 | `playback-level-follows-the-device` | MVX2U Gen 2, MV6 Gen 2, MV7+ | fake | A Playback Level changed elsewhere shows within a second (not polled on the MV6, whose GET is unconfirmed, #99) |
 | `mute-poll-finds-the-device-gone` | all | fake | Unplugged at 0.5 s, the device shows as disconnected by the mute poll at 1 s, before the 2 s presence poll |
 | `gain-adjust` | all but MV7 | fake | ←/→ step gain by 1 dB and send GAIN |
@@ -76,6 +78,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | `config-lock` | MVX2U, MV7 | fake, demo | Enter toggles Config Lock and the block shows LOCKED or Unlocked |
 | `config-lock-packets` | MVX2U | fake, demo | Config Lock sends LOCK |
 | `mv6-gen2-mic-preset` | MV6 Gen 2 | fake | Enter cycles Mic Preset through Speech, Singing and Instrument; ←/→ do nothing |
+| `mv6-gen2-mic-preset-click` | MV6 Gen 2 | fake, demo | A click on a Mic Preset pill selects that preset in one write, two pills away included; a click on the active one sends nothing |
 | `mode-auto-locks-eq` | MVX2U | fake | Switching to Auto sends MODE and shows EQ and Dynamics as locked (🔒) with the tab bar intact (the harness reads the drawn frame, not the backend's copy, which kept a stale cell after each 🔒), and Tab skips them |
 | `gain-check` | all | fake | `g` replaces the Summary with the Gain check card and sends nothing; after 10 s it shows the loudest peak and a gain to try, follows a gain set elsewhere, says "Heard nothing." without input, restarts on a gain change, `g` or Esc cancels, and leaving Manual stops it |
 | `gain-check-from-the-meter` | MVX2U, MV7, MV7+ | fake | The Level meter comes right after Gain in the focus ring; Enter on it starts and cancels the gain check |
@@ -107,6 +110,7 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 | Scenario | Models | Runs in | Checks that |
 | --- | --- | --- | --- |
 | `dynamics-limiter-compressor` | MVX2U, MVX2U Gen 2, MV7+ | fake | Limiter toggles and sends LIMITER; Compressor cycles Off → Light → Medium → Heavy → Off |
+| `dynamics-card-click` | MVX2U, MVX2U Gen 2, MV7, MV7+ | fake | A click on a Compressor option selects it in one write, three steps away included; a click on the active one sends nothing |
 | `mv7-limiter` | MV7 | fake | The Limiter toggles and sends `setBlock 1F` (block from Shure's DSP settings file, unconfirmed on hardware); focus moves Limiter ↔ Compressor |
 | `dynamics-denoiser-popper` | MVX2U Gen 2, MV6, MV6 Gen 2, MV7+ | fake, demo | Clicking focuses without sending; Denoiser and Popper Stopper toggle and send |
 | `dynamics-hpf-cycle` | all but MV7 | fake | HPF cycles Off → 75 Hz → 150 Hz → Off and sends HPF |

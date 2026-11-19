@@ -1,0 +1,11 @@
+{"scenario": "dynamics-card-click", "models": ["mvx2u", "mvx2u-gen2", "mv7", "mv7plus"], "modes": ["fake"]}
+{"key": "Tab", "repeat": 2}
+{"expect": {"tab": "Dynamics", "state": {"compressor": "Off"}}}
+{"click_on": "Heavy"}
+{"expect": {"focus": "Compressor", "no_packets": true}}
+{"click_on": "Heavy"}
+{"expect": {"status": "Compressor → Heavy", "state": {"compressor": "Heavy"}}}
+{"click_on": "Heavy"}
+{"expect": {"status": "Compressor → Heavy", "no_packets": true}}
+{"click_on": "Light"}
+{"expect": {"status": "Compressor → Light", "state": {"compressor": "Light"}}}

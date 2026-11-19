@@ -33,6 +33,13 @@ impl UiFrame<'_, '_> {
             .control(area.intersection(self.frame.area()), focus);
     }
 
+    fn pill(&mut self, area: Rect, focus: Focus, presses: usize) {
+        self.hits.add(
+            area.intersection(self.frame.area()),
+            Target::Pill(focus, presses),
+        );
+    }
+
     fn render_widget(&mut self, widget: impl ratatui::widgets::Widget, area: Rect) {
         self.frame.render_widget(widget, area);
     }
@@ -598,10 +605,6 @@ fn draw_mic_preset_block(f: &mut UiFrame, app: &App, area: Rect) {
     f.control(area, Focus::MicPreset);
     let focused = app.focus == Focus::MicPreset;
     let current = MicPreset::matching(&app.device_state);
-    let mut spans = vec![Span::styled("Preset:  ", Style::default().fg(C_DIM))];
-    for preset in MicPreset::ALL {
-        spans.push(segmented_span(preset.label(), current == Some(preset)));
-    }
     // In the title, so the row still fits an 80-column terminal.
     let title = if current.is_some() {
         "Mic Preset"
@@ -609,6 +612,14 @@ fn draw_mic_preset_block(f: &mut UiFrame, app: &App, area: Rect) {
         "Mic Preset (custom)"
     };
     let block = focus_block(title, focused);
+    let options = MicPreset::ALL.map(|preset| (preset.label(), current == Some(preset)));
+    let spans = option_strip(
+        f,
+        Focus::MicPreset,
+        block.inner(area),
+        Span::styled("Preset:  ", Style::default().fg(C_DIM)),
+        &options,
+    );
     let line = with_hint(spans, focused, "  [Enter] cycle", block.inner(area).width);
     f.render_widget(Paragraph::new(line).block(block), area);
 }
@@ -837,13 +848,11 @@ fn draw_auto_controls(f: &mut UiFrame, app: &App, area: Rect, rows: &[AutoRow]) 
 
     for (row, row_area) in rows.iter().zip(inner_rows.iter()) {
         let focused = app.focus == row.focus();
-        let mut spans = vec![Span::styled(
+        let label = Span::styled(
             format!("{:<label_width$}", row.label()),
             Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
-        )];
-        for (label, active) in row.options(app) {
-            spans.push(segmented_span(label, active));
-        }
+        );
+        let spans = option_strip(f, row.focus(), *row_area, label, &row.options(app));
         let line = with_hint(spans, focused, "  [Enter] cycle", row_area.width);
         f.render_widget(Paragraph::new(line), *row_area);
     }
@@ -862,6 +871,45 @@ fn segmented_span(label: &str, active: bool) -> Span<'static> {
         Style::default().fg(C_TEXT).bg(C_BORDER)
     };
     Span::styled(format!(" {label} "), style)
+}
+
+/// The Enter presses that cycle a control from its `active` option (`None`
+/// when none is, as for a custom Mic Preset) to option `index` of `count`, in
+/// drawn order, for `Target::Pill`. With none active, the first press selects
+/// the first option.
+fn presses_to(index: usize, active: Option<usize>, count: usize) -> usize {
+    match active {
+        Some(active) => (index + count - active) % count,
+        None => index + 1,
+    }
+}
+
+/// `label` followed by a `segmented_span()` strip of `options` (each label and
+/// whether it is the current value), drawn from the left of `row`. Each pill
+/// is a click target for `focus` (`Target::Pill`, `presses_to()`), so a click
+/// selects the pill clicked.
+fn option_strip(
+    f: &mut UiFrame,
+    focus: Focus,
+    row: Rect,
+    label: Span<'static>,
+    options: &[(&str, bool)],
+) -> Vec<Span<'static>> {
+    let active = options.iter().position(|(_, active)| *active);
+    let mut x = row.x.saturating_add(label.width() as u16);
+    let mut spans = vec![label];
+    for (index, (text, is_active)) in options.iter().enumerate() {
+        let pill = segmented_span(text, *is_active);
+        let width = pill.width() as u16;
+        f.pill(
+            Rect::new(x, row.y, width, 1).intersection(row),
+            focus,
+            presses_to(index, active, options.len()),
+        );
+        x = x.saturating_add(width);
+        spans.push(pill);
+    }
+    spans
 }
 
 /// Renders the manual Gain gauge, shared by every model. The locked styling
@@ -921,16 +969,18 @@ fn draw_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
 
     let mode = app.device_state.mode;
     let block = focus_block("Input Mode", focused);
-    let line = with_hint(
-        vec![
-            Span::styled("Mode:  ", Style::default().fg(C_DIM)),
-            segmented_span(&InputMode::Auto.to_string(), mode == InputMode::Auto),
-            segmented_span(&InputMode::Manual.to_string(), mode == InputMode::Manual),
+    let (auto, manual) = (InputMode::Auto.to_string(), InputMode::Manual.to_string());
+    let spans = option_strip(
+        f,
+        Focus::Mode,
+        block.inner(area),
+        Span::styled("Mode:  ", Style::default().fg(C_DIM)),
+        &[
+            (&auto, mode == InputMode::Auto),
+            (&manual, mode == InputMode::Manual),
         ],
-        focused,
-        "  [Enter] toggle",
-        block.inner(area).width,
     );
+    let line = with_hint(spans, focused, "  [Enter] toggle", block.inner(area).width);
     f.render_widget(Paragraph::new(line).block(block), area);
 }
 
@@ -1851,16 +1901,14 @@ fn draw_tone_mode_block(f: &mut UiFrame, app: &App, area: Rect) {
     let focused = app.focus == Focus::ToneMode;
     let advanced = app.device_state.tone_advanced;
     let block = focus_block("Tone Mode", focused);
-    let line = with_hint(
-        vec![
-            Span::styled("Tone:  ", Style::default().fg(C_DIM)),
-            segmented_span("Simple", !advanced),
-            segmented_span("Advanced (5-band EQ)", advanced),
-        ],
-        focused,
-        "  [Enter] toggle",
-        block.inner(area).width,
+    let spans = option_strip(
+        f,
+        Focus::ToneMode,
+        block.inner(area),
+        Span::styled("Tone:  ", Style::default().fg(C_DIM)),
+        &[("Simple", !advanced), ("Advanced (5-band EQ)", advanced)],
     );
+    let line = with_hint(spans, focused, "  [Enter] toggle", block.inner(area).width);
     f.render_widget(Paragraph::new(line).block(block), area);
 }
 
@@ -1983,11 +2031,25 @@ fn draw_status_card(f: &mut UiFrame, focused: bool, card: StatusCard, area: Rect
 /// one marked with ▶. `options` pairs each label with whether it is selected.
 fn draw_enum_card(
     f: &mut UiFrame,
-    focused: bool,
+    app: &App,
+    focus: Focus,
     title: &str,
     options: &[(String, bool)],
     area: Rect,
 ) {
+    let focused = app.focus == focus;
+    let block = card_block(title, focused);
+    // Each option's row is a click target, as a strip's pills are; the rows
+    // start below the blank first line.
+    let inner = block.inner(area);
+    let active = options.iter().position(|(_, selected)| *selected);
+    for index in 0..options.len() {
+        f.pill(
+            text_row(inner, 1 + index as u16),
+            focus,
+            presses_to(index, active, options.len()),
+        );
+    }
     let mut lines = vec![Line::from("")];
     lines.extend(options.iter().map(|(label, selected)| {
         Line::from(vec![
@@ -2013,10 +2075,7 @@ fn draw_enum_card(
         Style::default().fg(if focused { C_FOCUS } else { C_DIM }),
     )));
 
-    f.render_widget(
-        Paragraph::new(lines).block(card_block(title, focused)),
-        area,
-    );
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Label/selected pairs for a set of enum variants, in display order.
@@ -2189,13 +2248,7 @@ fn draw_compressor_card(f: &mut UiFrame, app: &App, area: Rect) {
         ],
         app.device_state.compressor,
     );
-    draw_enum_card(
-        f,
-        app.focus == Focus::Compressor,
-        "Compressor",
-        &options,
-        area,
-    );
+    draw_enum_card(f, app, Focus::Compressor, "Compressor", &options, area);
 }
 
 fn draw_hpf_card(f: &mut UiFrame, app: &App, area: Rect) {
@@ -2204,13 +2257,7 @@ fn draw_hpf_card(f: &mut UiFrame, app: &App, area: Rect) {
         &[HpfFrequency::Off, HpfFrequency::Hz75, HpfFrequency::Hz150],
         app.device_state.hpf,
     );
-    draw_enum_card(
-        f,
-        app.focus == Focus::Hpf,
-        "High-Pass Filter",
-        &options,
-        area,
-    );
+    draw_enum_card(f, app, Focus::Hpf, "High-Pass Filter", &options, area);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2570,7 +2617,8 @@ fn draw_reverb_tab(f: &mut UiFrame, app: &App, area: Rect) {
     );
     draw_enum_card(
         f,
-        app.focus == Focus::ReverbPreset,
+        app,
+        Focus::ReverbPreset,
         "Reverb Type",
         &reverb_types,
         rev_cols[2],
@@ -2973,7 +3021,7 @@ fn draw_mv7_eq_tab(f: &mut UiFrame, app: &App, area: Rect) {
         app.device_state.eq_preset,
     );
     f.control(cols[0], Focus::EqPreset);
-    draw_enum_card(f, app.focus == Focus::EqPreset, "EQ", &options, cols[0]);
+    draw_enum_card(f, app, Focus::EqPreset, "EQ", &options, cols[0]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3679,7 +3727,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
         help_row("d / Delete", "Delete preset"),
         Line::from(""),
         Line::from(Span::styled(
-            "  Click: focus; click selected: activate",
+            "  Click: focus; click again: toggle or pick",
             Style::default().fg(C_DIM),
         )),
         Line::from(Span::styled(
@@ -4349,18 +4397,6 @@ mod tests {
         buffer_hash(terminal.backend().buffer())
     }
 
-    /// Every focus `focus_next()` reaches from the current one, in order.
-    fn focus_ring(app: &mut App) -> Vec<Focus> {
-        let first = app.focus;
-        let mut ring = Vec::new();
-        while !ring.contains(&app.focus) {
-            ring.push(app.focus);
-            app.focus_next();
-        }
-        app.focus = first;
-        ring
-    }
-
     /// Calls `visit` with a label and the app for every model, mode, tab, focus
     /// and mute/lock/tone state, the MV7+ Custom LED zones, and the help overlay.
     fn for_each_screen(mut visit: impl FnMut(&str, &App)) {
@@ -4430,7 +4466,7 @@ mod tests {
                         let ring = if tab_locked {
                             vec![app.focus]
                         } else {
-                            focus_ring(&mut app)
+                            app.focus_ring()
                         };
                         for focus in ring {
                             app.focus = focus;

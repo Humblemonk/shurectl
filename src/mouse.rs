@@ -12,6 +12,10 @@ use crate::app::{App, Focus, Tab};
 pub enum Target {
     Tab(Tab),
     Control(Focus),
+    /// One option of a segmented strip or option card, such as Manual in Input
+    /// Mode or Heavy on the Compressor card: the control, and how many Enter
+    /// presses take its active option to this one (0 for the active option).
+    Pill(Focus, usize),
     /// A specific preset action, rather than the whole actions row.
     PresetAction(usize, KeyCode),
     /// The preset load box: its Load and Cancel buttons, and the rest of it,
@@ -43,6 +47,14 @@ impl HitMap {
         &self.regions
     }
 
+    /// Whether `focus` is drawn as a segmented strip or option card, with a
+    /// `Target::Pill` per option.
+    pub fn has_pills(&self, focus: Focus) -> bool {
+        self.regions
+            .iter()
+            .any(|&(_, target)| matches!(target, Target::Pill(found, _) if found == focus))
+    }
+
     pub fn target_at(&self, column: u16, row: u16) -> Option<Target> {
         // Later, more specific regions (e.g. an EQ band's enable row) win.
         self.regions
@@ -62,6 +74,10 @@ impl HitMap {
 /// its Load button loads, a click elsewhere in it does nothing, and a click
 /// outside it or on Cancel cancels. The box keeps its buttons clear of the
 /// preset's Load button, so a double-click can't load unseen changes.
+/// A click on an option of a focused segmented strip (Input Mode, Tone Mode,
+/// Mic Preset, the Auto Level rows) or option card (Compressor, HPF, Reverb
+/// Type, the MV7's EQ) selects that option; a click on the active one, or
+/// elsewhere on the strip or card, does nothing.
 /// Wheel events still focus and adjust immediately.
 /// Clicking outside an edited name cancels via Esc, consuming that click.
 /// Any click cancels a pending factory reset the same way, so confirming stays
@@ -83,6 +99,7 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
                 Target::CancelButton
                 | Target::Tab(_)
                 | Target::Control(_)
+                | Target::Pill(..)
                 | Target::PresetAction(..),
             )
             | None => Some(KeyCode::Esc),
@@ -113,14 +130,15 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
         | MouseEventKind::ScrollRight => return None,
     };
     let armed_preset_action = app.armed_preset_action.take();
-    match hits.target_at(event.column, event.row)? {
+    let target = hits.target_at(event.column, event.row)?;
+    match target {
         Target::Tab(tab) => {
             if key == KeyCode::Enter {
                 app.select_tab(tab);
             }
             None
         }
-        Target::Control(focus) => {
+        Target::Control(focus) | Target::Pill(focus, _) => {
             if app.is_tab_locked(app.active_tab) {
                 return None;
             }
@@ -129,7 +147,20 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, hits: &HitMap) -> Option<K
             if let Focus::EqGain(band) | Focus::EqBandEnable(band) = focus {
                 app.eq_selected_band = band;
             }
-            (already_focused || key != KeyCode::Enter).then_some(key)
+            if key != KeyCode::Enter {
+                return Some(key);
+            }
+            if !already_focused {
+                return None;
+            }
+            // A focused strip or card changes only on a click on one of its
+            // options, so a click on its label, hint or border can't cycle it.
+            if let Target::Pill(_, presses) = target {
+                app.pill_presses = Some(presses);
+            } else if hits.has_pills(focus) {
+                return None;
+            }
+            Some(key)
         }
         Target::PresetAction(index, action) => {
             if key != KeyCode::Enter || app.active_tab != Tab::Presets {
@@ -248,6 +279,104 @@ mod tests {
                     buffer[(column + offset as u16, row)].symbol() == ch.to_string()
                 })
             })
+    }
+
+    /// The `index`-th option of `focus`'s segmented strip, in drawn order:
+    /// where it is, and the Enter presses it stands for.
+    fn pill(hits: &HitMap, focus: Focus, index: usize) -> Option<(Rect, usize)> {
+        hits.regions
+            .iter()
+            .filter_map(|&(area, target)| match target {
+                Target::Pill(found, presses) if found == focus => Some((area, presses)),
+                Target::Pill(..)
+                | Target::Tab(_)
+                | Target::Control(_)
+                | Target::PresetAction(..)
+                | Target::LoadButton
+                | Target::CancelButton
+                | Target::LoadBox => None,
+            })
+            .nth(index)
+    }
+
+    /// A click on an option of a focused segmented strip or option card
+    /// selects that option with one write, whichever it is (Enter only cycles
+    /// to the next), and a click on the active option, or elsewhere on it,
+    /// sends nothing. Every strip and card on every model.
+    #[test]
+    fn a_click_on_an_option_selects_it() {
+        let strips = [
+            (Tab::Main, Focus::Mode),
+            (Tab::Main, Focus::AutoPosition),
+            (Tab::Main, Focus::AutoTone),
+            (Tab::Main, Focus::AutoGain),
+            (Tab::Main, Focus::AdaptationRate),
+            (Tab::Main, Focus::MicPreset),
+            (Tab::Eq, Focus::ToneMode),
+            // Cards with one row per option.
+            (Tab::Dynamics, Focus::Compressor),
+            (Tab::Dynamics, Focus::Hpf),
+            (Tab::Reverb, Focus::ReverbPreset),
+            (Tab::Eq, Focus::EqPreset),
+        ];
+        let mut clicked = 0;
+        for model in MODELS {
+            for mode in [InputMode::Manual, InputMode::Auto] {
+                for (tab, focus) in strips {
+                    for index in 0.. {
+                        let mut app = App {
+                            device_model: model,
+                            active_tab: tab,
+                            focus,
+                            ..App::default()
+                        };
+                        app.device_state.mode = mode;
+                        // A hidden or locked tab can't be shown or clicked.
+                        if app.is_tab_locked(tab) {
+                            break;
+                        }
+                        let hits = render(&app, 120, 40);
+                        let Some((area, presses)) = pill(&hits, focus, index) else {
+                            break;
+                        };
+                        let event = MouseEvent {
+                            kind: MouseEventKind::Down(MouseButton::Left),
+                            column: area.x,
+                            row: area.y,
+                            modifiers: KeyModifiers::NONE,
+                        };
+                        let label = format!("{model:?} {mode:?} {focus:?} option {index}");
+                        let action = handle_mouse(&mut app, event, &hits)
+                            .and_then(|key| crate::handle_key(&mut app, key, KeyModifiers::NONE));
+                        assert_eq!(action.is_some(), presses > 0, "{label}");
+                        let after = render(&app, 120, 40);
+                        assert_eq!(pill(&after, focus, index).map(|p| p.1), Some(0), "{label}");
+                        // A near miss on the focused strip (its label, hint or
+                        // border) changes nothing.
+                        let miss = after
+                            .regions
+                            .iter()
+                            .filter(|(_, target)| *target == Target::Control(focus))
+                            .flat_map(|(area, _)| area.positions())
+                            .find(|p| after.target_at(p.x, p.y) == Some(Target::Control(focus)));
+                        if let Some(miss) = miss.filter(|_| app.focus == focus) {
+                            let event = MouseEvent {
+                                column: miss.x,
+                                row: miss.y,
+                                ..event
+                            };
+                            let action = handle_mouse(&mut app, event, &after).and_then(|key| {
+                                crate::handle_key(&mut app, key, KeyModifiers::NONE)
+                            });
+                            assert!(action.is_none(), "{label}: near miss");
+                        }
+                        clicked += 1;
+                    }
+                }
+            }
+        }
+        // Mode on every model in both modes, and HPF's three, at least.
+        assert!(clicked > 6 * 2 * 2 + 3, "{clicked}");
     }
 
     #[test]
@@ -486,8 +615,10 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(clicked_frame.buffer, &keyboard_frame);
+            // Focused, the strip changes only on a click on one of its options.
+            assert!(click(&mut app, &hits, Target::Control(Focus::Mode)).is_none());
             assert!(matches!(
-                click(&mut app, &hits, Target::Control(Focus::Mode)),
+                click(&mut app, &hits, Target::Pill(Focus::Mode, 1)),
                 Some(DeviceAction::SetMode(InputMode::Auto))
             ));
         }

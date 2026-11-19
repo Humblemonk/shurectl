@@ -6,6 +6,45 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
+## 2.18.1 — 2026-11-19
+
+Running shurectl twice at once, such as the TUI and a Stream Deck button, no longer mixes up
+your settings, and clicks and focus do what you'd expect.
+
+### Fixed
+
+- Two shurectl running at the same time could read some of your settings wrong. On Linux,
+  the EQ bands came back at 0 dB and the firmware as Unknown, with no error, and a preset
+  saved then kept those values. The two now take turns at the device, so a Stream Deck
+  press may wait a moment while the TUI reads; after 5 seconds it gives up and says another
+  shurectl is busy with the device. Seen and fixed on the MVX2U Gen 2 under Linux; whether
+  macOS and Windows were affected is unconfirmed.
+- Changing the mode outside shurectl, in MOTIV or with a Stream Deck button running
+  `shurectl --mode`, no longer moves you off the control you're on. Focus used to jump from
+  Mute to Mode, so your next `Enter` switched the mode back instead of muting. It now moves
+  only when your control disappears in the new mode, such as Gain in Auto Level.
+- Clicking an option now picks the one you click, in strips such as Input Mode and Mic
+  Preset and in cards such as Compressor, HPF, Reverb Type and the MV7's EQ. A click used to
+  step to the next option whichever you clicked: clicking the already-active Manual switched
+  to Auto Level, and clicking Heavy set the Compressor to Light. Clicking the active option,
+  or a strip's label, now changes nothing.
+- When a mode switch goes through but shurectl can't read the device afterwards, it now says
+  the mode was switched, in the TUI and from `shurectl --mode`, so a script doesn't take the
+  error to mean nothing changed and switch back. On the MVX2U and MV6, the TUI also says to
+  press `r`, instead of a plain "Mode → Manual" while the arrow keys did nothing.
+- On the MV7, a Mic Position or Tone you change in MOTIV while shurectl runs now shows, and
+  changing the other one in shurectl no longer puts yours back. Not yet tested on an MV7.
+- If a counterfeit device reports the same USB serial as your genuine one, the genuine one
+  now reconnects after a replug and shows as unplugged when it is. With only counterfeits
+  connected, the one-shot commands say why they won't open them instead of asking for
+  `--device`.
+
+### Upgrading
+
+- If you install with `cargo install`, you now need Rust 1.89 or later: run `rustup update`
+  if the build says your Rust is too old. The AUR package, Homebrew and the prebuilt
+  downloads need nothing.
+
 ## 2.18.0 — 2026-11-16
 
 ### Changed

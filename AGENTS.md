@@ -207,13 +207,13 @@ rather than promoting a lower one.
   can shift every later GET by one packet (481dc76, 2.10.0). Replies route by address; the
   prefix byte routes only FEAT_MIX 0x03 (Playback Mix; evidence in `.claude/rules/protocol.md`).
   `get_state()` fails unless every required GET got a usable reply, so no writable field is
-  left at its default (36 dB gain). It drains queued input first, and
-  `send_get_past_strays()` skips reports that can't be the GET's answer (a late reply, or on
-  Linux another shurectl's); a GET that reads only strays fails the readback. Whether every
-  GET is answered at its own address is unconfirmed, so don't add a general address check
-  without captures. `query_as()` with `Need::Optional` is for a GET unchecked on that model
-  or missing from some firmware: its field is an `Option` left `None`, so nothing shows,
-  saves or writes a default.
+  left at its default (36 dB gain). It drains queued input first, `send_get_past_strays()`
+  skips reports that can't be the GET's answer (a late reply, or one MOTIV caused), and all
+  device I/O takes `ShureDevice::exclusive()`, one shurectl at a time (`.claude/rules/protocol.md`).
+  Whether every GET is answered at its own address is unconfirmed, so don't add a general
+  address check without captures. `query_as()` with `Need::Optional` is for a GET unchecked
+  on that model or missing from some firmware: its field is an `Option` left `None`, so
+  nothing shows, saves or writes a default.
 - **Gain Lock**: a locked device ignores gain writes. `apply_binary_preset()` unlocks,
   writes the gain, then re-locks straight away (835c213 in 2.9.1, 551a5ae in 2.10.0). Don't
   reorder it.
@@ -275,14 +275,15 @@ rather than promoting a lower one.
   ("probed 2026-10-12 on the MV6 Gen 2"). Without evidence it says "unconfirmed". An
   explanation that fits a result is not evidence: "the MV6 answers its Mic Level only after
   a SET" explained a probe bug and was repeated for six months (0c3a0de, 2.13.2).
-- The maintainer tests on an MVX2U Gen 2 only (as of 2026-11-16; the MV6 Gen 2 is gone). For what tests
-  can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device steps with
-  the expected result. Say when only another model can check it (owners run `shurectl-probe`).
+- The maintainer tests on an MVX2U Gen 2 only (as of 2026-11-16; the MV6 Gen 2 is gone). For
+  what tests can't cover (HID I/O, acks, reconnects, preset loads), give numbered on-device
+  steps and the expected result. Say when only another model can (owners run `shurectl-probe`).
 - Commit messages follow **Commits** in `CONTRIBUTING.md`: a plain imperative subject saying
-  what changes for the user, with no type prefix. The commit or PR body says why and names
-  the models affected, always so for an unavoidable cross-model UI divergence.
-- `doc/CHANGELOG.md` lists only changes users can see or feel. Draft under the next version's
-  heading (`## x.y.z — YYYY-MM-DD`), not "Unreleased"; ask for it unless `Cargo.toml` has it.
+  what changes for the user, no type prefix; the body says why and names the models affected.
+- `doc/CHANGELOG.md` is for people who use shurectl: only changes they can see or feel, in
+  the UI's words (no GETs, readback or function names; those go in the commit message), with
+  a one-line summary and an **Upgrading** note when they must act. Draft under the next
+  version's heading (`## x.y.z — YYYY-MM-DD`), not "Unreleased"; ask unless `Cargo.toml` has it.
 - Review a change that touches device writes, readback, presets or a release in a session
   that didn't write it: give it the diff, the intent and the hardware results, not the
   author's conclusions about whether the code is right. Pick the `/code-review` level (other

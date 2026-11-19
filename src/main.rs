@@ -51,7 +51,7 @@ use std::io;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use crossterm::{
     cursor::Show,
@@ -831,6 +831,10 @@ fn flush_scroll(
     }
 }
 
+/// A TUI write that takes at least this long pushes the next live poll back
+/// from when it ended rather than when it started (`send_from_tui()`).
+const SLOW_WRITE: Duration = Duration::from_millis(100);
+
 /// Write an action from a key, click or wheel. The next live poll waits a
 /// second: whether a device applies a write before acking it is unconfirmed,
 /// so a poll straight after could read the old value and show it as changed
@@ -843,10 +847,25 @@ fn send_from_tui(
     now: Instant,
     loop_state: &mut LoopState,
 ) {
-    let mute = matches!(action, DeviceAction::SetMute(_));
-    loop_state.last_live_poll = now;
+    // A mute still goes through while the settings are unread, and a mode
+    // switch can leave them unread (`resync_after_mode()`): both say so.
+    // Other writes are refused then, with the hint already, and a status such
+    // as "Factory reset sent" or a preset rename shouldn't gain it.
+    let says_unread = matches!(action, DeviceAction::SetMute(_) | DeviceAction::SetMode(_));
+    // Timed from when a slow write ends: a preset load takes about a second.
+    // `now` is the step's clock (the harness's is fake), so the write's own
+    // time is added to it. One under `SLOW_WRITE` moves the poll too little to
+    // matter and isn't counted, which keeps the harness's ticks exact.
+    let started = Instant::now();
     apply_action(app, device, action, before);
-    if mute {
+    let took = started.elapsed();
+    loop_state.last_live_poll = now
+        + if took >= SLOW_WRITE {
+            took
+        } else {
+            Duration::ZERO
+        };
+    if says_unread {
         note_unread(app);
     }
 }
@@ -867,7 +886,8 @@ impl LoopState {
 /// pending wheel adjustment, and poll for the device every
 /// `PRESENCE_POLL_INTERVAL`. `fits` is `ui::fits()` for the frame just drawn:
 /// below the minimum size only the notice is on screen, so keys only quit and
-/// mouse events are dropped. Mute, mode, gain and the monitor levels are read
+/// mouse events are dropped, as they are when writing a pending wheel
+/// adjustment changed the screen they were aimed at. Mute, mode, gain and the monitor levels are read
 /// every `LIVE_POLL_INTERVAL` (`poll_live()`), and a running gain check takes
 /// the meter's peak.
 /// `now` is passed in so the `--qa` harness can run the
@@ -916,8 +936,22 @@ fn step(
             (&loop_state.pending_scroll, scroll_target),
             (Some(pending), Some(Some(mouse::Target::Control(focus)))) if pending.focus == focus
         );
+        // Writing a pending wheel adjustment can change the mode, a value or
+        // focus after this frame was drawn: a failed write is undone or read
+        // back, and some that land re-read the device (`resync_after_mode()`,
+        // the MV7's Auto Level rows). A mouse event is aimed at the frame on
+        // screen, so it is dropped then: a click on an option counts its steps
+        // from the option shown as active.
+        let mut frame_stale = false;
         if can_act && !same_control {
+            let drawn = loop_state
+                .pending_scroll
+                .is_some()
+                .then(|| (app.device_state.clone(), app.focus, app.active_tab));
             flush_scroll(app, device, loop_state, now);
+            frame_stale = drawn.is_some_and(|(state, focus, tab)| {
+                state != app.device_state || focus != app.focus || tab != app.active_tab
+            });
         }
         let before = can_act.then(|| app.device_state.clone());
         let action = match event {
@@ -927,13 +961,18 @@ fn step(
             }
             // Nothing on the notice is clickable, and a click would still
             // cancel a name edit or a Factory Reset confirmation.
-            Event::Mouse(_) if !fits => None,
+            Event::Mouse(_) if !fits || frame_stale => None,
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 app.armed_preset_action = None;
                 handle_key(app, key.code, key.modifiers)
             }
-            Event::Mouse(event) => mouse::handle_mouse(app, event, hits)
-                .and_then(|key| handle_key(app, key, KeyModifiers::NONE)),
+            Event::Mouse(event) => {
+                let action = mouse::handle_mouse(app, event, hits)
+                    .and_then(|key| handle_key(app, key, KeyModifiers::NONE));
+                // Left over when the click's Enter didn't reach a strip.
+                app.pill_presses = None;
+                action
+            }
             Event::Key(_)
             | Event::Resize(_, _)
             | Event::FocusGained
@@ -1245,16 +1284,23 @@ fn apply_action(
                     state.auto_tone,
                 )
             })
-            .and_then(|()| resync_after_mode(app, device, *mode))
+            // The switch landed: say so if only the re-read after it fails, so
+            // a script doesn't take the error as "nothing changed" and switch
+            // again (the MV7 re-reads everything; the MVX2U Gen 1 and MV6 the gain).
+            .and_then(|()| {
+                resync_after_mode(app, device, *mode).with_context(|| {
+                    format!("The mode was switched to {mode}, but the read after the switch failed")
+                })
+            })
         }
         DeviceAction::SetAutoPosition(pos) => {
-            app.set_ok(format!("Mic Position → {}", pos));
+            app.set_ok(position_line(*pos));
             let tone = app.device_state.auto_tone;
             send_if_connected(device, |d| d.set_auto_position(*pos, tone))
                 .and_then(|()| resync_mv7_state(app, device))
         }
         DeviceAction::SetAutoTone(tone) => {
-            app.set_ok(format!("Tone → {}", tone));
+            app.set_ok(tone_line(*tone));
             let position = app.device_state.auto_position;
             send_if_connected(device, |d| d.set_auto_tone(position, *tone))
                 .and_then(|()| resync_mv7_state(app, device))
@@ -1913,48 +1959,46 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
         // Anything else leaves the values unknown for now, not changed.
         Err(_) => return,
     };
+    let model = app.device_model;
     let state = &mut app.device_state;
-    let mut changed = Vec::new();
-    if let Some(muted) = live.muted.filter(|muted| *muted != state.muted) {
+    // What the screen showed, to name each change against once the values
+    // are in, from this poll or from the re-read a mode change causes.
+    let (muted_before, mode_before) = (state.muted, state.mode);
+    let auto_level_before = (state.auto_position, state.auto_tone);
+    let levels_before = (
+        state.gain_tenths,
+        shown_monitor_mix(model, state.monitor_mix),
+        state.playback_mix,
+    );
+    if let Some(muted) = live.muted {
         state.muted = muted;
-        changed.push(mute_line(muted));
     }
-    let mode_before = state.mode;
-    if let Some(mode) = live.mode.filter(|mode| *mode != state.mode) {
+    if let Some(mode) = live.mode {
         state.mode = mode;
-        changed.extend(announce.then(|| mode_line(mode)));
     }
-    if let Some(gain) = live.gain_tenths.filter(|gain| *gain != state.gain_tenths) {
+    // In Auto Level the device sets its own gain, which some models may
+    // report as it moves: kept, but not announced. The MVX2U Gen 2, MV6 Gen 2
+    // and MV7+ report their Manual gain instead (tested 2026-10-28 and
+    // 2026-10-31; the MV7+ reported by mike-callahan 2026-10-31); on the
+    // others a switch to Manual re-reads it (`resync_after_mode()`).
+    if let Some(gain) = live.gain_tenths {
         state.gain_tenths = gain;
-        // In Auto Level the device sets its own gain, which some models may
-        // report as it moves: kept, but not announced. The MVX2U Gen 2,
-        // MV6 Gen 2 and MV7+ report their Manual gain instead (tested
-        // 2026-10-28 and 2026-10-31; the MV7+ reported by mike-callahan
-        // 2026-10-31); on the others a switch to Manual re-reads it
-        // (`resync_after_mode()`).
-        let manual = state.mode == InputMode::Manual;
-        changed.extend((announce && manual).then(|| gain_line(gain)));
     }
-    // The MV7 stores 1% and 2% as 0%: reading 0% after setting them is no change.
-    let shown_mix = match app.device_model {
-        DeviceModel::Mv7 => protocol::mv7_text::monitor_mix_as_stored(state.monitor_mix),
-        DeviceModel::Mvx2u
-        | DeviceModel::Mvx2uGen2
-        | DeviceModel::Mv6
-        | DeviceModel::Mv6Gen2
-        | DeviceModel::Mv7Plus => state.monitor_mix,
-    };
-    if let Some(mix) = live.monitor_mix.filter(|mix| *mix != shown_mix) {
+    if let Some(mix) = live.monitor_mix.filter(|mix| *mix != levels_before.1) {
         state.monitor_mix = mix;
-        changed.extend(announce.then(|| monitor_mix_line(app.device_model, mix)));
     }
-    if let Some(mix) = live.playback_mix.filter(|mix| *mix != state.playback_mix) {
+    if let Some(mix) = live.playback_mix {
         state.playback_mix = mix;
-        changed.extend(announce.then(|| playback_mix_line(mix)));
+    }
+    // The MV7 only: a Mic Position or Tone changed in MOTIV, so the next
+    // Position or Tone key doesn't write the other one's old value back.
+    if let Some((position, tone)) = live.auto_level {
+        (state.auto_position, state.auto_tone) = (position, tone);
     }
     if announce && app.device_state.mode != mode_before {
         // A mode changed elsewhere changes which controls apply (and on the
-        // MV7 resets EQ and compressor): read everything again.
+        // MV7 resets EQ and compressor): read everything again. The status
+        // then names the re-read's values, which are what the screen shows.
         if let Err(e) = reload_state(app, dev) {
             if is_disconnect(&e) {
                 return mark_disconnected(app, dev.model);
@@ -1970,12 +2014,62 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
             return;
         }
     }
+    let state = &app.device_state;
+    let mut changed = Vec::new();
+    if state.muted != muted_before {
+        changed.push(mute_line(state.muted));
+    }
+    if announce {
+        if state.mode != mode_before {
+            changed.push(mode_line(state.mode));
+        }
+        if state.mode == InputMode::Manual && state.gain_tenths != levels_before.0 {
+            changed.push(gain_line(state.gain_tenths));
+        }
+        if shown_monitor_mix(model, state.monitor_mix) != levels_before.1 {
+            changed.push(monitor_mix_line(model, state.monitor_mix));
+        }
+        if state.playback_mix != levels_before.2 {
+            changed.push(playback_mix_line(state.playback_mix));
+        }
+        // Named only when Auto Level was on already: entering it is the
+        // mode's change.
+        if state.mode == InputMode::Auto && mode_before == InputMode::Auto {
+            if state.auto_position != auto_level_before.0 {
+                changed.push(position_line(state.auto_position));
+            }
+            if state.auto_tone != auto_level_before.1 {
+                changed.push(tone_line(state.auto_tone));
+            }
+        }
+    }
     app.settle_focus(mode_before);
     if changed.is_empty() {
         return;
     }
     app.set_ok(format!("{} (changed on the device)", changed.join(", ")));
     note_unread(app);
+}
+
+/// The Monitor Mix as the device stores it: the MV7 stores 1% and 2% as 0%,
+/// so reading 0% after setting them is no change.
+fn shown_monitor_mix(model: DeviceModel, monitor_mix: u8) -> u8 {
+    match model {
+        DeviceModel::Mv7 => protocol::mv7_text::monitor_mix_as_stored(monitor_mix),
+        DeviceModel::Mvx2u
+        | DeviceModel::Mvx2uGen2
+        | DeviceModel::Mv6
+        | DeviceModel::Mv6Gen2
+        | DeviceModel::Mv7Plus => monitor_mix,
+    }
+}
+
+fn position_line(position: protocol::MicPosition) -> String {
+    format!("Mic Position → {position}")
+}
+
+fn tone_line(tone: protocol::AutoTone) -> String {
+    format!("Tone → {tone}")
 }
 
 fn mute_line(muted: bool) -> String {
@@ -2592,6 +2686,61 @@ mod tests {
         );
     }
 
+    /// On the MV7 a Tone changed in MOTIV while in Auto Level shows, so the
+    /// next Mic Position key writes it, not the old Tone, back with the position.
+    #[test]
+    fn an_mv7_auto_level_change_made_elsewhere_shows() {
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            ..fake_hid::FakeDevice::seed_state(DeviceModel::Mv7)
+        };
+        let fake = FakeDevice::with_state(DeviceModel::Mv7, auto.clone());
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            device_state: auto.clone(),
+            ..App::default()
+        };
+        let bright = DeviceState {
+            auto_tone: protocol::AutoTone::Bright,
+            ..auto
+        };
+        fake.set_on_device(fake_hid::LiveField::Mode, &bright);
+        poll_live(&mut app, &Some(fake.open()));
+        assert_eq!(app.device_state.auto_tone, protocol::AutoTone::Bright);
+        assert_eq!(app.device_state.auto_position, bright.auto_position);
+        assert_eq!(app.status_message, "Tone → Bright (changed on the device)");
+    }
+
+    /// A mode switch whose re-read fails says the switch landed, so a
+    /// script or user doesn't switch again: the MV7 re-reads everything after
+    /// one, and here its first line goes unanswered.
+    #[test]
+    fn a_mode_switch_whose_re_read_fails_says_it_switched() {
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let before = app.device_state.clone();
+        fake.faults_mut(|faults| faults.unanswered_line = Some("micMute".into()));
+        apply_action(
+            &mut app,
+            &mut device,
+            DeviceAction::SetMode(InputMode::Auto),
+            Some(before),
+        );
+        assert!(app.status_is_error);
+        assert!(
+            app.status_message.starts_with(
+                "Device error: The mode was switched to Auto Level, but the read after the switch failed."
+            ),
+            "{}",
+            app.status_message
+        );
+    }
+
     /// A mode changed elsewhere whose re-read fails says so once, with only
     /// the mode: the other values were read before the failed readback.
     #[test]
@@ -2623,8 +2772,8 @@ mod tests {
         assert_eq!(status.matches(STATE_UNREAD_HINT).count(), 1, "{status}");
     }
 
-    /// Finding of the 09e9569 review: a wheel adjustment still pending when the
-    /// next key changed the screen took that key's change in with it.
+    /// A write pushes the next live poll a second past when it ended, so a
+    /// slow one, such as a preset load, doesn't leave the poll due at once.
     #[test]
     fn a_write_pushes_the_next_live_poll_back() {
         let fake = FakeDevice::new(DeviceModel::Mv6Gen2);
@@ -2667,8 +2816,16 @@ mod tests {
         assert_eq!(mute_gets(&packets), 0);
         assert_eq!(mute_gets(&run(None, Duration::from_millis(1900))), 0);
         assert_eq!(mute_gets(&run(None, Duration::from_secs(2))), 1);
+        // A write that takes 120 ms (two writes of 60 ms) pushes it that much further.
+        fake.faults_mut(|faults| faults.slow_writes = Some(Duration::from_millis(60)));
+        run(Some(KeyCode::Enter), Duration::from_secs(3));
+        fake.faults_mut(|faults| faults.slow_writes = None);
+        assert_eq!(mute_gets(&run(None, Duration::from_millis(4100))), 0);
+        assert_eq!(mute_gets(&run(None, Duration::from_millis(4300))), 1);
     }
 
+    /// Finding of the 09e9569 review: a wheel adjustment still pending when the
+    /// next key changed the screen took that key's change in with it.
     #[test]
     fn a_pending_wheel_adjustment_goes_out_before_the_next_key() {
         let fake = FakeDevice::new(DeviceModel::Mv7);
@@ -2738,6 +2895,98 @@ mod tests {
             .state;
         assert!(!mic.muted);
         assert_eq!(mic.gain_tenths, 255);
+    }
+
+    /// Writing a pending wheel adjustment can change what the frame showed
+    /// before a click aimed at it is handled; here the write fails and the
+    /// device is read back. The click is dropped: it was on Auto Level,
+    /// counted as one step from the Manual shown, and the re-read found Auto
+    /// and moved focus to Mode, so it would have sent Manual to a mic just
+    /// switched to Auto elsewhere.
+    #[test]
+    fn a_click_after_a_failed_wheel_write_changed_the_screen_is_dropped() {
+        let model = DeviceModel::Mv7;
+        let fake = FakeDevice::new(model);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: model,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let draw = |app: &App| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+                .expect("terminal");
+            let mut hits = mouse::HitMap::default();
+            terminal
+                .draw(|frame| hits = ui::draw(frame, app))
+                .expect("draw");
+            hits
+        };
+        let at = |hits: &mouse::HitMap, target| {
+            let (area, _) = hits
+                .regions()
+                .iter()
+                .find(|(_, found)| *found == target)
+                .expect("target drawn");
+            (area.x, area.y)
+        };
+        let mouse = |kind, (column, row)| {
+            Some(Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }))
+        };
+        let now = Instant::now();
+        let mut loop_state = LoopState::new(now);
+        let hits = draw(&app);
+        let gain = at(&hits, mouse::Target::Control(app::Focus::Gain));
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            mouse(MouseEventKind::ScrollUp, gain),
+            now,
+            &mut loop_state,
+        );
+        assert!(loop_state.pending_scroll.is_some());
+        // Switched to Auto elsewhere, and the pending gain write gets no reply.
+        let auto = DeviceState {
+            mode: InputMode::Auto,
+            ..DeviceState::default()
+        };
+        fake.set_on_device(fake_hid::LiveField::Mode, &auto);
+        // The line the pending write sends, whatever the gain step is.
+        let pending_gain = protocol::mv7_text::set_gain(app.device_state.gain_tenths).line;
+        fake.faults_mut(|faults| faults.unanswered_line = Some(pending_gain));
+        let hits = draw(&app);
+        let auto_level = at(&hits, mouse::Target::Pill(app::Focus::Mode, 1));
+        step(
+            &mut app,
+            &mut device,
+            &hits,
+            true,
+            mouse(MouseEventKind::Down(MouseButton::Left), auto_level),
+            now,
+            &mut loop_state,
+        );
+        // Without the failed write and its re-read, this tests nothing.
+        assert!(
+            app.status_is_error && app.status_message.contains(READ_BACK_NOTE),
+            "the gain write must fail and be read back: {}",
+            app.status_message
+        );
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        assert_eq!(app.focus, app::Focus::Mode);
+        let mic = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        assert_eq!(mic.mode, InputMode::Auto);
     }
 
     /// Load `slot` on `fake` the way the Presets tab does, from a shown state

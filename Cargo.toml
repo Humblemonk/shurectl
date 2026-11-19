@@ -1,8 +1,8 @@
 [package]
 name = "shurectl"
-version = "2.18.0"
+version = "2.18.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 default-run = "shurectl"
 description = "shurectl — TUI configurator for Shure USB audio interfaces and microphones"
 license = "GPL-3.0-only"
