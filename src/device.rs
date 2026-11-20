@@ -57,6 +57,7 @@
 //! whatever the other process left queued is drained inside it.
 
 use std::fs::File;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -128,6 +129,11 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// How often a waiting exchange tries the lock again.
 const LOCK_RETRY: Duration = Duration::from_millis(5);
+
+/// How long a read that only labels a device in a list waits for the lock
+/// before showing it as busy: a scan with several devices waits once per
+/// device, and another shurectl's exchanges last milliseconds.
+const LABEL_LOCK_WAIT: Duration = Duration::from_secs(1);
 
 /// Another shurectl kept the device for all of [`LOCK_WAIT`]. Every exchange
 /// takes the lock before it sends anything, and each `set_*` is one exchange,
@@ -349,25 +355,44 @@ pub struct ShureDevice {
     /// Product string from the USB device descriptor, which finds the
     /// device's audio input for the meter on some systems.
     pub product: Option<String>,
-    /// How many [`Exclusive`] guards are alive: nested exchanges take the
-    /// lock file once, the outermost one.
-    exclusive_depth: AtomicUsize,
+    /// The lock other shurectl processes take for this device, shared with
+    /// every guard on it.
+    lock: Arc<DeviceLock>,
+}
+
+/// A device's lock, owned jointly by the device and its guards, so a guard
+/// can stay held while the device moves (the CLI holds one from a toggle's
+/// read through its write).
+struct DeviceLock {
     /// This device's lock file ([`open_lock_file()`]), on a transport other
     /// processes can reach; `None` for the fake, or when it can't be opened.
-    lock: Option<File>,
+    file: Option<File>,
+    /// How many [`Exclusive`] guards are alive: nested exchanges take the
+    /// lock file once, the outermost one.
+    depth: AtomicUsize,
     /// Whether the outermost guard holds the lock file, and so unlocks it.
-    holds_lock: AtomicBool,
+    held: AtomicBool,
+}
+
+impl DeviceLock {
+    fn new(file: Option<File>) -> Arc<Self> {
+        Arc::new(Self {
+            file,
+            depth: AtomicUsize::new(0),
+            held: AtomicBool::new(false),
+        })
+    }
 }
 
 /// Held while this process talks to the device; see [`ShureDevice::exclusive()`].
-pub struct Exclusive<'a>(&'a ShureDevice);
+pub struct Exclusive(Arc<DeviceLock>);
 
-impl Drop for Exclusive<'_> {
+impl Drop for Exclusive {
     fn drop(&mut self) {
-        let device = self.0;
-        if device.exclusive_depth.fetch_sub(1, Ordering::Relaxed) == 1
-            && device.holds_lock.swap(false, Ordering::Relaxed)
-            && let Some(file) = &device.lock
+        let lock = &self.0;
+        if lock.depth.fetch_sub(1, Ordering::Relaxed) == 1
+            && lock.held.swap(false, Ordering::Relaxed)
+            && let Some(file) = &lock.file
         {
             // A failed unlock leaves it to the OS, which drops the lock when
             // this process exits.
@@ -393,12 +418,15 @@ fn open_lock_file(hid_path: &str, _usb_serial: impl FnOnce() -> Option<String>) 
 
 /// Elsewhere hidapi's path isn't a file, so the lock is a file named after the
 /// USB serial in the temp directory, which is per user on macOS and Windows.
-/// Whether those systems share input reports between handles at all is
-/// unconfirmed (`.claude/rules/protocol.md`).
+/// A device without one is named by its hidapi path instead, which every
+/// process sees the same while it stays plugged in, so two such devices
+/// don't share a lock. Whether those systems share input reports between
+/// handles at all is unconfirmed (`.claude/rules/protocol.md`).
 #[cfg(not(target_os = "linux"))]
-fn open_lock_file(_hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
     let name: String = usb_serial()
-        .unwrap_or_else(|| UNKNOWN_SERIAL.to_string())
+        .filter(|serial| !serial.is_empty())
+        .unwrap_or_else(|| hid_path.to_string())
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
@@ -435,16 +463,14 @@ impl ShureDevice {
             .serial_number()
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
         let product = transport.product();
-        let lock = transport.lock_file();
+        let lock = DeviceLock::new(transport.lock_file());
         Self {
             transport,
             model,
             seq: AtomicU8::new(0),
             serial_number,
             product,
-            exclusive_depth: AtomicUsize::new(0),
             lock,
-            holds_lock: AtomicBool::new(false),
         }
     }
 
@@ -455,33 +481,40 @@ impl ShureDevice {
     /// lock once. Errors only when another shurectl kept the device for all of
     /// [`LOCK_WAIT`] ([`Busy`]). `main.rs` holds one around a preset load, so
     /// no other shurectl comes between its Gain Lock unlock and re-lock.
-    pub fn exclusive(&self) -> Result<Exclusive<'_>> {
+    pub fn exclusive(&self) -> Result<Exclusive> {
         self.exclusive_within(LOCK_WAIT)
     }
 
     /// [`Self::exclusive()`] without the wait: [`Busy`] at once while another
     /// shurectl holds the device. For the TUI's live poll, which skips a turn
     /// rather than stall the screen for [`LOCK_WAIT`] every second.
-    pub fn exclusive_now(&self) -> Result<Exclusive<'_>> {
+    pub fn exclusive_now(&self) -> Result<Exclusive> {
         self.exclusive_within(Duration::ZERO)
     }
 
-    fn exclusive_within(&self, wait: Duration) -> Result<Exclusive<'_>> {
-        if self.exclusive_depth.load(Ordering::Relaxed) == 0
-            && let Some(file) = &self.lock
+    /// [`Self::exclusive()`] with a shorter wait, for reads that only label a
+    /// device in a list (`--list`, the device picker): [`LABEL_LOCK_WAIT`].
+    pub fn exclusive_for_labels(&self) -> Result<Exclusive> {
+        self.exclusive_within(LABEL_LOCK_WAIT)
+    }
+
+    fn exclusive_within(&self, wait: Duration) -> Result<Exclusive> {
+        let lock = &self.lock;
+        if lock.depth.load(Ordering::Relaxed) == 0
+            && let Some(file) = &lock.file
         {
             let locked = wait_for_lock(file, wait)?;
-            self.holds_lock.store(locked, Ordering::Relaxed);
+            lock.held.store(locked, Ordering::Relaxed);
         }
-        self.exclusive_depth.fetch_add(1, Ordering::Relaxed);
-        Ok(Exclusive(self))
+        lock.depth.fetch_add(1, Ordering::Relaxed);
+        Ok(Exclusive(Arc::clone(lock)))
     }
 
     /// Every write and read checks it runs under [`Self::exclusive()`]. The
     /// fake device counts guards too, so the tests catch a path that skips one.
     fn debug_assert_exclusive(&self) {
         debug_assert!(
-            self.exclusive_depth.load(Ordering::Relaxed) > 0,
+            self.lock.depth.load(Ordering::Relaxed) > 0,
             "device I/O outside ShureDevice::exclusive()"
         );
     }
@@ -2136,7 +2169,7 @@ mod tests {
             std::env::temp_dir().join(format!("shurectl-poll-lock-test-{}", std::process::id()));
         let open = || lock_test_file(&path);
         let mut device = FakeDevice::new(DeviceModel::Mvx2uGen2).open();
-        device.lock = Some(open());
+        device.lock = DeviceLock::new(Some(open()));
         let other = open();
         other.lock().expect("other shurectl's lock");
         let start = Instant::now();
@@ -2150,6 +2183,37 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A guard stays held when the device moves, as the CLI's toggle moves it
+    /// into the write path between its read and its write: another process
+    /// can't take the lock in between, and the writes inside don't wait.
+    #[test]
+    fn a_guard_holds_the_lock_while_the_device_moves() {
+        use crate::fake_hid::FakeDevice;
+
+        let path =
+            std::env::temp_dir().join(format!("shurectl-move-lock-test-{}", std::process::id()));
+        let mut device = FakeDevice::new(DeviceModel::Mvx2uGen2).open();
+        device.lock = DeviceLock::new(Some(lock_test_file(&path)));
+        let other = lock_test_file(&path);
+        let turn = device.exclusive().expect("free lock");
+        let moved = Some(device);
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        let start = Instant::now();
+        moved
+            .as_ref()
+            .expect("device")
+            .set_mute(true)
+            .expect("mute");
+        assert!(start.elapsed() < Duration::from_millis(100), "waited");
+        drop(turn);
+        other.try_lock().expect("released with the guard");
+        drop((moved, other));
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Exchanges nest: a readback's GETs run inside its own guard, and every
     /// guard is gone afterwards, so the next exchange takes the lock again.
     #[test]
@@ -2160,12 +2224,12 @@ mod tests {
         let device = fake.open();
         device.get_state().expect("readback");
         device.set_mute(true).expect("mute");
-        assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 0);
+        assert_eq!(device.lock.depth.load(Ordering::Relaxed), 0);
         let outer = device.exclusive().expect("outer");
         let inner = device.exclusive().expect("inner");
-        assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 2);
+        assert_eq!(device.lock.depth.load(Ordering::Relaxed), 2);
         drop((inner, outer));
-        assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 0);
+        assert_eq!(device.lock.depth.load(Ordering::Relaxed), 0);
     }
 
     /// A readback that fails names the setting, so a user's report says which.

@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::app::{App, DeviceAction, Focus};
-use crate::device::ShureDevice;
+use crate::device::{Exclusive, ShureDevice};
 use crate::presets::{self, PresetSlot};
 use crate::protocol::{DeviceState, InputMode};
 
@@ -169,6 +169,10 @@ fn execute(
     if !request.combined()
         && let Some(action) = mute
     {
+        // A toggle holds one turn at the device from its read through its
+        // write, so two at once (a double press) can't both read the same
+        // state and leave the mic live.
+        let _turn = toggle_turn(action, Some(&dev))?;
         let muted = match action {
             MuteAction::On => true,
             MuteAction::Off => false,
@@ -201,6 +205,13 @@ fn execute(
     // Mute first, before even the other values are checked: it needs no
     // readback (AGENTS.md, Mute), so a bad value, a failed readback or a
     // refusal later never leaves the mic live. clap keeps --preset apart.
+    // As for mute alone: one turn from a toggle's read through its write.
+    let turn = match mute {
+        Some(action) => {
+            toggle_turn(action, device.as_ref()).map_err(|e| progress.fail(&["--mute"], e))?
+        }
+        None => None,
+    };
     let mute_to = match mute {
         Some(MuteAction::On) => Some(true),
         Some(MuteAction::Off) => Some(false),
@@ -218,6 +229,7 @@ fn execute(
             .map_err(|e| progress.fail(&["--mute"], e))?;
         progress.applied.push("--mute");
     }
+    drop(turn);
     check_values(request, &app).map_err(|e| progress.fail(&[], e))?;
     // A toggle the mute read couldn't answer read everything already.
     if let Some(dev) = device.as_ref()
@@ -368,6 +380,20 @@ fn execute(
         .map_err(|e| progress.fail(&["--playback-mix"], e))?;
     }
     Ok(app)
+}
+
+/// For `--mute toggle`, the device's lock, held until the caller drops it:
+/// its nested reads and writes don't wait or lock again. `None` for the other
+/// mute actions, whose one exchange takes its own turn.
+fn toggle_turn(action: MuteAction, dev: Option<&ShureDevice>) -> Result<Option<Exclusive>> {
+    match (action, dev) {
+        (MuteAction::Toggle, Some(dev)) => Ok(Some(
+            dev.exclusive().context("Could not read the mute state")?,
+        )),
+        (MuteAction::Toggle, None) | (MuteAction::On | MuteAction::Off | MuteAction::Status, _) => {
+            Ok(None)
+        }
+    }
 }
 
 /// Send `--mute`'s value, as the TUI's Mute control does.

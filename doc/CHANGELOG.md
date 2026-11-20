@@ -22,17 +22,22 @@ copes better when another shurectl is using the device.
 - If another shurectl kept the device busy, a change or preset load in the TUI used to
   freeze the screen for about 10 seconds before it said your settings couldn't be read. It
   now gives up after 5 seconds, puts the screen back as it was, and asks you to press `r`,
-  since the other shurectl may have changed your settings meanwhile. Between your changes
-  the screen keeps responding while the other shurectl holds the device, where it used to
-  stop for as long as it did. A mute or unmute that
+  since the other shurectl may have changed your settings meanwhile. A mute or unmute that
   finds the device busy shows Mute as OFF, as shurectl does whenever it can't be sure the
-  mic is muted. `r` no longer reconnects on it, `--device` with a printed serial says
-  another shurectl was busy instead of that no device has that serial, and the device
-  picker and `--list` say a device was busy instead of leaving its name blank or showing
-  its USB serial without saying why.
+  mic is muted. `r` no longer reconnects on it.
+- While another shurectl holds the device, the TUI now keeps responding. Before, it stopped
+  for as long as the other one held it. Only a change you make, mute included, waits up to
+  5 seconds for its turn.
+- `--device` with a printed serial now says another shurectl was busy, instead of that no
+  device has that serial. The device picker and `--list` say a device was busy instead of
+  leaving its name blank or showing its USB serial without saying why, and wait a second
+  for it, not 5 or 10.
+- Two `--mute toggle` presses close together, such as a double press on a Stream Deck
+  button, could both read the same mute state and both unmute, leaving the mic live. Each
+  toggle now finishes before the next one starts. All models.
 - On Linux, two shurectl started differently, such as one with `sudo` or from a cron job or
   hotkey daemon beside the TUI, could still read each other's replies and get settings
-  wrong. They now always take turns. Unconfirmed on hardware.
+  wrong. They now always take turns.
 - When a mode switch went through but the device was unplugged while shurectl read it
   afterwards, the screen went back to the old mode while the status said it had switched.
   It now shows the new mode. The same holds for the MV7's Mic Position and Tone.

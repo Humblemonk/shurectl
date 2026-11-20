@@ -200,8 +200,12 @@ fn main() -> Result<()> {
                 // Show the factory serial (printed on the device) when we can read
                 // it; fall back to the USB descriptor serial if the device can't be
                 // opened or doesn't report one. This briefly opens each device.
+                // A busy device waits a second, not 5 (`exclusive_for_labels()`).
                 let printed = device::ShureDevice::open_path(&d.path)
-                    .map(|dev| dev.read_factory_serial())
+                    .map(|dev| {
+                        dev.exclusive_for_labels()
+                            .and_then(|_turn| dev.read_factory_serial())
+                    })
                     .unwrap_or(Ok(None));
                 let busy = printed.is_err();
                 let serial = printed.ok().flatten().unwrap_or(d.serial);
@@ -560,17 +564,21 @@ fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
             };
             match opened {
                 Ok(dev) => {
-                    // Only Busy is an error here, after a 5 s wait; once the
-                    // serial read waited, the name read would wait as long.
-                    let serial = dev.read_factory_serial();
-                    let name = match serial {
-                        Ok(_) => dev.read_device_name(),
-                        Err(_) => Ok(None),
+                    // One short turn for both labels (`exclusive_for_labels()`),
+                    // so a busy device holds the scan up for a second, not 10;
+                    // inside it neither read waits, nor fails as busy.
+                    let (busy, serial, name) = match dev.exclusive_for_labels() {
+                        Ok(_turn) => (
+                            false,
+                            dev.read_factory_serial().ok().flatten(),
+                            dev.read_device_name().ok().flatten(),
+                        ),
+                        Err(_) => (true, None, None),
                     };
                     picker::PickerRow {
-                        busy: serial.is_err() || name.is_err(),
-                        serial: serial.ok().flatten().or(usb_serial),
-                        name: name.ok().flatten(),
+                        busy,
+                        serial: serial.or(usb_serial),
+                        name,
                         problem: None,
                         not_genuine: false,
                         path: found.path,
