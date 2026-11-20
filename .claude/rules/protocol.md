@@ -81,24 +81,27 @@ CRC-16/ANSI covers 0x11 up to the CRC
   for 30 s, MVX2U Gen 2, 2026-11-20). Reads that only label a device in a list (`--list`,
   the picker) wait a second (`exclusive_for_labels()`). A `--mute toggle` holds one guard
   from its read through its write, or two at once both read the same state and unmute
-  (`cli.rs::toggle_turn()`). That the second toggle's read then sees the first's write is
-  unconfirmed, as is whether a device applies a write before acking it. An MV7 SET and its
-  `[Failed]` re-read are one exchange, and so are a binary preset load (which also keeps
-  anything from coming between its Gain Lock unlock and re-lock) and `f`. A read after a
-  write that landed carries `WriteLanded`, so a failure there never undoes the write. A
-  readback holds one guard from its drain to its last GET. A new I/O path takes the guard
-  too: `write()` and `read()` `debug_assert!` it, so the tests (debug builds) panic on one
-  that doesn't. `reopen()` asserts it runs under none. The fake never locks. Unconfirmed
-  whether macOS and Windows share reports
+  (`cli.rs::toggle_turn()`). Two toggles started together left the mute as it was in 40 of
+  40 pairs, 20 from each state (MVX2U Gen 2, 2026-11-20), so there its read sees the write
+  before it; unconfirmed on other models. An MV7 SET and its `[Failed]` re-read are one
+  exchange, and so are a binary preset load (which also keeps anything from coming between
+  its Gain Lock unlock and re-lock) and `f`. A read after a write that landed carries
+  `WriteLanded`, so a failure there never undoes the write. A readback holds one guard from
+  its drain to its last GET. A new I/O path takes the guard too: `write()` and `read()`
+  `debug_assert!` it, so the tests (debug builds) panic on one that doesn't. `reopen()`
+  asserts it runs under none. The fake never locks. Unconfirmed whether macOS and Windows
+  share reports
 - **Live poll per model** (the design is under Live poll in `AGENTS.md`): each value is one
   GET, kept only when `answers_at_its_address()`, or one text line on the MV7. The binary
   models drain queued input before each poll. While the other settings are unread the poll
-  still runs, announcing only mute. In Auto a gain change is kept but not announced.
-  After any mode switch the MV7 re-reads everything; after a switch to Manual the MVX2U
-  Gen 1 and MV6, whose gain read in Auto is unconfirmed, re-read the gain
-  (`resync_after_mode()`). On the MV7 an unanswered `micMute` skips the poll's other lines.
-  The MV6's unconfirmed Playback Level GET (#99) isn't polled. A TUI write pushes the poll
-  back a second because whether a device applies a write before acking it is unconfirmed
+  still runs, announcing only mute. In Auto a gain change is kept but not announced. After
+  any mode switch the MV7 re-reads everything; after a switch to Manual the MVX2U Gen 1 and
+  MV6, whose gain read in Auto is unconfirmed, re-read the gain (`resync_after_mode()`). On
+  the MV7 an unanswered `micMute` skips the poll's other lines. The MV6's unconfirmed
+  Playback Level GET (#99) isn't polled. A TUI write pushes the poll back a second because
+  whether a device applies a write before acking it is unconfirmed. On the MVX2U Gen 2 a
+  mute write is applied by the next read: `--mute on --json` and `--mute off --json` each
+  read back the value written in 20 of 20 runs (2026-11-20)
 - **Live poll on hardware** (`read_live()`), by behaviour:
   - *A change made elsewhere shows in a running TUI.* On the MV6 Gen 2 under Linux, a
     pressed mute button sends no input report, and the poll shows the press (tested

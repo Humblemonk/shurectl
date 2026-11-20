@@ -34,7 +34,7 @@ copes better when another shurectl is using the device.
   for it, not 5 or 10.
 - Two `--mute toggle` presses close together, such as a double press on a Stream Deck
   button, could both read the same mute state and both unmute, leaving the mic live. Each
-  toggle now finishes before the next one starts. All models; unconfirmed on hardware.
+  toggle now finishes before the next one starts. All models; tested on the MVX2U Gen 2.
 - On Linux, two shurectl started differently, such as one with `sudo` or from a cron job or
   hotkey daemon beside the TUI, could still read each other's replies and get settings
   wrong. They now always take turns.
