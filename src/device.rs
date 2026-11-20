@@ -52,7 +52,8 @@
 //! read last keep their defaults (two `--json` runs at once, MVX2U Gen 2,
 //! 2026-11-19: EQ bands, firmware and serial wrong in both, both exit 0).
 //! Every exchange with a real device therefore runs under [`ShureDevice::exclusive()`],
-//! which holds that device's lock file, shared by every shurectl of this user;
+//! which holds that device's lock ([`open_lock_file()`]: on Linux its hidraw
+//! node, so every shurectl locks the same file whatever its environment);
 //! whatever the other process left queued is drained inside it.
 
 use std::fs::File;
@@ -128,9 +129,23 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 /// How often a waiting exchange tries the lock again.
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 
-/// The error when another shurectl kept the device for all of [`LOCK_WAIT`].
-/// No closing period: status lines add one before what follows.
-const DEVICE_BUSY: &str = "Another shurectl is busy with this device";
+/// Another shurectl kept the device for all of [`LOCK_WAIT`]. Every exchange
+/// takes the lock before it sends anything, and each `set_*` is one exchange,
+/// so a single write that fails with this sent nothing. A run of writes that
+/// must not be split (a preset load) holds [`ShureDevice::exclusive()`] around
+/// all of them, so it can't stop with this partway either. Kept as its own type so `main.rs`
+/// neither re-reads (waiting as long again) nor reconnects on it.
+#[derive(Debug)]
+pub struct Busy;
+
+impl std::fmt::Display for Busy {
+    /// No closing period: status lines add one before what follows.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Another shurectl is busy with this device")
+    }
+}
+
+impl std::error::Error for Busy {}
 
 /// A HID read or write failed, or `reopen()` could not find the device: it was
 /// unplugged or its handle went stale. Kept as its own type so `main.rs` can
@@ -185,36 +200,42 @@ pub trait HidTransport {
     fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool>;
     /// A new handle to the same device after it was unplugged and plugged back in.
     fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>>;
-    /// Whether another process can talk to this device too, so each exchange
-    /// takes its lock file ([`ShureDevice::exclusive()`]). The fake device in
-    /// tests and `--qa` can't, and never touches a lock file.
-    fn shared_with_other_processes(&self) -> bool {
-        false
+    /// The file whose lock keeps other shurectl processes off this device
+    /// while an exchange runs ([`ShureDevice::exclusive()`]), when another
+    /// process can reach it. The fake device in tests and `--qa` can't, and
+    /// never touches a lock file.
+    fn lock_file(&self) -> Option<File> {
+        None
     }
 }
 
 /// The only transport in a normal build: hidapi on the device's HID path.
-pub struct HidapiTransport(HidDevice);
+pub struct HidapiTransport {
+    device: HidDevice,
+    /// The OS path it was opened at: `/dev/hidrawN` on Linux, which is also
+    /// what [`open_lock_file()`] locks there.
+    path: String,
+}
 
 impl HidTransport for HidapiTransport {
     fn write(&self, packet: &[u8]) -> Result<usize> {
-        Ok(self.0.write(packet)?)
+        Ok(self.device.write(packet)?)
     }
 
     fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize> {
-        Ok(self.0.read_timeout(buf, timeout_ms)?)
+        Ok(self.device.read_timeout(buf, timeout_ms)?)
     }
 
     fn serial_number(&self) -> Option<String> {
-        self.0.get_serial_number_string().ok().flatten()
+        self.device.get_serial_number_string().ok().flatten()
     }
 
     fn product(&self) -> Option<String> {
-        self.0.get_product_string().ok().flatten()
+        self.device.get_product_string().ok().flatten()
     }
 
-    fn shared_with_other_processes(&self) -> bool {
-        true
+    fn lock_file(&self) -> Option<File> {
+        open_lock_file(&self.path, || self.serial_number())
     }
 
     fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool> {
@@ -277,7 +298,10 @@ fn open_hid(
         .open_path(c_path.as_c_str())
         .map_err(|e| anyhow!("Cannot open {what}: {e}\nHint: {ACCESS_HINT}."))?;
     device.set_blocking_mode(false).ok();
-    Ok(Box::new(HidapiTransport(device)))
+    Ok(Box::new(HidapiTransport {
+        device,
+        path: path.into_owned(),
+    }))
 }
 
 /// Supported devices in `api`'s list with this model and USB serial. One
@@ -336,7 +360,7 @@ pub struct ShureDevice {
 }
 
 /// Held while this process talks to the device; see [`ShureDevice::exclusive()`].
-struct Exclusive<'a>(&'a ShureDevice);
+pub struct Exclusive<'a>(&'a ShureDevice);
 
 impl Drop for Exclusive<'_> {
     fn drop(&mut self) {
@@ -352,17 +376,29 @@ impl Drop for Exclusive<'_> {
     }
 }
 
-/// The lock file of the device with this USB serial, which every shurectl of
-/// this user opens for it: in `$XDG_RUNTIME_DIR` (a per-user tmpfs on Linux),
-/// else the temp directory. One per device, so a slow exchange with one mic
-/// never holds up another. `None` when it can't be opened, and shurectl then
-/// runs without it, as before it had one.
-fn open_lock_file(serial: &str) -> Option<File> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
-    let name: String = serial
+/// The file every shurectl locks for the device at `hid_path`. One per
+/// device, so a slow exchange with one mic never holds up another. `None` when
+/// it can't be opened, and shurectl then runs without it, as before it had one.
+///
+/// On Linux it is the device's hidraw node itself: the same file for every
+/// process whatever its environment or user (`sudo`, cron, a hotkey daemon),
+/// and only those allowed to use the device can open it to hold its lock.
+/// This second handle is never read; the kernel skips new reports for it once
+/// its queue is full (`HIDRAW_BUFFER_SIZE`, 64, in `hidraw_report_event()`,
+/// drivers/hid/hidraw.c), so the main handle gets every report as before.
+#[cfg(target_os = "linux")]
+fn open_lock_file(hid_path: &str, _usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+    File::open(hid_path).ok()
+}
+
+/// Elsewhere hidapi's path isn't a file, so the lock is a file named after the
+/// USB serial in the temp directory, which is per user on macOS and Windows.
+/// Whether those systems share input reports between handles at all is
+/// unconfirmed (`.claude/rules/protocol.md`).
+#[cfg(not(target_os = "linux"))]
+fn open_lock_file(_hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+    let name: String = usb_serial()
+        .unwrap_or_else(|| UNKNOWN_SERIAL.to_string())
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
@@ -371,7 +407,7 @@ fn open_lock_file(serial: &str) -> Option<File> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(dir.join(format!("shurectl-{name}.lock")))
+        .open(std::env::temp_dir().join(format!("shurectl-{name}.lock")))
         .ok()
 }
 
@@ -386,7 +422,7 @@ fn wait_for_lock(file: &File, wait: Duration) -> Result<bool> {
             Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < wait => {
                 std::thread::sleep(LOCK_RETRY);
             }
-            Err(std::fs::TryLockError::WouldBlock) => return Err(anyhow!(DEVICE_BUSY)),
+            Err(std::fs::TryLockError::WouldBlock) => return Err(Busy.into()),
             Err(std::fs::TryLockError::Error(_)) => return Ok(false),
         }
     }
@@ -399,10 +435,7 @@ impl ShureDevice {
             .serial_number()
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
         let product = transport.product();
-        let lock = transport
-            .shared_with_other_processes()
-            .then(|| open_lock_file(&serial_number))
-            .flatten();
+        let lock = transport.lock_file();
         Self {
             transport,
             model,
@@ -420,8 +453,9 @@ impl ShureDevice {
     /// (module doc, "One shurectl at a time"). Every write and read runs under
     /// one; a readback holds one from its drain to its last GET. Nested guards
     /// lock once. Errors only when another shurectl kept the device for all of
-    /// [`LOCK_WAIT`].
-    fn exclusive(&self) -> Result<Exclusive<'_>> {
+    /// [`LOCK_WAIT`] ([`Busy`]). `main.rs` holds one around a preset load, so
+    /// no other shurectl comes between its Gain Lock unlock and re-lock.
+    pub fn exclusive(&self) -> Result<Exclusive<'_>> {
         if self.exclusive_depth.load(Ordering::Relaxed) == 0
             && let Some(file) = &self.lock
         {
@@ -558,6 +592,7 @@ impl ShureDevice {
             .collect();
         // Why a device couldn't be asked, for when nothing matches.
         let mut open_error = None;
+        let mut busy = false;
         if matches.is_empty() {
             matches = found
                 .iter()
@@ -565,9 +600,13 @@ impl ShureDevice {
                 // would hide why another couldn't be opened.
                 .filter(|(info, model)| !is_not_genuine(info, *model))
                 .filter(|(info, model)| match Self::open_info(&api, info, *model) {
-                    Ok(dev) => dev
-                        .read_factory_serial()
-                        .is_some_and(|serial| same(&serial)),
+                    Ok(dev) => match dev.read_factory_serial() {
+                        Ok(serial) => serial.is_some_and(|serial| same(&serial)),
+                        Err(_) => {
+                            busy = true;
+                            false
+                        }
+                    },
                     Err(e) => {
                         open_error.get_or_insert(e);
                         false
@@ -577,6 +616,17 @@ impl ShureDevice {
         }
         match matches.as_slice() {
             [(info, model)] => Self::open_info(&api, info, *model),
+            [] if busy => {
+                let busy = format!(
+                    "Another shurectl was busy with a Shure device, so its printed serial \
+                     couldn't be read to match {selector}. Try again, or use a path from --list."
+                );
+                // Another device that couldn't be opened may be the one meant.
+                Err(match open_error {
+                    Some(e) => e.context(format!("{busy} Another one couldn't be opened")),
+                    None => anyhow!(busy),
+                })
+            }
             [] if let Some(e) = open_error => Err(e.context(format!(
                 "No Shure device has the path or serial {selector}, and one couldn't be opened"
             ))),
@@ -784,6 +834,8 @@ impl ShureDevice {
         query: &mv7_text::TextCommand,
         is_set: impl FnOnce(&DeviceState) -> bool,
     ) -> Result<()> {
+        // One exchange, so that [`Busy`] can only mean nothing was sent.
+        let _exclusive = self.exclusive()?;
         let reply = self.send_text(command)?;
         if reply != mv7_text::FAILED_REPLY {
             return Self::check_text_reply(command, &reply);
@@ -1222,51 +1274,56 @@ impl ShureDevice {
     }
 
     /// Read just the factory serial number (the serial printed on the device,
-    /// shown in the MOTIV app) from an opened device. Returns `None` if the device
-    /// can't be queried or doesn't report one. Used by `--list` to upgrade the
-    /// displayed serial from the USB descriptor value to the printed serial.
-    pub fn read_factory_serial(&self) -> Option<String> {
+    /// shown in the MOTIV app) from an opened device. `Ok(None)` if the device
+    /// can't be queried or doesn't report one; an error only when another
+    /// shurectl kept it [`Busy`], so `--device <serial>` can say so. Used by
+    /// `--list` and the picker to show the printed serial instead of the USB
+    /// descriptor's.
+    pub fn read_factory_serial(&self) -> Result<Option<String>> {
+        let _exclusive = self.exclusive()?;
         let mut state = DeviceState::default();
         let applied = match self.model {
-            DeviceModel::Mv7 => {
-                let reply = self.send_text(&mv7_text::get_serial()).ok()?;
-                mv7_text::apply_reply(&reply, &mut state)
-            }
+            DeviceModel::Mv7 => match self.send_text(&mv7_text::get_serial()) {
+                Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
+                Err(_) => false,
+            },
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
-                let _exclusive = self.exclusive().ok()?;
-                self.drain_input(&mut [0u8; PACKET_SIZE]).ok()?;
                 let reply = self
-                    .send_get_past_strays(&cmd_get_serial(self.next_seq()))
-                    .ok()??;
+                    .drain_input(&mut [0u8; PACKET_SIZE])
+                    .and_then(|()| self.send_get_past_strays(&cmd_get_serial(self.next_seq())));
                 // Another reply (another shurectl's) would apply to its own
                 // field and leave the serial unknown.
-                protocol::is_serial_reply(&reply) && apply_reply(&reply, &mut state)
+                matches!(reply, Ok(Some(reply))
+                    if protocol::is_serial_reply(&reply) && apply_reply(&reply, &mut state))
             }
         };
-        applied.then_some(state.factory_serial)
+        Ok(applied.then_some(state.factory_serial))
     }
 
     /// Read just the user-set device name, as `read_factory_serial()` reads
-    /// the serial, for the device picker. `None` on the MV7, which has no
-    /// name, when none is set, or when the device doesn't answer.
-    pub fn read_device_name(&self) -> Option<String> {
+    /// the serial, for the device picker. `Ok(None)` on the MV7, which has no
+    /// name, when none is set, or when the device doesn't answer; an error
+    /// only when another shurectl kept it [`Busy`], so the picker can say so.
+    pub fn read_device_name(&self) -> Result<Option<String>> {
         // Also keeps the MV7's text shell away from the binary GET.
         if !self.model.has_device_rename() {
-            return None;
+            return Ok(None);
         }
-        let _exclusive = self.exclusive().ok()?;
-        self.drain_input(&mut [0u8; PACKET_SIZE]).ok()?;
+        let _exclusive = self.exclusive()?;
         let reply = self
-            .send_get_past_strays(&cmd_get_device_name(self.next_seq()))
-            .ok()??;
+            .drain_input(&mut [0u8; PACKET_SIZE])
+            .and_then(|()| self.send_get_past_strays(&cmd_get_device_name(self.next_seq())));
+        let Ok(Some(reply)) = reply else {
+            return Ok(None);
+        };
         let mut state = DeviceState::default();
         let applied = protocol::is_device_name_reply(&reply) && apply_reply(&reply, &mut state);
         let unset = state.device_name.is_empty() || state.device_name == "Unknown";
-        (applied && !unset).then_some(state.device_name)
+        Ok((applied && !unset).then_some(state.device_name))
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────
@@ -2047,7 +2104,7 @@ mod tests {
         let (first, second) = (open(), open());
         assert!(wait_for_lock(&first, Duration::ZERO).expect("free lock"));
         let busy = wait_for_lock(&second, Duration::from_millis(20)).expect_err("held lock");
-        assert_eq!(busy.to_string(), DEVICE_BUSY);
+        assert!(busy.downcast_ref::<Busy>().is_some(), "{busy}");
         first.unlock().expect("unlock");
         assert!(wait_for_lock(&second, Duration::ZERO).expect("released lock"));
         drop((first, second));

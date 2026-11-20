@@ -1123,14 +1123,14 @@ mod tests {
         for model in MODELS {
             let dev = FakeDevice::new(model).open();
             assert_eq!(
-                dev.read_factory_serial().as_deref(),
+                dev.read_factory_serial().ok().flatten().as_deref(),
                 Some("FAKE0001"),
                 "{model:?}"
             );
             let name = model
                 .has_device_rename()
                 .then(|| format!("Fake {}", model.display_name()));
-            assert_eq!(dev.read_device_name(), name, "{model:?}");
+            assert_eq!(dev.read_device_name().ok().flatten(), name, "{model:?}");
         }
     }
 

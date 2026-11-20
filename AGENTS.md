@@ -222,8 +222,12 @@ rather than promoting a lower one.
   only in `from_device_state()`'s `match` for models that have it. Check `#[serde(default)]`
   and `apply_to_device_state()`.
 - **Failed writes**: `recover_from_failure()` puts back the key's `before` snapshot only for
-  one write that clearly didn't land (`Disconnected`, or the MV7's `Rejected`). A timeout, or
-  a preset load or `f` that stopped partway, re-reads the device or marks the state unread.
+  one write that clearly didn't land (`Disconnected`, or the MV7's `Rejected`), or for any
+  write another shurectl kept `Busy`, which sent nothing (a preset load and `f` hold one
+  `exclusive()` guard for all their writes). After Busy the values put back may be stale, so
+  they count as unread until `r`, and a busy mute shows OFF over a restored Muted. A
+  timeout, a preset load or `f` that stopped partway, or a read that failed after a write
+  landed (`WriteLanded`), re-reads the device or marks the state unread, and never undoes.
   `step()` writes a pending wheel adjustment before the next event changes the screen, so
   each snapshot holds only its own change.
 - **Model checks**: a wildcard `_` over `DeviceModel` sent the MV6 Gen 2 the wrong EQ

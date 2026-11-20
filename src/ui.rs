@@ -3577,11 +3577,13 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     let fit = usize::from((body.height.saturating_sub(2) / 3).max(1));
     let first = (picker.selected + 1).saturating_sub(fit);
     // The name column, or "Can't open" for a device that wouldn't open (it
-    // has no name then) and "Not genuine" for one shurectl refuses; the
+    // has no name then), "Busy" for one another shurectl held while its
+    // labels were read, and "Not genuine" for one shurectl refuses; the
     // reason shows in the status bar when selected.
     fn middle(row: &PickerRow) -> (&str, Color) {
         match (&row.problem, row.name.as_deref()) {
             _ if row.not_genuine => ("Not genuine", C_WARN),
+            (Some(problem), _) if problem == crate::picker::LABELS_BUSY => ("Busy", C_WARN),
             (Some(_), _) => ("Can't open", C_WARN),
             (None, name) => (name.unwrap_or_default(), C_TEXT),
         }

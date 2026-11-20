@@ -68,11 +68,18 @@ CRC-16/ANSI covers 0x11 up to the CRC
   reply answered the next GET, and the settings read last kept their defaults with no error
   (two `--json` runs at once on the MVX2U Gen 2, 2026-11-19: EQ bands 0 dB, firmware Unknown,
   in 5 of 5 tries). Every exchange therefore runs under `ShureDevice::exclusive()`, which
-  holds the device's lockfile (`shurectl-<USB serial>.lock` in `$XDG_RUNTIME_DIR`, else the
-  temp directory) for up to 5 s of waiting, and drains queued input inside it; a readback
-  holds one guard from its drain to its last GET. A new I/O path takes the guard too:
-  `write()` and `read()` `debug_assert!` it, and the fake counts guards, so the tests catch
-  one that doesn't. The fake never locks. Unconfirmed whether macOS and Windows share reports
+  holds the device's lock for up to 5 s of waiting, and drains queued input inside it. On
+  Linux the lock is the hidraw node itself, so `sudo`, cron and a hotkey daemon lock the same
+  file as the TUI whatever their environment; elsewhere it is `shurectl-<USB serial>.lock` in
+  the temp directory. An exchange that times out waiting fails with `device::Busy` having
+  sent nothing, so `recover_from_failure()` puts back the old values without a re-read,
+  marked unread (the other shurectl may have changed them), and `r` doesn't reconnect on
+  it. An MV7 SET and its `[Failed]` re-read are one exchange, and so are a binary preset load (which also keeps anything from coming between
+  its Gain Lock unlock and re-lock) and `f`. A read after a write that landed carries
+  `WriteLanded`, so a failure there never undoes the write. A readback holds one guard from
+  its drain to its last GET. A new I/O path takes the guard too: `write()` and `read()`
+  `debug_assert!` it, and the fake counts guards, so the tests catch one that doesn't. The
+  fake never locks. Unconfirmed whether macOS and Windows share reports
 - **Live poll per model** (the design is under Live poll in `AGENTS.md`): each value is one
   GET, kept only when `answers_at_its_address()`, or one text line on the MV7. The binary
   models drain queued input before each poll. While the other settings are unread the poll

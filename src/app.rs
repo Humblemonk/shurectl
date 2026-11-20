@@ -1455,11 +1455,16 @@ impl App {
                     InputMode::Auto => InputMode::Manual,
                     InputMode::Manual => InputMode::Auto,
                 };
-                self.focus = match (self.device_model, self.device_state.mode) {
-                    (DeviceModel::Mvx2u | DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
-                    (DeviceModel::Mv6Gen2, InputMode::Auto) => Focus::AutoGain,
-                    (_, InputMode::Manual) => Focus::Gain,
-                    (_, InputMode::Auto) => Focus::Mute,
+                // The new mode's first control: its Auto Level rows, or Gain.
+                self.focus = match self.device_state.mode {
+                    InputMode::Manual => Focus::Gain,
+                    InputMode::Auto => match self.device_model {
+                        DeviceModel::Mvx2u | DeviceModel::Mv7 => Focus::AutoPosition,
+                        DeviceModel::Mv6Gen2 => Focus::AutoGain,
+                        DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7Plus => {
+                            Focus::Mute
+                        }
+                    },
                 };
                 Some(DeviceAction::SetMode(self.device_state.mode))
             }

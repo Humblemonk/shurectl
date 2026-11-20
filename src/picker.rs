@@ -28,6 +28,11 @@ pub struct PickerRow {
     pub not_genuine: bool,
 }
 
+/// A row's `problem` when another shurectl was busy with the device, so its
+/// labels couldn't be read. It can still be opened.
+pub const LABELS_BUSY: &str =
+    "Another shurectl is busy with this device, so its name couldn't be read. Press r to rescan.";
+
 pub struct Picker {
     pub rows: Vec<PickerRow>,
     pub selected: usize,
