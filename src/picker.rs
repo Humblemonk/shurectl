@@ -26,12 +26,14 @@ pub struct PickerRow {
     /// Refused as not genuine (`device::NOT_GENUINE`, also its `problem`):
     /// it is never opened, and the picker says why under the devices.
     pub not_genuine: bool,
+    /// Another shurectl was busy with it while its labels were read, so its
+    /// name is missing (`LABELS_BUSY` says why). It still opens.
+    pub busy: bool,
 }
 
-/// A row's `problem` when another shurectl was busy with the device, so its
-/// labels couldn't be read. It can still be opened.
+/// Why a `busy` row has no name, in the status bar when it is selected.
 pub const LABELS_BUSY: &str =
-    "Another shurectl is busy with this device, so its name couldn't be read. Press r to rescan.";
+    "Another shurectl was using it, so its name wasn't read. Press r to rescan.";
 
 pub struct Picker {
     pub rows: Vec<PickerRow>,
@@ -167,6 +169,7 @@ pub fn sample_rows() -> Vec<PickerRow> {
             name: Some("Podcast mic".into()),
             problem: None,
             not_genuine: false,
+            busy: false,
         },
         PickerRow {
             path: "/dev/hidraw5".into(),
@@ -175,6 +178,7 @@ pub fn sample_rows() -> Vec<PickerRow> {
             name: None,
             problem: None,
             not_genuine: false,
+            busy: false,
         },
     ]
 }
@@ -254,6 +258,12 @@ mod tests {
         rows[0].problem = Some("Cannot open /dev/hidraw3: device busy".into());
         picker.set_rows(rows);
         assert_eq!(picker.only_device(), None);
+        // One whose labels another shurectl kept from being read still opens.
+        rows = sample_rows().into_iter().take(1).collect();
+        rows[0].name = None;
+        rows[0].busy = true;
+        picker.set_rows(rows);
+        assert_eq!(picker.only_device(), Some(0));
         // A refused device beside it doesn't stop the only real one opening.
         rows = sample_rows();
         rows[0].problem = Some("Not genuine".into());

@@ -3583,7 +3583,7 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     fn middle(row: &PickerRow) -> (&str, Color) {
         match (&row.problem, row.name.as_deref()) {
             _ if row.not_genuine => ("Not genuine", C_WARN),
-            (Some(problem), _) if problem == crate::picker::LABELS_BUSY => ("Busy", C_WARN),
+            (None, None) if row.busy => ("Busy", C_WARN),
             (Some(_), _) => ("Can't open", C_WARN),
             (None, name) => (name.unwrap_or_default(), C_TEXT),
         }
@@ -3657,11 +3657,16 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     }
 
     // Until a key or click reports something else, a selected device that
-    // wouldn't open says why.
+    // wouldn't open, or whose name another shurectl kept from being read,
+    // says why.
     let problem = picker
         .rows
         .get(picker.selected)
-        .and_then(|row| row.problem.as_deref())
+        .and_then(|row| {
+            row.problem
+                .as_deref()
+                .or(row.busy.then_some(crate::picker::LABELS_BUSY))
+        })
         .filter(|_| !picker.status_is_error);
     let (msg, color) = match problem {
         Some(problem) => status_message(problem, true),
@@ -4820,9 +4825,15 @@ mod tests {
             name: None,
             problem: Some("Cannot open /dev/hidraw7: device busy".into()),
             not_genuine: false,
+            busy: false,
         });
         let mut problem = Picker::new(rows);
         problem.selected = 2;
+        let mut busy_rows = sample_rows();
+        busy_rows[1].name = None;
+        busy_rows[1].busy = true;
+        let mut busy = Picker::new(busy_rows);
+        busy.selected = 1;
         let mut refused = Picker::new(sample_rows());
         refused.set_err("Cannot open /dev/hidraw3: device busy");
         let not_genuine = Picker::new(vec![PickerRow {
@@ -4832,11 +4843,13 @@ mod tests {
             name: None,
             problem: Some(crate::device::NOT_GENUINE.into()),
             not_genuine: true,
+            busy: false,
         }]);
         vec![
             ("picker first", Picker::new(sample_rows())),
             ("picker second", second),
             ("picker problem", problem),
+            ("picker busy", busy),
             ("picker refused", refused),
             ("picker not genuine", not_genuine),
             ("picker empty", Picker::new(Vec::new())),
@@ -4886,6 +4899,7 @@ mod tests {
                         "Can't open"
                     }
                 }));
+                expected.extend(row.busy.then_some("Busy"));
                 expected.push(row.serial.as_deref().unwrap_or("unknown"));
                 for part in expected {
                     assert!(
@@ -4904,11 +4918,11 @@ mod tests {
                 let tip = format!("Skip this next time: shurectl --device {serial}");
                 assert!(text.contains(&tip), "{label}: no tip\n{text}");
             }
-            let status = match picker
-                .rows
-                .get(picker.selected)
-                .and_then(|row| row.problem.as_deref())
-            {
+            let status = match picker.rows.get(picker.selected).and_then(|row| {
+                row.problem
+                    .as_deref()
+                    .or(row.busy.then_some(crate::picker::LABELS_BUSY))
+            }) {
                 Some(problem) if !picker.status_is_error => problem,
                 Some(_) | None => picker.status.as_str(),
             };

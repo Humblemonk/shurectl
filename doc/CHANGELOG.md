@@ -26,7 +26,8 @@ copes better when another shurectl is using the device.
   finds the device busy shows Mute as OFF, as shurectl does whenever it can't be sure the
   mic is muted. `r` no longer reconnects on it, `--device` with a printed serial says
   another shurectl was busy instead of that no device has that serial, and the device
-  picker shows Busy, and why, instead of leaving the name blank.
+  picker and `--list` say a device was busy instead of leaving its name blank or showing
+  its USB serial without saying why.
 - On Linux, two shurectl started differently, such as one with `sudo` or from a cron job or
   hotkey daemon beside the TUI, could still read each other's replies and get settings
   wrong. They now always take turns. Unconfirmed on hardware.

@@ -200,16 +200,21 @@ fn main() -> Result<()> {
                 // Show the factory serial (printed on the device) when we can read
                 // it; fall back to the USB descriptor serial if the device can't be
                 // opened or doesn't report one. This briefly opens each device.
-                let serial = device::ShureDevice::open_path(&d.path)
-                    .ok()
-                    .and_then(|dev| dev.read_factory_serial().ok().flatten())
-                    .unwrap_or(d.serial);
+                let printed = device::ShureDevice::open_path(&d.path)
+                    .map(|dev| dev.read_factory_serial())
+                    .unwrap_or(Ok(None));
+                let busy = printed.is_err();
+                let serial = printed.ok().flatten().unwrap_or(d.serial);
                 println!(
                     "  {} | {} | S/N: {}",
                     d.path,
                     d.model.display_name(),
                     serial
                 );
+                // Only Busy is an error: say why the serial is the USB one.
+                if busy {
+                    println!("    {}, so this is its USB serial.", device::Busy);
+                }
                 if d.not_genuine {
                     println!("    {}.", device::NOT_GENUINE);
                     println!("    {}", device::NOT_GENUINE_WHY.join(" "));
@@ -555,14 +560,18 @@ fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
             };
             match opened {
                 Ok(dev) => {
-                    // Only Busy is an error here; a row without a name says why.
+                    // Only Busy is an error here, after a 5 s wait; once the
+                    // serial read waited, the name read would wait as long.
                     let serial = dev.read_factory_serial();
-                    let name = dev.read_device_name();
-                    let busy = serial.is_err() || name.is_err();
+                    let name = match serial {
+                        Ok(_) => dev.read_device_name(),
+                        Err(_) => Ok(None),
+                    };
                     picker::PickerRow {
+                        busy: serial.is_err() || name.is_err(),
                         serial: serial.ok().flatten().or(usb_serial),
                         name: name.ok().flatten(),
-                        problem: busy.then(|| picker::LABELS_BUSY.to_string()),
+                        problem: None,
                         not_genuine: false,
                         path: found.path,
                         model: found.model,
@@ -573,6 +582,7 @@ fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
                     name: None,
                     problem: Some(problem),
                     not_genuine: found.not_genuine,
+                    busy: false,
                     path: found.path,
                     model: found.model,
                 },
@@ -1838,23 +1848,18 @@ fn recover_from_failure(
                 format!("Device error: {e}. {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}")
             }
             Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
+            // Said without `e`'s context, so that it fits and names Busy.
             None if busy => match kind {
                 ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes => {
                     if mute_unknown {
-                        format!(
-                            "Device error: {e}. {BUSY_NOTE} {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}"
-                        )
+                        busy_status(&format!("not sent, {BUSY_MUTE_OFF}"))
                     } else {
-                        format!("Device error: {e}. {BUSY_NOTE} {STATE_UNREAD_HINT}")
+                        busy_status("not sent")
                     }
                 }
                 // `r`, or a reconnect after a replug: nothing was sent.
                 ActionKind::Connection | ActionKind::PresetFile | ActionKind::SavePreset => {
-                    if app.state_unread {
-                        format!("Device error: {e}. {STATE_UNREAD_HINT}")
-                    } else {
-                        format!("Device error: {e}. Press r to try again.")
-                    }
+                    busy_status("nothing read")
                 }
             },
             None => format!("Device error: {e}"),
@@ -1905,11 +1910,15 @@ fn note_stale_mouse(app: &mut App, kind: MouseEventKind) {
         | MouseEventKind::ScrollLeft
         | MouseEventKind::ScrollRight => return,
     }
-    let status = app.status_message.trim_end();
-    let message = match status.chars().last() {
-        None => STALE_MOUSE_NOTE.to_string(),
-        Some('.') => format!("{status} {STALE_MOUSE_NOTE}"),
-        Some(_) => format!("{status}. {STALE_MOUSE_NOTE}"),
+    // First, so a long status already there can't push it off the bar, and
+    // only once however many clicks are dropped.
+    let status = app.status_message.trim();
+    let message = if status.is_empty() {
+        STALE_MOUSE_NOTE.to_string()
+    } else if status.starts_with(STALE_MOUSE_NOTE) {
+        status.to_string()
+    } else {
+        format!("{STALE_MOUSE_NOTE} {status}")
     };
     if app.status_is_error {
         app.set_err(message);
@@ -2010,9 +2019,18 @@ const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in."
 /// Status-bar note after a failed write whose device was then read again.
 const READ_BACK_NOTE: &str = "Settings read back from the device.";
 
-/// Status-bar note after a write another shurectl kept off the device: it
-/// sent nothing, and the screen shows the values from before it, unread.
-const BUSY_NOTE: &str = "It wasn't sent.";
+/// The end of every busy status (`busy_status()`): the values shown count as
+/// unread until `r`. A one-shot run says to try again instead.
+const BUSY_HINT: &str = "Press r to retry.";
+
+/// A busy mute's part of its status: it shows OFF over a restored Muted.
+const BUSY_MUTE_OFF: &str = "mute shown OFF";
+
+/// The status after another shurectl kept the device for the whole wait. It
+/// fits one 80-column status bar, so `BUSY_HINT` always shows.
+fn busy_status(what: &str) -> String {
+    format!("{}: {what}. {BUSY_HINT}", device::Busy)
+}
 
 /// Status-bar note for a mute nothing could read back (`recover_from_failure()`).
 const MUTE_UNKNOWN_NOTE: &str = "Mute state unknown, shown as OFF.";
@@ -3133,7 +3151,7 @@ mod tests {
         );
         // The error stays, and says why the click did nothing.
         assert!(
-            app.status_message.ends_with(STALE_MOUSE_NOTE),
+            app.status_message.starts_with(STALE_MOUSE_NOTE),
             "{}",
             app.status_message
         );
@@ -3271,20 +3289,18 @@ mod tests {
             assert_eq!(app.device_state, after.unwrap_or(before), "{action:?}");
             assert!(fake.log_since(start).is_empty(), "{action:?}: re-read");
             assert!(app.device_connected && app.state_unread, "{action:?}");
-            let expected = format!("Device error: {}. {BUSY_NOTE}", device::Busy);
-            if shows_off {
-                assert_eq!(
-                    app.status_message,
-                    format!("{expected} {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}"),
-                    "{action:?}"
-                );
+            let expected = if shows_off {
+                "not sent, mute shown OFF"
             } else {
-                assert_eq!(
-                    app.status_message,
-                    format!("{expected} {STATE_UNREAD_HINT}"),
-                    "{action:?}"
-                );
-            }
+                "not sent"
+            };
+            assert_eq!(
+                app.status_message,
+                format!("{}: {expected}. Press r to retry.", device::Busy),
+                "{action:?}"
+            );
+            // With the error's cross, it fits an 80-column status bar.
+            assert!(app.status_message.chars().count() <= 78, "{action:?}");
             // Gain steps wait for `r`; mute still goes.
             assert!(!app.offers(&DeviceAction::SetGain(250)), "{action:?}");
             assert!(app.offers(&DeviceAction::SetMute(true)), "{action:?}");
@@ -3350,7 +3366,7 @@ mod tests {
         recover_from_failure(&mut app, &None, &DeviceAction::Refresh, None, &busy);
         assert_eq!(
             app.status_message,
-            format!("Device error: {}. Press r to try again.", device::Busy)
+            format!("{}: nothing read. Press r to retry.", device::Busy)
         );
         assert!(app.device_connected);
     }

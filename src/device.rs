@@ -141,7 +141,7 @@ pub struct Busy;
 impl std::fmt::Display for Busy {
     /// No closing period: status lines add one before what follows.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Another shurectl is busy with this device")
+        f.write_str("Another shurectl has the device")
     }
 }
 

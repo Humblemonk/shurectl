@@ -206,7 +206,7 @@ fn execute(
         Some(MuteAction::Off) => Some(false),
         Some(MuteAction::Toggle) => match device.as_ref() {
             Some(dev) => {
-                Some(!read_muted(&mut app, dev).map_err(|e| progress.fail(Some("--mute"), e))?)
+                Some(!read_muted(&mut app, dev).map_err(|e| progress.fail(&["--mute"], e))?)
             }
             None => None,
         },
@@ -215,17 +215,17 @@ fn execute(
     };
     if let Some(muted) = mute_to {
         write_mute(&mut app, &mut device, muted, report)
-            .map_err(|e| progress.fail(Some("--mute"), e))?;
+            .map_err(|e| progress.fail(&["--mute"], e))?;
         progress.applied.push("--mute");
     }
-    check_values(request, &app).map_err(|e| progress.fail(None, e))?;
+    check_values(request, &app).map_err(|e| progress.fail(&[], e))?;
     // A toggle the mute read couldn't answer read everything already.
     if let Some(dev) = device.as_ref()
         && app.state_unread
     {
         crate::reload_state(&mut app, dev)
             .context("Could not read device state")
-            .map_err(|e| progress.fail(None, e))?;
+            .map_err(|e| progress.fail(&[], e))?;
     }
     // The readback came straight after the mute's SET, and whether a device
     // applies a write before acking it is unconfirmed (AGENTS.md, Live poll),
@@ -234,12 +234,12 @@ fn execute(
     if let Some(muted) = mute_to {
         app.device_state.muted &= muted;
     }
-    check_writes(request, &app).map_err(|e| progress.fail(None, e))?;
+    check_writes(request, &app).map_err(|e| progress.fail(&[], e))?;
     if let Some((index, slot)) = preset {
         app.presets[index] = Some(slot);
         let action = DeviceAction::LoadPreset(index);
         write(&mut app, &mut device, "--preset", action, |_| {}, report)
-            .map_err(|e| progress.fail(Some("--preset"), e))?;
+            .map_err(|e| progress.fail(&["--preset"], e))?;
         progress.applied.push("--preset");
     }
     // The TUI's focus order after mute: mode, gain, then the monitor levels.
@@ -255,12 +255,35 @@ fn execute(
             |state| state.mode = mode,
             report,
         ) {
-            // The switch landed when its re-read inside apply_action() failed
-            // (`resync_after_mode()`): the new mode still shows, and the mute
+            // Only a read shows the new mode here: recovery puts the old one
+            // back for a switch that didn't land (Disconnected, Rejected,
+            // Busy). So the switch landed, its own re-read failed
+            // (`resync_after_mode()`), and recovery's re-read worked. If that
+            // shows the mute undone, send it again, as after a switch that
+            // went through.
+            let switched_and_read =
+                app.device_connected && !app.state_unread && app.device_state.mode != switched_from;
+            if let Some(muted) = mute_to
+                && switched_and_read
+                && app.device_state.muted != muted
+            {
+                progress.applied.retain(|flag| *flag != "--mute");
+                if let Err(mute_err) = write_mute(&mut app, &mut device, muted, report) {
+                    let e = format!("{e:#}");
+                    let both = anyhow!(
+                        "{}. Sending --mute again failed: {mute_err:#}",
+                        e.trim_end_matches('.')
+                    );
+                    return Err(progress.fail(&["--mode", "--mute"], both));
+                }
+                progress.applied.insert(0, "--mute");
+            }
+            // Unread, a switch that landed shows the new mode, and the mute
             // sent before it wasn't read after it. Refused or busy, it shows
             // the old mode and nothing switched.
-            progress.mute_unchecked = mute_to.is_some() && app.device_state.mode != switched_from;
-            return Err(progress.fail(Some("--mode"), e));
+            progress.mute_unchecked =
+                mute_to.is_some() && app.state_unread && app.device_state.mode != switched_from;
+            return Err(progress.fail(&["--mode"], e));
         }
         // Whether every model keeps its gain across the switch is unconfirmed,
         // so read the device again before a gain step or the JSON uses it. The
@@ -276,7 +299,7 @@ fn execute(
             progress.mute_unchecked = mute_to.is_some();
             crate::reload_state(&mut app, dev)
                 .with_context(|| crate::mode_switched_note(mode))
-                .map_err(|e| progress.fail(Some("--mode"), e))?;
+                .map_err(|e| progress.fail(&["--mode"], e))?;
             progress.mute_unchecked = false;
         }
         progress.applied.push("--mode");
@@ -289,7 +312,7 @@ fn execute(
             // Not applied any more, so a failure here doesn't say it was.
             progress.applied.retain(|flag| *flag != "--mute");
             write_mute(&mut app, &mut device, muted, report)
-                .map_err(|e| progress.fail(Some("--mute"), e))?;
+                .map_err(|e| progress.fail(&["--mute"], e))?;
             progress.applied.insert(0, "--mute");
         }
     }
@@ -307,7 +330,7 @@ fn execute(
             |state| state.gain_tenths = tenths,
             report,
         )
-        .map_err(|e| progress.fail(Some("--gain"), e))?;
+        .map_err(|e| progress.fail(&["--gain"], e))?;
         progress.applied.push("--gain");
     }
     if let Some(amount) = request.monitor_mix {
@@ -324,7 +347,7 @@ fn execute(
             |state| state.monitor_mix = mix,
             report,
         )
-        .map_err(|e| progress.fail(Some("--monitor-mix"), e))?;
+        .map_err(|e| progress.fail(&["--monitor-mix"], e))?;
         progress.applied.push("--monitor-mix");
     }
     if let Some(amount) = request.playback_mix {
@@ -341,7 +364,7 @@ fn execute(
             |state| state.playback_mix = mix,
             report,
         )
-        .map_err(|e| progress.fail(Some("--playback-mix"), e))?;
+        .map_err(|e| progress.fail(&["--playback-mix"], e))?;
     }
     Ok(app)
 }
@@ -394,20 +417,21 @@ impl Progress {
     }
 
     /// `e`, then what was applied before it and which flags weren't sent.
-    /// `failed` is the flag whose step failed: its own message says how far
-    /// it got (a mode switch whose re-read failed did switch). The result is
+    /// `failed` are the flags whose steps failed (none for a check or the
+    /// readback): their own message says how far they got (a mode switch
+    /// whose re-read failed did switch). The result is
     /// a plain message, without `e`'s types (`Busy`, `Disconnected`): a
     /// one-shot run only prints it, and nothing downcasts it.
-    fn fail(&self, failed: Option<&str>, e: anyhow::Error) -> anyhow::Error {
+    fn fail(&self, failed: &[&str], e: anyhow::Error) -> anyhow::Error {
         let not_sent: Vec<&str> = self
             .requested
             .iter()
             .copied()
-            .filter(|flag| !self.applied.contains(flag) && Some(*flag) != failed)
+            .filter(|flag| !self.applied.contains(flag) && !failed.contains(flag))
             .collect();
         // Nothing landed and no step ran (a bad value, a failed readback):
         // the error alone says the run changed nothing.
-        if self.applied.is_empty() && (failed.is_none() || not_sent.is_empty()) {
+        if self.applied.is_empty() && (failed.is_empty() || not_sent.is_empty()) {
             return e;
         }
         let mut message = format!("{e:#}");
@@ -505,14 +529,13 @@ fn write(
 /// A failure's status line, without the TUI's advice: a one-shot run has no
 /// `r` to press, no screen showing OFF, and doesn't wait for a replug.
 fn without_tui_hints(status: &str) -> String {
-    // A busy write sent nothing and read nothing (`recover_from_failure()`).
-    let unread = if status.contains(crate::BUSY_NOTE) {
-        "Try again once the other shurectl is done."
-    } else {
-        "The device's settings couldn't be read back."
-    };
     status
-        .replace(crate::STATE_UNREAD_HINT, unread)
+        .replace(
+            crate::STATE_UNREAD_HINT,
+            "The device's settings couldn't be read back.",
+        )
+        .replace(&format!(", {}", crate::BUSY_MUTE_OFF), "")
+        .replace(crate::BUSY_HINT, "Try again once it's done.")
         .replace(crate::MUTE_UNKNOWN_NOTE, "The mute state is unknown.")
         .replace(crate::RECONNECT_HINT, "the device disconnected.")
         .replace(crate::READ_BACK_NOTE, "The device was read back.")
@@ -1162,23 +1185,18 @@ mod tests {
             without_tui_hints(&gone),
             "Device error: gone — the device disconnected."
         );
-        let busy = format!(
-            "Device error: {}. {} {}",
-            crate::device::Busy,
-            crate::BUSY_NOTE,
-            crate::STATE_UNREAD_HINT
-        );
+        let busy = crate::busy_status(&format!("not sent, {}", crate::BUSY_MUTE_OFF));
         assert_eq!(
             without_tui_hints(&busy),
             format!(
-                "Device error: {}. It wasn't sent. Try again once the other shurectl is done.",
+                "{}: not sent. Try again once it's done.",
                 crate::device::Busy
             )
         );
         for message in [unread, mute, gone, busy] {
             let plain = without_tui_hints(&message);
             assert!(
-                !plain.contains("press r") && !plain.contains("shown as OFF"),
+                !plain.to_lowercase().contains("press r") && !plain.contains("shown"),
                 "{plain}"
             );
         }
@@ -1321,13 +1339,20 @@ mod tests {
         };
         let mut progress = Progress::new(&request);
         progress.applied.extend(["--mute", "--mode"]);
-        let err = progress.fail(Some("--gain"), anyhow!("Device error: no reply"));
+        let err = progress.fail(&["--gain"], anyhow!("Device error: no reply"));
         assert_eq!(
             err.to_string(),
             "Device error: no reply. Applied before it: --mute, --mode. Not sent: --playback-mix."
         );
+        // A mute sent again after a failed switch: both steps failed.
+        let resent = Progress::new(&request);
+        let err = resent.fail(&["--mode", "--mute"], anyhow!("Device error: no reply"));
+        assert_eq!(
+            err.to_string(),
+            "Device error: no reply. Not sent: --gain, --playback-mix."
+        );
         let alone = Progress::new(&mute(MuteAction::On));
-        let err = alone.fail(Some("--mute"), anyhow!("Device error: no reply"));
+        let err = alone.fail(&["--mute"], anyhow!("Device error: no reply"));
         assert_eq!(err.to_string(), "Device error: no reply");
     }
 
