@@ -131,11 +131,14 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 
 /// How long a read that only labels a device in a list waits for the lock
-/// before showing it as busy: a scan with several devices waits once per
-/// device, and another shurectl's exchanges last milliseconds.
+/// before showing it as busy, so a scan with several devices doesn't wait
+/// [`LOCK_WAIT`] for each. How long other shurectl exchanges hold it is
+/// unmeasured; a readback, preset load or `f` holding it longer than this
+/// shows the device as busy, and `r` in the picker scans again.
 const LABEL_LOCK_WAIT: Duration = Duration::from_secs(1);
 
-/// Another shurectl kept the device for all of [`LOCK_WAIT`]. Every exchange
+/// Another shurectl kept the device for all of the wait: [`LOCK_WAIT`], or
+/// [`LABEL_LOCK_WAIT`] for labels, or none for the live poll. Every exchange
 /// takes the lock before it sends anything, and each `set_*` is one exchange,
 /// so a single write that fails with this sent nothing. A run of writes that
 /// must not be split (a preset load) holds [`ShureDevice::exclusive()`] around
@@ -510,8 +513,9 @@ impl ShureDevice {
         Ok(Exclusive(Arc::clone(lock)))
     }
 
-    /// Every write and read checks it runs under [`Self::exclusive()`]. The
-    /// fake device counts guards too, so the tests catch a path that skips one.
+    /// Every write and read checks it runs under [`Self::exclusive()`], so a
+    /// debug build (every test, fake device included) panics on a path that
+    /// skips one.
     fn debug_assert_exclusive(&self) {
         debug_assert!(
             self.lock.depth.load(Ordering::Relaxed) > 0,
@@ -559,7 +563,14 @@ impl ShureDevice {
     /// Open the same physical device again after it was unplugged and plugged
     /// back in, when this handle has gone stale. Errors are one line, for the
     /// status bar.
+    /// Never under a guard: the new handle has a lock of its own, which on
+    /// Linux is a second open of the same hidraw node, so it would wait on
+    /// this one's lock and report [`Busy`] with no other shurectl running.
     pub fn reopen(&self) -> Result<Self> {
+        debug_assert!(
+            self.lock.depth.load(Ordering::Relaxed) == 0,
+            "reopen() under ShureDevice::exclusive()"
+        );
         let transport = self.transport.reopen(self.model, &self.serial_number)?;
         Ok(Self::with_transport(self.model, transport))
     }

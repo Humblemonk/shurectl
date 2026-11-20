@@ -172,7 +172,7 @@ fn execute(
         // A toggle holds one turn at the device from its read through its
         // write, so two at once (a double press) can't both read the same
         // state and leave the mic live.
-        let _turn = toggle_turn(action, Some(&dev))?;
+        let turn = toggle_turn(action, Some(&dev))?;
         let muted = match action {
             MuteAction::On => true,
             MuteAction::Off => false,
@@ -187,6 +187,9 @@ fn execute(
             }
         };
         let mut device = Some(dev);
+        // Printed once the turn is over, so a slow reader of stdout never
+        // keeps the device locked.
+        let mut said = Vec::new();
         write(
             &mut app,
             &mut device,
@@ -195,8 +198,10 @@ fn execute(
             |state| {
                 state.muted = muted;
             },
-            report,
+            &mut |line: &str| said.push(line.to_owned()),
         )?;
+        drop(turn);
+        said.iter().for_each(|line| report(line));
         return Ok(app);
     }
 
@@ -225,11 +230,18 @@ fn execute(
         Some(MuteAction::Status) | None => None,
     };
     if let Some(muted) = mute_to {
-        write_mute(&mut app, &mut device, muted, report)
-            .map_err(|e| progress.fail(&["--mute"], e))?;
+        // Printed once the turn is over, as for mute alone.
+        let mut said = Vec::new();
+        write_mute(&mut app, &mut device, muted, &mut |line: &str| {
+            said.push(line.to_owned())
+        })
+        .map_err(|e| progress.fail(&["--mute"], e))?;
+        drop(turn);
+        said.iter().for_each(|line| report(line));
         progress.applied.push("--mute");
+    } else {
+        drop(turn);
     }
-    drop(turn);
     check_values(request, &app).map_err(|e| progress.fail(&[], e))?;
     // A toggle the mute read couldn't answer read everything already.
     if let Some(dev) = device.as_ref()
