@@ -64,7 +64,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Position};
 
-use app::{App, DeviceAction, STATE_UNREAD_HINT};
+use app::{App, DeviceAction, STATE_UNREAD_HINT, WAITING_FOR_DEVICE};
 use cli::{Amount, ModeChoice, MuteAction};
 use device::{Live, ShureDevice};
 use meter::{InputTarget, MeterStatus, start_meter};
@@ -609,6 +609,7 @@ fn one_line(e: &anyhow::Error) -> String {
 }
 
 /// Read the device's state into `app` at startup, or say it is demo mode.
+/// Also the live poll's read once a device that was busy at startup is free.
 fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
     if let Some(dev) = device {
         match reload_state(app, dev) {
@@ -1996,7 +1997,7 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
     };
     // The live poll reads it the moment the other shurectl is done; `r`
     // would only wait as long, then say busy.
-    if app.waiting_for_device {
+    if app.waiting_for_device && app.device_connected {
         app.set_ok(WAITING_FOR_DEVICE);
         return Ok(());
     }
@@ -2017,7 +2018,7 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
     };
     // Nothing was read, and reopening the handle wouldn't get the lock sooner.
     if is_busy(&read_err) {
-        return Err(read_err);
+        return wait_if_never_read(app, read_err);
     }
     app.device_connected = !is_disconnect(&read_err);
     reconnect(app, device).map_err(|e| anyhow::anyhow!("{read_err}. Reconnect failed: {e}"))
@@ -2057,9 +2058,25 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
             // The shown state came from the old handle and may be out of date
             // (a factory reset, or another app changing settings while unplugged).
             app.state_unread = true;
+            if is_busy(&e) {
+                return wait_if_never_read(app, e);
+            }
             Err(e)
         }
     }
+}
+
+/// A readback (`r`, or a reconnect) found another shurectl holding the
+/// device. Never read, it waits as the startup readback does
+/// (`App::waiting_for_device`): no controls, and the live poll reads the
+/// device once it is free. Otherwise `busy` goes to `recover_from_failure()`.
+fn wait_if_never_read(app: &mut App, busy: anyhow::Error) -> Result<()> {
+    if !app.settings_never_read {
+        return Err(busy);
+    }
+    app.waiting_for_device = true;
+    app.set_ok(WAITING_FOR_DEVICE);
+    Ok(())
 }
 
 /// How often the event loop checks that the device is still plugged in.
@@ -2067,11 +2084,6 @@ const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Status-bar wording for a lost device, shared by the poll and failed commands.
 const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in.";
-
-/// Status while the first readback waits for another shurectl
-/// (`App::waiting_for_device`).
-const WAITING_FOR_DEVICE: &str =
-    "Another shurectl has the device. Your settings show as soon as it's done.";
 
 /// Status-bar note after a failed write whose device was then read again.
 const READ_BACK_NOTE: &str = "Settings read back from the device.";
@@ -2161,7 +2173,9 @@ const LIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// disconnected, as the presence poll does. Skipped in demo mode, while
 /// disconnected, and while another shurectl holds the device (it never waits
 /// for the lock); it runs while the settings are unread too, since mute can be
-/// written then and the screen should show the mic's real state.
+/// written then and the screen should show the mic's real state. When the
+/// first readback found the device busy (`App::waiting_for_device`), it reads
+/// everything instead, once the device is free.
 fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     let Some(dev) = device.as_ref() else {
         return; // demo mode
@@ -2966,9 +2980,6 @@ mod tests {
         assert_eq!(app.status_message, "Tone → Bright (changed on the device)");
     }
 
-    /// A mode switch whose re-read fails says the switch landed, so a
-    /// script or user doesn't switch again: the MV7 re-reads everything after
-    /// one, and here its first line goes unanswered.
     /// A first readback that fails leaves only defaults, which were never
     /// the mic's: until a readback works, only Mute shows and takes focus,
     /// and the other tabs are locked. `r` that reads the device brings back
@@ -3049,6 +3060,33 @@ mod tests {
         }
     }
 
+    /// `r` or a reconnect that finds the device busy before its settings
+    /// were ever read waits as the startup readback does; once they were
+    /// read, Busy goes on to `recover_from_failure()`. `r` on a waiting
+    /// device that has since been unplugged doesn't say it is waiting.
+    #[test]
+    fn a_busy_read_before_any_read_waits_for_the_device() {
+        let mut app = App {
+            settings_never_read: true,
+            device_connected: true,
+            ..App::default()
+        };
+        let busy = || anyhow::Error::new(device::Busy);
+        wait_if_never_read(&mut app, busy()).expect("waits");
+        assert!(app.waiting_for_device && !app.status_is_error);
+        assert_eq!(app.status_message, WAITING_FOR_DEVICE);
+        let mut read = App::default();
+        let err = wait_if_never_read(&mut read, busy()).expect_err("passed on");
+        assert!(is_busy(&err) && !read.waiting_for_device);
+        app.device_connected = false;
+        app.set_err("gone");
+        apply_action(&mut app, &mut None, DeviceAction::Refresh, None);
+        assert_ne!(app.status_message, WAITING_FOR_DEVICE);
+    }
+
+    /// A mode switch whose re-read fails says the switch landed, so a
+    /// script or user doesn't switch again: the MV7 re-reads everything after
+    /// one, and here its first line goes unanswered.
     #[test]
     fn a_mode_switch_whose_re_read_fails_says_it_switched() {
         let fake = FakeDevice::new(DeviceModel::Mv7);

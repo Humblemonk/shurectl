@@ -408,6 +408,15 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             " [Enter] save  [Esc] cancel",
             C_ACCENT,
         )
+    } else if app.waiting_for_device {
+        // No control to adjust, and `r` only repeats the waiting status.
+        (" [?] Help  [q] Quit", " [?] Help  [q] Quit", C_DIM)
+    } else if app.settings_never_read {
+        (
+            " [Enter] Mute  [r] Refresh  [?] Help  [q] Quit",
+            " [?] Help  [q] Quit",
+            C_DIM,
+        )
     } else if app.can_flatten_eq() {
         (
             " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
@@ -2499,7 +2508,6 @@ fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
             heading("Another shurectl is using the device"),
             Line::from(""),
             dim("Your settings show here as soon as it is done."),
-            dim("Nothing can be changed until then, Mute included."),
         ];
         render_notice(f, notice, lines);
         return;

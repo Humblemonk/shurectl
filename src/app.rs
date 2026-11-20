@@ -176,8 +176,9 @@ pub struct App {
     pub state_unread: bool,
     /// The settings were never read on this connection: the first readback
     /// failed, so `device_state` holds defaults that were never the mic's.
-    /// Until a readback works the screen shows only Mute, which the live poll
-    /// reads (`ui.rs::draw_never_read()`), and the other tabs are locked.
+    /// Until a readback works the content area shows a notice instead
+    /// (`ui.rs::draw_never_read()`), with Mute unless `waiting_for_device`,
+    /// and the other tabs are locked.
     pub settings_never_read: bool,
     /// The first readback found another shurectl holding the device: no
     /// control shows (not even Mute, which couldn't be sent either), and the
@@ -425,7 +426,11 @@ impl App {
             self.set_err("Gain check needs the device connected.");
         } else if self.state_unread {
             // Before the mode: unread, the mode shown may be a default.
-            self.set_err(STATE_UNREAD_HINT);
+            self.set_err(if self.waiting_for_device {
+                WAITING_FOR_DEVICE
+            } else {
+                STATE_UNREAD_HINT
+            });
         } else if self.device_state.mode != InputMode::Manual {
             self.set_err(GAIN_CHECK_AUTO);
         } else if self.meter_unavailable {
@@ -1816,6 +1821,11 @@ impl App {
 
 /// Status for a write refused because the device's settings haven't been read,
 /// and the TUI's note after a mute that still goes through then.
+/// Status while the first readback waits for another shurectl
+/// (`App::waiting_for_device`).
+pub const WAITING_FOR_DEVICE: &str =
+    "Another shurectl has the device. Your settings show as soon as it's done.";
+
 pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
 
 /// Status for `g` outside Manual mode.

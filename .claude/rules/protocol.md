@@ -100,8 +100,9 @@ CRC-16/ANSI covers 0x11 up to the CRC
   the MV7 an unanswered `micMute` skips the poll's other lines. The MV6's unconfirmed
   Playback Level GET (#99) isn't polled. A TUI write pushes the poll back a second because
   whether a device applies a write before acking it is unconfirmed. On the MVX2U Gen 2 a
-  mute write is applied by the next read: `--mute on --json` and `--mute off --json` each
-  read back the value written in 20 of 20 runs (2026-11-20)
+  mute write is applied by the next read: `--mute on --json` read back muted in 20 of 20
+  runs (2026-11-20). `--mute off --json` can't show this, since the CLI shows Muted only
+  when the write and the readback both say so
 - **Live poll on hardware** (`read_live()`), by behaviour:
   - *A change made elsewhere shows in a running TUI.* On the MV6 Gen 2 under Linux, a
     pressed mute button sends no input report, and the poll shows the press (tested
