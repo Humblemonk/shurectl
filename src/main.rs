@@ -2127,8 +2127,9 @@ const LIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// device gives no usable answer for stays as shown; the next poll asks again.
 /// A mode change re-reads everything, since it changes which controls apply
 /// (and on the MV7 resets EQ and compressor). A HID failure marks the device
-/// disconnected, as the presence poll does. Skipped in demo mode and while
-/// disconnected; it runs while the settings are unread too, since mute can be
+/// disconnected, as the presence poll does. Skipped in demo mode, while
+/// disconnected, and while another shurectl holds the device (it never waits
+/// for the lock); it runs while the settings are unread too, since mute can be
 /// written then and the screen should show the mic's real state.
 fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     let Some(dev) = device.as_ref() else {

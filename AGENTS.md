@@ -83,13 +83,14 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 (`r` does it on demand), so `apply_action()` stays the only writer. Only a
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
-**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second while
-connected (`read_live()`), so a change made elsewhere shows without `r` and the next arrow
-key steps from the device's value, not a stale one. It only reads: an unusable answer is
-ignored and a `Disconnected` error marks the device disconnected. A mode change it sees
-re-reads everything; a mode switch from the TUI or `--mode` re-reads what the model needs
-(`resync_after_mode()`). A TUI write pushes the next poll back a second (`send_from_tui()`).
-Per-model exceptions and hardware results: `.claude/rules/protocol.md`.
+**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second
+while connected (`read_live()`), skipping a turn while another shurectl holds the device, so
+a change made elsewhere shows without `r` and the next arrow key steps from the device's
+value, not a stale one. It only reads: an unusable answer is ignored and a `Disconnected`
+error marks the device disconnected. A mode change it sees re-reads everything; a mode
+switch from the TUI or `--mode` re-reads what the model needs (`resync_after_mode()`). A TUI
+write pushes the next poll back a second (`send_from_tui()`). Per-model exceptions and
+hardware results: `.claude/rules/protocol.md`.
 
 **Mute** is a fixed write (`ActionKind`), allowed before a readback in the TUI and CLI,
 because refusing it would leave the mic live. A mute whose outcome nothing could read back

@@ -2097,21 +2097,25 @@ mod tests {
         assert_eq!(readback.skipped.len(), 1);
     }
 
+    /// A lock file at `path` for the lock tests: each handle stands in for one
+    /// process, as the lock belongs to the open file.
+    fn lock_test_file(path: &std::path::Path) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .expect("lock file")
+    }
+
     /// A second shurectl waits while the lock file is held, gives up with the
     /// busy error after the wait, and gets it once it is released. Two handles
     /// on one file stand in for two processes: the lock belongs to the open file.
     #[test]
     fn a_held_lock_file_keeps_another_handle_waiting() {
         let path = std::env::temp_dir().join(format!("shurectl-lock-test-{}", std::process::id()));
-        let open = || {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&path)
-                .expect("lock file")
-        };
+        let open = || lock_test_file(&path);
         let (first, second) = (open(), open());
         assert!(wait_for_lock(&first, Duration::ZERO).expect("free lock"));
         let busy = wait_for_lock(&second, Duration::from_millis(20)).expect_err("held lock");
@@ -2130,15 +2134,7 @@ mod tests {
 
         let path =
             std::env::temp_dir().join(format!("shurectl-poll-lock-test-{}", std::process::id()));
-        let open = || {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&path)
-                .expect("lock file")
-        };
+        let open = || lock_test_file(&path);
         let mut device = FakeDevice::new(DeviceModel::Mvx2uGen2).open();
         device.lock = Some(open());
         let other = open();
