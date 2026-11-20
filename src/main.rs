@@ -1995,13 +1995,21 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         app.set_ok("Demo mode — no device to refresh.");
         return Ok(());
     };
-    // The live poll reads it the moment the other shurectl is done; `r`
-    // would only wait as long, then say busy.
-    if app.waiting_for_device && app.device_connected {
-        app.set_ok(WAITING_FOR_DEVICE);
-        return Ok(());
-    }
-    let read_err = match reload_state(app, dev) {
+    // Waiting for another shurectl, `r` tries for a second, not 5: the
+    // live poll also reads it once the lock is free, but only tries without
+    // waiting, which a shurectl holding it most of each second can starve.
+    let read = if app.is_waiting_for_device() {
+        match dev.exclusive_for_labels() {
+            Ok(_turn) => reload_state(app, dev),
+            Err(_) => {
+                app.set_ok(WAITING_FOR_DEVICE);
+                return Ok(());
+            }
+        }
+    } else {
+        reload_state(app, dev)
+    };
+    let read_err = match read {
         Ok(skipped) => {
             app.device_connected = true;
             app.set_ok(format!(
@@ -2021,7 +2029,15 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         return wait_if_never_read(app, read_err);
     }
     app.device_connected = !is_disconnect(&read_err);
-    reconnect(app, device).map_err(|e| anyhow::anyhow!("{read_err}. Reconnect failed: {e}"))
+    // A busy reopened handle keeps its type, so `recover_from_failure()`
+    // neither re-reads nor loses "press r".
+    reconnect(app, device).map_err(|e| {
+        if is_busy(&e) {
+            e
+        } else {
+            anyhow::anyhow!("{read_err}. Reconnect failed: {e}")
+        }
+    })
 }
 
 /// Open the same device again and load its state from the new handle. Used by
@@ -2191,7 +2207,7 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     };
     // The first readback found the device busy, and now it is free: read
     // everything, as at startup. The readback nests inside this guard.
-    if app.waiting_for_device {
+    if app.is_waiting_for_device() {
         load_initial_state(app, Some(dev));
         return;
     }
@@ -3027,29 +3043,27 @@ mod tests {
     }
 
     /// A first readback that found another shurectl holding the device shows
-    /// no control: Enter and arrows send nothing, `r` doesn't wait 5 s for
-    /// the same lock, and the live poll reads everything once the device is
-    /// free (the fake never locks, so here at the first poll).
+    /// no control: Enter and arrows send nothing. Once the device is free the
+    /// live poll reads everything, and so does `r` (which tries for a second,
+    /// not 5); the fake never locks, so both read at once here. Unplugged, the
+    /// screen no longer blames another shurectl.
     #[test]
     fn waiting_for_the_device_reads_it_once_free_and_offers_nothing_before() {
+        let waiting = |model| App {
+            device_model: model,
+            settings_never_read: true,
+            waiting_for_device: true,
+            state_unread: true,
+            focus: app::Focus::Mute,
+            device_connected: true,
+            ..App::default()
+        };
         for model in MODELS {
             let fake = FakeDevice::new(model);
             let mut device = Some(fake.open());
-            let mut app = App {
-                device_model: model,
-                settings_never_read: true,
-                waiting_for_device: true,
-                state_unread: true,
-                focus: app::Focus::Mute,
-                device_connected: true,
-                ..App::default()
-            };
+            let mut app = waiting(model);
             assert!(app.toggle_focused().is_none(), "{model:?}");
             assert!(app.adjust_focused(1).is_none(), "{model:?}");
-            let start = fake.log_len();
-            apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
-            assert!(fake.log_since(start).is_empty(), "{model:?}: r read");
-            assert_eq!(app.status_message, WAITING_FOR_DEVICE, "{model:?}");
             poll_live(&mut app, &device);
             assert!(
                 !app.waiting_for_device && !app.settings_never_read && !app.state_unread,
@@ -3057,6 +3071,20 @@ mod tests {
                 app.status_message
             );
             assert!(!app.is_tab_locked(app::Tab::Info), "{model:?}");
+            let mut app = waiting(model);
+            apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
+            assert!(
+                !app.waiting_for_device && !app.settings_never_read,
+                "{model:?}: r: {}",
+                app.status_message
+            );
+            let mut app = waiting(model);
+            app.device_connected = false;
+            assert!(!app.is_waiting_for_device(), "{model:?}");
+            assert!(
+                app.toggle_focused().is_some(),
+                "{model:?}: Mute shows unplugged"
+            );
         }
     }
 

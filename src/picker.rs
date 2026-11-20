@@ -33,7 +33,7 @@ pub struct PickerRow {
 
 /// Why a `busy` row has no name, in the status bar when it is selected.
 pub const LABELS_BUSY: &str =
-    "Another shurectl was using it, so its name wasn't read. Press r to rescan.";
+    "Another shurectl was using it, so it wasn't read. Press r to rescan.";
 
 pub struct Picker {
     pub rows: Vec<PickerRow>,

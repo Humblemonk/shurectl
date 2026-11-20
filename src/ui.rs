@@ -408,7 +408,7 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             " [Enter] save  [Esc] cancel",
             C_ACCENT,
         )
-    } else if app.waiting_for_device {
+    } else if app.is_waiting_for_device() {
         // No control to adjust, and `r` only repeats the waiting status.
         (" [?] Help  [q] Quit", " [?] Help  [q] Quit", C_DIM)
     } else if app.settings_never_read {
@@ -2499,7 +2499,7 @@ fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
         ))
     };
-    if app.waiting_for_device {
+    if app.is_waiting_for_device() {
         let notice = Layout::vertical([Constraint::Min(0)])
             .horizontal_margin(1)
             .split(area)[0];

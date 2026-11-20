@@ -426,7 +426,7 @@ impl App {
             self.set_err("Gain check needs the device connected.");
         } else if self.state_unread {
             // Before the mode: unread, the mode shown may be a default.
-            self.set_err(if self.waiting_for_device {
+            self.set_err(if self.is_waiting_for_device() {
                 WAITING_FOR_DEVICE
             } else {
                 STATE_UNREAD_HINT
@@ -576,6 +576,13 @@ impl App {
         self.is_tab_hidden(tab)
             || (auto_managed && locked_in_auto && self.device_state.mode == InputMode::Auto)
             || (needs_settings && self.settings_never_read)
+    }
+
+    /// Whether the screen waits for another shurectl (`waiting_for_device`).
+    /// Not once the device is unplugged: that, not the other shurectl, is
+    /// then why nothing is read, and a replug reads it or waits again.
+    pub fn is_waiting_for_device(&self) -> bool {
+        self.waiting_for_device && self.device_connected
     }
 
     /// Select a visible, available tab (shared by keyboard and mouse navigation).
@@ -1277,7 +1284,7 @@ impl App {
     /// Increment the focused parameter by `delta` (usually ±1).
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
         // No control shows while waiting for another shurectl.
-        if self.waiting_for_device {
+        if self.is_waiting_for_device() {
             return None;
         }
         match self.focus {
@@ -1476,7 +1483,7 @@ impl App {
     /// Every press goes to the control focused now, so a control whose toggle
     /// moves focus (Mode) must never be more than one press from any option.
     pub fn toggle_focused(&mut self) -> Option<DeviceAction> {
-        if self.waiting_for_device {
+        if self.is_waiting_for_device() {
             return None;
         }
         let mut action = None;

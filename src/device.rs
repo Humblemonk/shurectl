@@ -123,8 +123,8 @@ const MV7_POLL_TIMEOUT: Duration = Duration::from_millis(READ_TIMEOUT_MS as u64)
 const DRAIN_MAX_REPORTS: usize = 256;
 
 /// How long an exchange waits for another shurectl to finish its own before
-/// giving up. A binary readback holds the lock a few hundred milliseconds; an
-/// MV7 readback whose lines time out can take a few seconds.
+/// giving up. How long others hold the lock is unmeasured; an MV7 readback
+/// whose lines go unanswered holds it for seconds (`MV7_REPLY_TIMEOUT` each).
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// How often a waiting exchange tries the lock again.
@@ -1217,7 +1217,8 @@ impl ShureDevice {
 
     /// Read the mute state alone, for `--mute toggle` and `status`, without a
     /// full readback. `Ok(None)` when the device gave no usable answer (a
-    /// timeout, a refusal, another reply); only a HID failure is an error.
+    /// timeout, a refusal, another reply); only a HID failure or [`Busy`] is
+    /// an error.
     pub fn read_mute(&self) -> Result<Option<bool>> {
         Ok(self
             .read_one(mv7_text::get_mute, cmd_get_mute)?
@@ -1257,7 +1258,8 @@ impl ShureDevice {
     /// levels), each alone, for the TUI's poll, so a change made elsewhere
     /// shows without a full readback: the mic's own button, `shurectl --gain`
     /// from a Stream Deck, or MOTIV. Each is `None` without a usable answer;
-    /// only a HID failure is an error. Binary models discard queued input first.
+    /// only a HID failure or [`Busy`] is an error. Binary models discard
+    /// queued input first.
     pub fn read_live(&self) -> Result<Live> {
         let _exclusive = self.exclusive()?;
         match self.model {

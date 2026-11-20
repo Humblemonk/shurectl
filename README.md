@@ -134,8 +134,7 @@ shurectl --mode manual --gain 24 --json  # Several changes, then the JSON
 A change the TUI wouldn't make right now, such as gain in Auto Level mode, is refused with the
 reason, and a failure exits with status 1 (`--json` prints `{"error": "..."}`). With two mics,
 pick one by the serial `--list` shows: `--device 3EK26001276`. If the TUI is open, press `r`
-there after loading a preset from the command line, and avoid running commands while
-recording, since both then talk to the device at once. `shurectl --help` explains each option.
+there after loading a preset from the command line. `shurectl --help` explains each option.
 
 ## Troubleshooting
 
