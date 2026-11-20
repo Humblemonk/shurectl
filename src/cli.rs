@@ -794,6 +794,36 @@ mod tests {
         (result, lines, fake.log_since(start))
     }
 
+    /// How many turns at the device `request` takes on `model`'s fake.
+    fn turns_for(model: DeviceModel, request: &Request) -> usize {
+        let dev = FakeDevice::new(model).open();
+        let turns = dev.turns();
+        check(request)
+            .and_then(|()| execute(request, None, dev, &mut |_| {}))
+            .expect("run");
+        turns()
+    }
+
+    /// A toggle reads and writes in one turn at the device, so a second
+    /// toggle (a double press) can't read between them and unmute too.
+    /// Combined, it takes no more turns than a fixed mute does.
+    #[test]
+    fn a_toggle_reads_and_writes_in_one_turn() {
+        for model in MODELS {
+            assert_eq!(turns_for(model, &mute(MuteAction::Toggle)), 1, "{model:?}");
+            let with_gain = |action| Request {
+                mute: Some(action),
+                gain: Some(Amount::By(1)),
+                ..Request::default()
+            };
+            assert_eq!(
+                turns_for(model, &with_gain(MuteAction::Toggle)),
+                turns_for(model, &with_gain(MuteAction::On)),
+                "{model:?}"
+            );
+        }
+    }
+
     /// Whether an MV7 line reads: a name alone (`micMute`) or `getBlock N`.
     fn reads_text(line: &str) -> bool {
         !line.contains(' ') || line.starts_with("getBlock ")

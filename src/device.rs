@@ -375,6 +375,9 @@ struct DeviceLock {
     depth: AtomicUsize,
     /// Whether the outermost guard holds the lock file, and so unlocks it.
     held: AtomicBool,
+    /// How many outermost guards were taken, for tests of what shares one.
+    #[cfg(test)]
+    turns: AtomicUsize,
 }
 
 impl DeviceLock {
@@ -383,6 +386,8 @@ impl DeviceLock {
             file,
             depth: AtomicUsize::new(0),
             held: AtomicBool::new(false),
+            #[cfg(test)]
+            turns: AtomicUsize::new(0),
         })
     }
 }
@@ -503,14 +508,24 @@ impl ShureDevice {
 
     fn exclusive_within(&self, wait: Duration) -> Result<Exclusive> {
         let lock = &self.lock;
-        if lock.depth.load(Ordering::Relaxed) == 0
-            && let Some(file) = &lock.file
-        {
-            let locked = wait_for_lock(file, wait)?;
-            lock.held.store(locked, Ordering::Relaxed);
+        if lock.depth.load(Ordering::Relaxed) == 0 {
+            if let Some(file) = &lock.file {
+                let locked = wait_for_lock(file, wait)?;
+                lock.held.store(locked, Ordering::Relaxed);
+            }
+            #[cfg(test)]
+            lock.turns.fetch_add(1, Ordering::Relaxed);
         }
         lock.depth.fetch_add(1, Ordering::Relaxed);
         Ok(Exclusive(Arc::clone(lock)))
+    }
+
+    /// How many turns at the device this handle has taken so far (outermost
+    /// guards), still countable after the device itself is dropped.
+    #[cfg(test)]
+    pub fn turns(&self) -> impl Fn() -> usize + use<> {
+        let lock = Arc::clone(&self.lock);
+        move || lock.turns.load(Ordering::Relaxed)
     }
 
     /// Every write and read checks it runs under [`Self::exclusive()`], so a
@@ -654,6 +669,8 @@ impl ShureDevice {
                 // A refused device has no serial to ask for, and its refusal
                 // would hide why another couldn't be opened.
                 .filter(|(info, model)| !is_not_genuine(info, *model))
+                // The full wait, not `exclusive_for_labels()`'s: this is a
+                // command that should wait its turn, not a list.
                 .filter(|(info, model)| match Self::open_info(&api, info, *model) {
                     Ok(dev) => match dev.read_factory_serial() {
                         Ok(serial) => serial.is_some_and(|serial| same(&serial)),
