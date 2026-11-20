@@ -174,6 +174,11 @@ pub struct App {
     /// never read (defaults), or a failed write or reconnect left them unknown.
     /// Writes based on it are refused until a refresh reads the device.
     pub state_unread: bool,
+    /// The settings were never read on this connection: the first readback
+    /// failed, so `device_state` holds defaults that were never the mic's.
+    /// Until a readback works the screen shows only Mute, which the live poll
+    /// reads (`ui.rs::draw_never_read()`), and the other tabs are locked.
+    pub settings_never_read: bool,
     /// The optional GETs the last readback got no usable answer to, such as
     /// the MV6's unconfirmed Playback Level (#99): their fields hold defaults.
     pub unread_gets: Vec<Vec<u8>>,
@@ -239,6 +244,7 @@ impl Default for App {
             demo_mode: false,
             device_connected: true,
             state_unread: false,
+            settings_never_read: false,
             unread_gets: Vec::new(),
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
@@ -410,12 +416,13 @@ impl App {
             self.set_ok("Gain check cancelled.");
         } else if self.demo_mode {
             self.set_err("Gain check needs a device: demo mode has no level meter.");
-        } else if self.device_state.mode != InputMode::Manual {
-            self.set_err(GAIN_CHECK_AUTO);
         } else if !self.device_connected {
             self.set_err("Gain check needs the device connected.");
         } else if self.state_unread {
+            // Before the mode: unread, the mode shown may be a default.
             self.set_err(STATE_UNREAD_HINT);
+        } else if self.device_state.mode != InputMode::Manual {
+            self.set_err(GAIN_CHECK_AUTO);
         } else if self.meter_unavailable {
             self.set_err("Gain check needs the level meter, which couldn't start.");
         } else if self.device_state.muted {
@@ -551,8 +558,14 @@ impl App {
             Tab::Eq | Tab::Dynamics => true,
             Tab::Main | Tab::Reverb | Tab::Led | Tab::Presets | Tab::Info => false,
         };
+        // Never read, only Main has anything true to show (its Mute).
+        let needs_settings = match tab {
+            Tab::Main => false,
+            Tab::Eq | Tab::Dynamics | Tab::Reverb | Tab::Led | Tab::Presets | Tab::Info => true,
+        };
         self.is_tab_hidden(tab)
             || (auto_managed && locked_in_auto && self.device_state.mode == InputMode::Auto)
+            || (needs_settings && self.settings_never_read)
     }
 
     /// Select a visible, available tab (shared by keyboard and mouse navigation).
@@ -691,6 +704,11 @@ impl App {
     // MV7+ EQ: Tone. MV7+ Dynamics: Limiter → Compressor → Denoiser → PopperStopper
     //   → MuteBtnDisable → Hpf → (wrap). Reverb and LED tabs: MV7+ only.
     pub fn focus_next(&mut self) {
+        // Mute is the only control shown until the settings are read.
+        if self.settings_never_read {
+            self.focus = Focus::Mute;
+            return;
+        }
         self.focus = match (
             &self.active_tab,
             &self.focus,
@@ -953,6 +971,10 @@ impl App {
     }
 
     pub fn focus_prev(&mut self) {
+        if self.settings_never_read {
+            self.focus = Focus::Mute;
+            return;
+        }
         self.focus = match (
             &self.active_tab,
             &self.focus,

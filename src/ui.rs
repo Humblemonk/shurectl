@@ -241,6 +241,7 @@ fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     draw_tabs(f, app, chunks[1]);
 
     match app.active_tab {
+        _ if app.settings_never_read => draw_never_read(f, app, chunks[2]),
         Tab::Main => draw_main_tab(f, app, chunks[2]),
         Tab::Eq => draw_eq_tab(f, app, chunks[2]),
         Tab::Dynamics => draw_dynamics_tab(f, app, chunks[2]),
@@ -2477,6 +2478,41 @@ fn draw_tab_locked_notice(f: &mut UiFrame, area: Rect, tab_name: &str) {
     render_notice(f, area, lines);
 }
 
+/// The first readback failed, so every setting but mute would show a
+/// default that was never the mic's. Only Mute shows, which the live poll
+/// reads, beside why the rest is missing.
+fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
+    let [mute_row, notice] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)])
+        .horizontal_margin(1)
+        .areas(area);
+    // Wide enough for its hint at 80 columns.
+    let [mute, _] =
+        Layout::horizontal([Constraint::Length(34), Constraint::Fill(1)]).areas(mute_row);
+    draw_mute_block(f, app, mute);
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Settings not read from the device yet",
+            Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "The other settings show once shurectl has read them.",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            "Until then, only Mute can be changed.",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press r to read the device again.",
+            Style::default().fg(C_DIM),
+        )),
+    ];
+    render_notice(f, notice, lines);
+}
+
 fn render_notice(f: &mut UiFrame, area: Rect, lines: Vec<Line>) {
     let p = Paragraph::new(lines)
         .block(
@@ -4495,6 +4531,17 @@ mod tests {
                 ..App::default()
             };
             visit(&format!("{model:?} help"), &help);
+            for muted in [false, true] {
+                let mut never_read = App {
+                    device_model: model,
+                    settings_never_read: true,
+                    state_unread: true,
+                    focus: Focus::Mute,
+                    ..App::default()
+                };
+                never_read.device_state.muted = muted;
+                visit(&format!("{model:?} never read muted={muted}"), &never_read);
+            }
             for (name, check) in gain_check_states() {
                 let mut app = App {
                     device_model: model,

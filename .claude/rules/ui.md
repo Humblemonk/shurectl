@@ -47,6 +47,12 @@ ON/OFF/Enabled for anything but the mute state itself: the mute-button setting r
 "Pressing it: Works / Ignored" (`mute_btn_span()`). Card descriptions are one sentence that
 wraps; don't break lines by hand.
 
+**Never read.** When the first readback fails (`App::settings_never_read`), the content area
+shows only the Mute control and a notice (`draw_never_read()`), the other tabs lock, and focus
+stays on Mute, so no default is ever drawn as the mic's value. A readback that works clears
+it. Values put back or left unread after a failed write mid-session were read once, and still
+show.
+
 **Size.** Every screen of every model fits 80x24 (`MIN_SIZE`, btop's minimum); below it `draw()`
 shows only btop's "Terminal size too small" notice. Check a new block at 120x40 (the golden size)
 and 80x24, where Main has 21 content rows and its left column 44 inner columns; the MVX2U Gen 1

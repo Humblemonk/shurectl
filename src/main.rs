@@ -622,8 +622,14 @@ fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
             Err(e) => {
                 app.device_connected = !is_disconnect(&e);
                 app.state_unread = true;
+                // Only defaults to show: the screen shows Mute alone until a
+                // readback works.
+                app.settings_never_read = true;
+                app.active_tab = app::Tab::Main;
+                app.focus = app::Focus::Mute;
+                app.device_state.serial_number = dev.serial_number.clone();
                 app.set_err(format!(
-                    "Connected but failed to read state: {e}. Press r to retry."
+                    "Couldn't read the settings: {e}. Press r to retry."
                 ));
             }
         }
@@ -2339,6 +2345,7 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     app.device_state = readback.state;
     app.unread_gets = readback.skipped_gets;
     app.state_unread = false;
+    app.settings_never_read = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
 }
@@ -2690,6 +2697,15 @@ mod tests {
     use fake_hid::FakeDevice;
     use protocol::{DeviceState, EqBand, EqPreset};
 
+    const MODELS: [DeviceModel; 6] = [
+        DeviceModel::Mvx2u,
+        DeviceModel::Mvx2uGen2,
+        DeviceModel::Mv6,
+        DeviceModel::Mv6Gen2,
+        DeviceModel::Mv7,
+        DeviceModel::Mv7Plus,
+    ];
+
     #[test]
     fn a_failed_write_is_undone_only_when_it_clearly_did_not_land() {
         let before = DeviceState::default();
@@ -2929,6 +2945,52 @@ mod tests {
     /// A mode switch whose re-read fails says the switch landed, so a
     /// script or user doesn't switch again: the MV7 re-reads everything after
     /// one, and here its first line goes unanswered.
+    /// A first readback that fails leaves only defaults, which were never
+    /// the mic's: until a readback works, only Mute shows and takes focus,
+    /// and the other tabs are locked. `r` that reads the device brings back
+    /// the rest. On every model.
+    #[test]
+    fn settings_never_read_show_only_mute_until_r_reads_them() {
+        for model in MODELS {
+            let fake = FakeDevice::new(model);
+            let mut device = Some(fake.open());
+            let mut app = App {
+                device_model: model,
+                ..App::default()
+            };
+            let feature = match model {
+                DeviceModel::Mv7 => {
+                    fake.faults_mut(|faults| faults.unanswered_line = Some("inputGain".into()));
+                    None
+                }
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv6Gen2
+                | DeviceModel::Mv7Plus => Some("GAIN"),
+            };
+            fake.faults_mut(|faults| faults.refused_get = feature.map(Into::into));
+            load_initial_state(&mut app, device.as_ref());
+            assert!(app.settings_never_read && app.state_unread, "{model:?}");
+            assert_eq!(app.focus, app::Focus::Mute, "{model:?}");
+            app.focus_next();
+            assert_eq!(app.focus, app::Focus::Mute, "{model:?}");
+            app.focus_prev();
+            assert_eq!(app.focus, app::Focus::Mute, "{model:?}");
+            assert!(app.is_tab_locked(app::Tab::Eq) && app.is_tab_locked(app::Tab::Info));
+            assert!(app.offers(&DeviceAction::SetMute(true)), "{model:?}");
+            fake.faults_mut(|faults| {
+                faults.refused_get = None;
+                faults.unanswered_line = None;
+            });
+            apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
+            assert!(!app.settings_never_read && !app.state_unread, "{model:?}");
+            assert!(!app.is_tab_locked(app::Tab::Info), "{model:?}");
+            app.focus_next();
+            assert_ne!(app.focus, app::Focus::Mute, "{model:?}: focus moves again");
+        }
+    }
+
     #[test]
     fn a_mode_switch_whose_re_read_fails_says_it_switched() {
         let fake = FakeDevice::new(DeviceModel::Mv7);
