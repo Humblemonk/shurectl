@@ -628,9 +628,15 @@ fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
                 app.active_tab = app::Tab::Main;
                 app.focus = app::Focus::Mute;
                 app.device_state.serial_number = dev.serial_number.clone();
-                app.set_err(format!(
-                    "Couldn't read the settings: {e}. Press r to retry."
-                ));
+                // Busy: the live poll reads it once the other one is done.
+                app.waiting_for_device = is_busy(&e);
+                if app.waiting_for_device {
+                    app.set_ok(WAITING_FOR_DEVICE);
+                } else {
+                    app.set_err(format!(
+                        "Couldn't read the settings: {e}. Press r to retry."
+                    ));
+                }
             }
         }
     } else {
@@ -1988,6 +1994,12 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         app.set_ok("Demo mode — no device to refresh.");
         return Ok(());
     };
+    // The live poll reads it the moment the other shurectl is done; `r`
+    // would only wait as long, then say busy.
+    if app.waiting_for_device {
+        app.set_ok(WAITING_FOR_DEVICE);
+        return Ok(());
+    }
     let read_err = match reload_state(app, dev) {
         Ok(skipped) => {
             app.device_connected = true;
@@ -2055,6 +2067,11 @@ const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Status-bar wording for a lost device, shared by the poll and failed commands.
 const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in.";
+
+/// Status while the first readback waits for another shurectl
+/// (`App::waiting_for_device`).
+const WAITING_FOR_DEVICE: &str =
+    "Another shurectl has the device. Your settings show as soon as it's done.";
 
 /// Status-bar note after a failed write whose device was then read again.
 const READ_BACK_NOTE: &str = "Settings read back from the device.";
@@ -2158,6 +2175,12 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     let Ok(_turn) = dev.exclusive_now() else {
         return;
     };
+    // The first readback found the device busy, and now it is free: read
+    // everything, as at startup. The readback nests inside this guard.
+    if app.waiting_for_device {
+        load_initial_state(app, Some(dev));
+        return;
+    }
     // While the settings are unread only mute is read: the rest would read as
     // changes from defaults, and a GET the readback found unanswered would
     // cost every poll a timeout.
@@ -2346,6 +2369,7 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     app.unread_gets = readback.skipped_gets;
     app.state_unread = false;
     app.settings_never_read = false;
+    app.waiting_for_device = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
 }
@@ -2988,6 +3012,40 @@ mod tests {
             assert!(!app.is_tab_locked(app::Tab::Info), "{model:?}");
             app.focus_next();
             assert_ne!(app.focus, app::Focus::Mute, "{model:?}: focus moves again");
+        }
+    }
+
+    /// A first readback that found another shurectl holding the device shows
+    /// no control: Enter and arrows send nothing, `r` doesn't wait 5 s for
+    /// the same lock, and the live poll reads everything once the device is
+    /// free (the fake never locks, so here at the first poll).
+    #[test]
+    fn waiting_for_the_device_reads_it_once_free_and_offers_nothing_before() {
+        for model in MODELS {
+            let fake = FakeDevice::new(model);
+            let mut device = Some(fake.open());
+            let mut app = App {
+                device_model: model,
+                settings_never_read: true,
+                waiting_for_device: true,
+                state_unread: true,
+                focus: app::Focus::Mute,
+                device_connected: true,
+                ..App::default()
+            };
+            assert!(app.toggle_focused().is_none(), "{model:?}");
+            assert!(app.adjust_focused(1).is_none(), "{model:?}");
+            let start = fake.log_len();
+            apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
+            assert!(fake.log_since(start).is_empty(), "{model:?}: r read");
+            assert_eq!(app.status_message, WAITING_FOR_DEVICE, "{model:?}");
+            poll_live(&mut app, &device);
+            assert!(
+                !app.waiting_for_device && !app.settings_never_read && !app.state_unread,
+                "{model:?}: {}",
+                app.status_message
+            );
+            assert!(!app.is_tab_locked(app::Tab::Info), "{model:?}");
         }
     }
 

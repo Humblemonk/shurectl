@@ -2479,9 +2479,31 @@ fn draw_tab_locked_notice(f: &mut UiFrame, area: Rect, tab_name: &str) {
 }
 
 /// The first readback failed, so every setting but mute would show a
-/// default that was never the mic's. Only Mute shows, which the live poll
-/// reads, beside why the rest is missing.
+/// default that was never the mic's. Mute shows only when it could be sent:
+/// not while another shurectl holds the device, when nothing can be, and
+/// the live poll reads everything once it is free.
 fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
+    let dim = |text: &'static str| Line::from(Span::styled(text, Style::default().fg(C_DIM)));
+    let heading = |text: &'static str| {
+        Line::from(Span::styled(
+            text,
+            Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+        ))
+    };
+    if app.waiting_for_device {
+        let notice = Layout::vertical([Constraint::Min(0)])
+            .horizontal_margin(1)
+            .split(area)[0];
+        let lines = vec![
+            Line::from(""),
+            heading("Another shurectl is using the device"),
+            Line::from(""),
+            dim("Your settings show here as soon as it is done."),
+            dim("Nothing can be changed until then, Mute included."),
+        ];
+        render_notice(f, notice, lines);
+        return;
+    }
     let [mute_row, notice] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)])
         .horizontal_margin(1)
         .areas(area);
@@ -2491,24 +2513,12 @@ fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
     draw_mute_block(f, app, mute);
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "Settings not read from the device yet",
-            Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
-        )),
+        heading("Settings not read from the device yet"),
         Line::from(""),
-        Line::from(Span::styled(
-            "The other settings show once shurectl has read them.",
-            Style::default().fg(C_DIM),
-        )),
-        Line::from(Span::styled(
-            "Until then, only Mute can be changed.",
-            Style::default().fg(C_DIM),
-        )),
+        dim("The other settings show once shurectl has read them."),
+        dim("Mute doesn't need them."),
         Line::from(""),
-        Line::from(Span::styled(
-            "Press r to read the device again.",
-            Style::default().fg(C_DIM),
-        )),
+        dim("Press r to read the device again."),
     ];
     render_notice(f, notice, lines);
 }
@@ -4542,6 +4552,15 @@ mod tests {
                 never_read.device_state.muted = muted;
                 visit(&format!("{model:?} never read muted={muted}"), &never_read);
             }
+            let waiting = App {
+                device_model: model,
+                settings_never_read: true,
+                waiting_for_device: true,
+                state_unread: true,
+                focus: Focus::Mute,
+                ..App::default()
+            };
+            visit(&format!("{model:?} waiting for device"), &waiting);
             for (name, check) in gain_check_states() {
                 let mut app = App {
                     device_model: model,

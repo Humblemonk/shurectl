@@ -91,8 +91,9 @@ Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetName(3) fc202ea
 Mvx2u Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 0be9f1bd05c321bc
 Mvx2u Auto adv=false muted=true locked=true Info band=0 DeviceName 875bc586ccdb1697
 Mvx2u help ca91664b7e56d745
-Mvx2u never read muted=false cef0db1f5ac85a71
-Mvx2u never read muted=true 153925de054121cb
+Mvx2u never read muted=false 779a994eade11041
+Mvx2u never read muted=true f3111fd3e2cf96df
+Mvx2u waiting for device 27783d52070ab412
 Mvx2u gain check listening 530e1fc90c601620
 Mvx2u gain check raise e5ef211f90fbfe90
 Mvx2u gain check clipping ea80685cda0f3bd9
@@ -196,8 +197,9 @@ Mvx2uGen2 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 
 Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 DeviceName 665949b1a70a9ad5
 Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset 7c4a4b0baad24ac5
 Mvx2uGen2 help 3f193924dbd5cdb2
-Mvx2uGen2 never read muted=false 46437daf3bbf9765
-Mvx2uGen2 never read muted=true 172bbc6812bfd0cf
+Mvx2uGen2 never read muted=false 2fc4a7bb56e03ba5
+Mvx2uGen2 never read muted=true 6e3f9d4c22d46f53
+Mvx2uGen2 waiting for device d3f7e0c4cb86ca9e
 Mvx2uGen2 gain check listening 51fa191306d6adaf
 Mvx2uGen2 gain check raise 978e48c1f8ee3602
 Mvx2uGen2 gain check clipping d68fd66b7c9ac243
@@ -287,8 +289,9 @@ Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) cc5a2183b
 Mv6 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) 83dd376acabef653
 Mv6 Auto adv=false muted=true locked=true Info band=0 DeviceName 8f2363de16ac93f0
 Mv6 help 14d8042228e529b2
-Mv6 never read muted=false a40aea1849d524e6
-Mv6 never read muted=true 945fb4d1580ea3c8
+Mv6 never read muted=false 117b164e48d050b6
+Mv6 never read muted=true b19222d6551c2554
+Mv6 waiting for device 715afcc35376ffc1
 Mv6 gain check listening 2e1e420636e57064
 Mv6 gain check raise 287501734a1df0d3
 Mv6 gain check clipping 2376ded2cac5337e
@@ -504,8 +507,9 @@ Mv6Gen2 Auto adv=true muted=true locked=true Presets band=0 PresetActions(3) d8e
 Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 DeviceName dfa4ea785a4a6858
 Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 FactoryReset cd81fe8f9fc3b060
 Mv6Gen2 help 323f11f9662fa1cf
-Mv6Gen2 never read muted=false 0c6f4245638a3baa
-Mv6Gen2 never read muted=true ab97bfb4ff847e0c
+Mv6Gen2 never read muted=false e278f39dfead8a4a
+Mv6Gen2 never read muted=true 84d95166f1155f78
+Mv6Gen2 waiting for device e66b63bbd323455d
 Mv6Gen2 gain check listening dd01d1a905e10ccc
 Mv6Gen2 gain check raise bdc0e0496d540f21
 Mv6Gen2 gain check clipping 3f9d8c100397fb26
@@ -595,8 +599,9 @@ Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetName(3) a061c84ed
 Mv7 Auto adv=false muted=true locked=true Presets band=0 PresetActions(3) af5bd7ac08580bdf
 Mv7 Auto adv=false muted=true locked=true Info band=0 FactoryReset ebc4ddbb24ca5e73
 Mv7 help 192ed41a6e0e13bd
-Mv7 never read muted=false e2992d24a1c35dc0
-Mv7 never read muted=true bd3988906d7b1756
+Mv7 never read muted=false e0a15514a5d1e20c
+Mv7 never read muted=true 3ec26ebc547a9ac6
+Mv7 waiting for device 45b9331d8962817b
 Mv7 gain check listening d024084980d804a1
 Mv7 gain check raise 95801dd3e0370481
 Mv7 gain check clipping 0802c67f2898f5b8
@@ -772,8 +777,9 @@ Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInter
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInteriorG a46f231867671e02
 Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInteriorB 050517254731f2cb
 Mv7Plus help 9cfe07706b80a5f0
-Mv7Plus never read muted=false 82264b17916b07bf
-Mv7Plus never read muted=true 66239f22ca46c6dd
+Mv7Plus never read muted=false bc53197d69d206a3
+Mv7Plus never read muted=true 4ed972d08bcb179d
+Mv7Plus waiting for device a78fc44ced393210
 Mv7Plus gain check listening c406f94216631d9c
 Mv7Plus gain check raise 0f077670bc8f2a12
 Mv7Plus gain check clipping d5469472fac50043

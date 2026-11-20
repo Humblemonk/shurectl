@@ -38,10 +38,11 @@ copes better when another shurectl is using the device.
 - On Linux, two shurectl started differently, such as one with `sudo` or from a cron job or
   hotkey daemon beside the TUI, could still read each other's replies and get settings
   wrong. They now always take turns.
-- If shurectl couldn't read your mic's settings when it started, such as while another
-  shurectl had the device, the screen showed default values as if they were your mic's,
-  such as 48V OFF. It now shows only Mute, the one setting you can change until then, and
-  a notice to press `r`; the other settings and tabs appear once they are read. All models.
+- If shurectl couldn't read your mic's settings when it started, the screen showed default
+  values as if they were your mic's, such as 48V OFF. Now, if another shurectl is using
+  the device, it says so, shows no controls, and reads your settings by itself as soon as
+  the other one is done. If reading failed for another reason, it shows only Mute and asks
+  you to press `r`. All models.
 - When a mode switch went through but the device was unplugged while shurectl read it
   afterwards, the screen went back to the old mode while the status said it had switched.
   It now shows the new mode. The same holds for the MV7's Mic Position and Tone.

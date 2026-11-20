@@ -179,6 +179,10 @@ pub struct App {
     /// Until a readback works the screen shows only Mute, which the live poll
     /// reads (`ui.rs::draw_never_read()`), and the other tabs are locked.
     pub settings_never_read: bool,
+    /// The first readback found another shurectl holding the device: no
+    /// control shows (not even Mute, which couldn't be sent either), and the
+    /// live poll reads the settings the moment the device is free.
+    pub waiting_for_device: bool,
     /// The optional GETs the last readback got no usable answer to, such as
     /// the MV6's unconfirmed Playback Level (#99): their fields hold defaults.
     pub unread_gets: Vec<Vec<u8>>,
@@ -245,6 +249,7 @@ impl Default for App {
             device_connected: true,
             state_unread: false,
             settings_never_read: false,
+            waiting_for_device: false,
             unread_gets: Vec::new(),
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
@@ -1266,6 +1271,10 @@ impl App {
     // ── Value adjustment helpers ──────────────────────────────────────────────
     /// Increment the focused parameter by `delta` (usually ±1).
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
+        // No control shows while waiting for another shurectl.
+        if self.waiting_for_device {
+            return None;
+        }
         match self.focus {
             Focus::Gain => {
                 if self.gain_locked() {
@@ -1462,6 +1471,9 @@ impl App {
     /// Every press goes to the control focused now, so a control whose toggle
     /// moves focus (Mode) must never be more than one press from any option.
     pub fn toggle_focused(&mut self) -> Option<DeviceAction> {
+        if self.waiting_for_device {
+            return None;
+        }
         let mut action = None;
         for _ in 0..self.pill_presses.take().unwrap_or(1) {
             action = self.toggle_once();
