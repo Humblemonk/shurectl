@@ -456,10 +456,21 @@ impl ShureDevice {
     /// [`LOCK_WAIT`] ([`Busy`]). `main.rs` holds one around a preset load, so
     /// no other shurectl comes between its Gain Lock unlock and re-lock.
     pub fn exclusive(&self) -> Result<Exclusive<'_>> {
+        self.exclusive_within(LOCK_WAIT)
+    }
+
+    /// [`Self::exclusive()`] without the wait: [`Busy`] at once while another
+    /// shurectl holds the device. For the TUI's live poll, which skips a turn
+    /// rather than stall the screen for [`LOCK_WAIT`] every second.
+    pub fn exclusive_now(&self) -> Result<Exclusive<'_>> {
+        self.exclusive_within(Duration::ZERO)
+    }
+
+    fn exclusive_within(&self, wait: Duration) -> Result<Exclusive<'_>> {
         if self.exclusive_depth.load(Ordering::Relaxed) == 0
             && let Some(file) = &self.lock
         {
-            let locked = wait_for_lock(file, LOCK_WAIT)?;
+            let locked = wait_for_lock(file, wait)?;
             self.holds_lock.store(locked, Ordering::Relaxed);
         }
         self.exclusive_depth.fetch_add(1, Ordering::Relaxed);
@@ -2108,6 +2119,38 @@ mod tests {
         first.unlock().expect("unlock");
         assert!(wait_for_lock(&second, Duration::ZERO).expect("released lock"));
         drop((first, second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The live poll's guard gives up at once on a held lock instead of
+    /// waiting, and takes it once it is free.
+    #[test]
+    fn the_live_polls_guard_doesnt_wait_for_a_held_lock() {
+        use crate::fake_hid::FakeDevice;
+
+        let path =
+            std::env::temp_dir().join(format!("shurectl-poll-lock-test-{}", std::process::id()));
+        let open = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .expect("lock file")
+        };
+        let mut device = FakeDevice::new(DeviceModel::Mvx2uGen2).open();
+        device.lock = Some(open());
+        let other = open();
+        other.lock().expect("other shurectl's lock");
+        let start = Instant::now();
+        let busy = device.exclusive_now().err().expect("held lock");
+        assert!(busy.downcast_ref::<Busy>().is_some(), "{busy}");
+        assert!(start.elapsed() < Duration::from_millis(100), "waited");
+        other.unlock().expect("unlock");
+        let turn = device.exclusive_now().expect("free lock");
+        drop(turn);
+        drop((device, other));
         let _ = std::fs::remove_file(&path);
     }
 

@@ -2137,6 +2137,12 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     if !app.device_connected {
         return;
     }
+    // Another shurectl holds the device: skip this turn rather than wait for
+    // it, which would stall keys and the screen for every poll it holds on
+    // through. The reads below nest inside this guard and don't wait.
+    let Ok(_turn) = dev.exclusive_now() else {
+        return;
+    };
     // While the settings are unread only mute is read: the rest would read as
     // changes from defaults, and a GET the readback found unanswered would
     // cost every poll a timeout.

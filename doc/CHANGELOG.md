@@ -22,7 +22,9 @@ copes better when another shurectl is using the device.
 - If another shurectl kept the device busy, a change or preset load in the TUI used to
   freeze the screen for about 10 seconds before it said your settings couldn't be read. It
   now gives up after 5 seconds, puts the screen back as it was, and asks you to press `r`,
-  since the other shurectl may have changed your settings meanwhile. A mute or unmute that
+  since the other shurectl may have changed your settings meanwhile. Between your changes
+  the screen keeps responding while the other shurectl holds the device, where it used to
+  stop for as long as it did. A mute or unmute that
   finds the device busy shows Mute as OFF, as shurectl does whenever it can't be sure the
   mic is muted. `r` no longer reconnects on it, `--device` with a printed serial says
   another shurectl was busy instead of that no device has that serial, and the device
