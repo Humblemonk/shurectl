@@ -277,6 +277,7 @@ fn execute(
                     return Err(progress.fail(&["--mode", "--mute"], both));
                 }
                 progress.applied.insert(0, "--mute");
+                progress.mute_resent = true;
             }
             // Unread, a switch that landed shows the new mode, and the mute
             // sent before it wasn't read after it. Refused or busy, it shows
@@ -394,6 +395,8 @@ struct Progress {
     applied: Vec<&'static str>,
     /// A `--mute` sent before a mode switch whose re-read hasn't shown it.
     mute_unchecked: bool,
+    /// A `--mute` sent again after a failed mode switch had undone it.
+    mute_resent: bool,
 }
 
 impl Progress {
@@ -413,6 +416,7 @@ impl Progress {
             requested,
             applied: Vec::new(),
             mute_unchecked: false,
+            mute_resent: false,
         }
     }
 
@@ -441,6 +445,7 @@ impl Progress {
         let applied: Vec<&str> = self
             .applied
             .iter()
+            .filter(|&&flag| !(flag == "--mute" && self.mute_resent))
             .map(|&flag| match flag {
                 "--mute" if self.mute_unchecked => "--mute (not checked after the mode switch)",
                 flag => flag,
@@ -448,6 +453,9 @@ impl Progress {
             .collect();
         if !applied.is_empty() {
             message.push_str(&format!(" Applied before it: {}.", applied.join(", ")));
+        }
+        if self.mute_resent {
+            message.push_str(" --mute was sent again after it.");
         }
         if !not_sent.is_empty() {
             message.push_str(&format!(" Not sent: {}.", not_sent.join(", ")));
@@ -535,7 +543,11 @@ fn without_tui_hints(status: &str) -> String {
             "The device's settings couldn't be read back.",
         )
         .replace(&format!(", {}", crate::BUSY_MUTE_OFF), "")
-        .replace(crate::BUSY_HINT, "Try again once it's done.")
+        .replace(
+            crate::BUSY_HINT,
+            "Try again once the other shurectl is done.",
+        )
+        .replace(crate::LANDED_HINT, ".")
         .replace(crate::MUTE_UNKNOWN_NOTE, "The mute state is unknown.")
         .replace(crate::RECONNECT_HINT, "the device disconnected.")
         .replace(crate::READ_BACK_NOTE, "The device was read back.")
@@ -1189,7 +1201,7 @@ mod tests {
         assert_eq!(
             without_tui_hints(&busy),
             format!(
-                "{}: not sent. Try again once it's done.",
+                "{}: not sent. Try again once the other shurectl is done.",
                 crate::device::Busy
             )
         );
@@ -1350,6 +1362,16 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Device error: no reply. Not sent: --gain, --playback-mix."
+        );
+        // A mute sent again after the failed switch went after it.
+        let mut resent = Progress::new(&request);
+        resent.applied.push("--mute");
+        resent.mute_resent = true;
+        let err = resent.fail(&["--mode"], anyhow!("Device error: no reply"));
+        assert_eq!(
+            err.to_string(),
+            "Device error: no reply. --mute was sent again after it. \
+             Not sent: --gain, --playback-mix."
         );
         let alone = Progress::new(&mute(MuteAction::On));
         let err = alone.fail(&["--mute"], anyhow!("Device error: no reply"));

@@ -1833,7 +1833,20 @@ fn recover_from_failure(
         app.device_connected = false;
     }
     // A landed write's note says what happened; the cause under it (Busy, a
-    // lost device, a timeout) says why the read after it failed.
+    // lost device, a timeout) says why the read after it failed. Unread,
+    // the hint goes before the cause, so it fits an 80-column status bar.
+    let landed_unread = e
+        .downcast_ref::<WriteLanded>()
+        .filter(|_| read_back == Some(false) && !gone && !mute_unknown)
+        .map(|note| {
+            let full = format!("{e:#}");
+            let cause = full
+                .strip_prefix(&format!("{}: ", note.0))
+                .unwrap_or(&full)
+                .trim_end_matches('.')
+                .to_string();
+            format!("{}{LANDED_HINT} {cause}.", note.0)
+        });
     let e = if landed {
         format!("{e:#}")
     } else {
@@ -1847,7 +1860,10 @@ fn recover_from_failure(
             Some(false) if mute_unknown => {
                 format!("Device error: {e}. {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}")
             }
-            Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
+            Some(false) => match landed_unread {
+                Some(message) => message,
+                None => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
+            },
             // Said without `e`'s context, so that it fits and names Busy.
             None if busy => match kind {
                 ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes => {
@@ -1885,7 +1901,7 @@ impl std::fmt::Display for WriteLanded {
 /// user doesn't take the error as "nothing changed" and switch again. The TUI
 /// and `--mode` both use it.
 fn mode_switched_note(mode: InputMode) -> String {
-    format!("The mode was switched to {mode}, but the read after the switch failed")
+    format!("{}, but the read after it failed", mode_line(mode))
 }
 
 /// Whether `e` means the device is gone (a HID read or write failed), as
@@ -1910,12 +1926,19 @@ fn note_stale_mouse(app: &mut App, kind: MouseEventKind) {
         | MouseEventKind::ScrollLeft
         | MouseEventKind::ScrollRight => return,
     }
-    // First, so a long status already there can't push it off the bar, and
-    // only once however many clicks are dropped.
+    // Added once however many clicks are dropped, and never so that it
+    // pushes "press r" off an 80-column status bar: that hint shows while
+    // the state is unread, and the failure in front of it is what changed
+    // the screen, so it explains the dropped click itself.
     let status = app.status_message.trim();
+    let after = format!("{status} {STALE_MOUSE_NOTE}");
     let message = if status.is_empty() {
         STALE_MOUSE_NOTE.to_string()
-    } else if status.starts_with(STALE_MOUSE_NOTE) {
+    } else if status.contains(STALE_MOUSE_NOTE) {
+        status.to_string()
+    } else if after.chars().count() <= STATUS_FIT {
+        after
+    } else if app.state_unread {
         status.to_string()
     } else {
         format!("{STALE_MOUSE_NOTE} {status}")
@@ -1929,6 +1952,9 @@ fn note_stale_mouse(app: &mut App, kind: MouseEventKind) {
 
 /// Status for a click or wheel step dropped because the screen changed under it.
 const STALE_MOUSE_NOTE: &str = "The screen changed under the mouse, so that was ignored.";
+
+/// The longest status an 80-column status bar shows whole, after its "✗ ".
+const STATUS_FIT: usize = ui::MIN_SIZE.0 as usize - 2;
 
 /// Whether another shurectl kept the device for the whole wait: nothing was
 /// sent or read, and the handle is fine.
@@ -2022,6 +2048,10 @@ const READ_BACK_NOTE: &str = "Settings read back from the device.";
 /// The end of every busy status (`busy_status()`): the values shown count as
 /// unread until `r`. A one-shot run says to try again instead.
 const BUSY_HINT: &str = "Press r to retry.";
+
+/// After a write that landed and a read after it that failed, before the
+/// cause: the values shown count as unread until `r`.
+const LANDED_HINT: &str = " — press r to retry.";
 
 /// A busy mute's part of its status: it shows OFF over a restored Muted.
 const BUSY_MUTE_OFF: &str = "mute shown OFF";
@@ -2903,10 +2933,9 @@ mod tests {
         );
         assert!(app.status_is_error);
         assert!(
-            app.status_message.starts_with(
-                "Device error: The mode was switched to Auto Level, but the read after the switch \
-                 failed: No reply from the MV7 to \"micMute\"."
-            ),
+            app.status_message
+                == "Mode → Auto Level, but the read after it failed — press r to retry. \
+                    No reply from the MV7 to \"micMute\".",
             "{}",
             app.status_message
         );
@@ -3197,9 +3226,8 @@ mod tests {
         assert!(app.state_unread);
         assert!(!app.device_connected);
         assert!(
-            app.status_message.starts_with(
-                "Device error: The mode was switched to Auto Level, but the read after the switch failed"
-            ),
+            app.status_message
+                .starts_with("Device error: Mode → Auto Level, but the read after it failed"),
             "{}",
             app.status_message
         );
@@ -3307,6 +3335,32 @@ mod tests {
         }
     }
 
+    /// A dropped click never pushes "press r" off an 80-column status bar,
+    /// and is noted once however many clicks are dropped.
+    #[test]
+    fn a_dropped_click_keeps_the_press_r_hint_in_view() {
+        let mut app = App::default();
+        app.set_err(busy_status(&format!("not sent, {BUSY_MUTE_OFF}")));
+        app.state_unread = true;
+        let busy = app.status_message.clone();
+        note_stale_mouse(&mut app, MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(app.status_message, busy);
+        assert!(app.status_is_error);
+        // Read, a long status gets the note first; a short one after it.
+        app.state_unread = false;
+        note_stale_mouse(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.status_message, format!("{STALE_MOUSE_NOTE} {busy}"));
+        note_stale_mouse(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.status_message, format!("{STALE_MOUSE_NOTE} {busy}"));
+        app.set_ok("Gain → 30.0 dB");
+        note_stale_mouse(&mut app, MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(
+            app.status_message,
+            format!("Gain → 30.0 dB {STALE_MOUSE_NOTE}")
+        );
+        assert!(!app.status_is_error);
+    }
+
     /// An MV7 preset load lands under its own lock, and the full re-read
     /// after it is a second exchange. Busy there must not put back the
     /// values from before the load, which the mic no longer has: the screen
@@ -3344,10 +3398,11 @@ mod tests {
         assert!(app.state_unread && app.device_connected);
         assert!(fake.log_since(start).is_empty(), "re-read");
         assert!(
-            app.status_message.starts_with(&format!(
-                "Device error: Loaded \"Talk\", but the read after it failed: {}.",
-                device::Busy
-            )),
+            app.status_message
+                == format!(
+                    "Loaded \"Talk\", but the read after it failed — press r to retry. {}.",
+                    device::Busy
+                ),
             "{}",
             app.status_message
         );
