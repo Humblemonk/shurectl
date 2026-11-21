@@ -68,7 +68,12 @@ leave the screen showing the wrong gain or mute.
   and back, unmuted a muted mic: the first press moved focus to Mute. Focus now stays on
   Mode. A mode switch that fails also leaves focus on Mode on every model.
 - A gain read from the device above its maximum, such as 100 dB, is no longer shown, so
-  the next step can't jump to the maximum gain. All models.
+  the next step can't jump to the maximum gain. shurectl asks the mic again once, and says
+  it couldn't read the settings only if the answer repeats. All models; whether an MVX2U
+  Gen 1 or MV6 can report such a gain in Auto Level is unconfirmed.
+- Renaming the device and Factory Reset now wait until shurectl has read your settings,
+  like every other change except mute. Before, both went through while the settings were
+  unread.
 - `shurectl --list | head -1`, or any command whose output is cut off early, no longer
   crashes with a "Broken pipe" message.
 - A preset file that couldn't be read showed as an Empty slot, and `s` saved over it. Its

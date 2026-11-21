@@ -1048,9 +1048,17 @@ impl ShureDevice {
             DeviceModel::Mv7 => self.get_state_mv7(&mut readback),
             DeviceModel::Mv7Plus => self.get_state_mv7_plus(&mut readback),
         }?;
-        // A gain above the model's maximum is no answer to the gain GET (a
-        // stray report, or a corrupt one): shown, the next step would write
-        // the maximum gain.
+        // A gain above the model's maximum is taken as not the device's (a
+        // stray or corrupt report), since shown, the next step would write the
+        // maximum gain. Unconfirmed whether the MVX2U Gen 1 or MV6 reports one
+        // in Auto (a moving Auto gain); if so, that mic's readback always
+        // fails. A one-off needn't come twice, so ask once more; only a second
+        // one fails the readback, which then shows nothing as the mic's.
+        if !self.usable_gain(readback.state.gain_tenths)
+            && let Some(gain_tenths) = self.read_gain_again()?
+        {
+            readback.state.gain_tenths = gain_tenths;
+        }
         if !self.usable_gain(readback.state.gain_tenths) {
             return Err(anyhow!(
                 "Couldn't read a setting: the gain read back, {} dB, is above the {} dB maximum",
@@ -1059,6 +1067,26 @@ impl ShureDevice {
             ));
         }
         readback.finish()
+    }
+
+    /// The gain read alone, under the caller's guard: the MV7's line with a
+    /// readback's wait, or the binary GET after a drain. `None` without a
+    /// usable answer.
+    fn read_gain_again(&self) -> Result<Option<u16>> {
+        match self.model {
+            DeviceModel::Mv7 => self.reread_mv7_gain(),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => {
+                self.drain_input(&mut [0u8; PACKET_SIZE])?;
+                Ok(self
+                    .read_alone(&cmd_get_gain(self.next_seq()))?
+                    .map(|state| state.gain_tenths)
+                    .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
+            }
+        }
     }
 
     /// Whether a gain read back is in the model's range, so usable.

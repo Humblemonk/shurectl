@@ -118,6 +118,9 @@ pub struct Faults {
     /// Feature whose GETs are answered with an unknown address, as `refuse`
     /// does, until cleared.
     pub refused_get: Option<String>,
+    /// Binary GAIN GETs to answer with 100 dB, above every model's maximum,
+    /// as a stray or corrupt report might, before answering as usual.
+    pub bad_gain_replies: usize,
     /// Firmware version for FIRMWARE GETs to answer with, until cleared.
     pub firmware_version: Option<String>,
     /// GET replies to hold back until just before the next GET's, as a reply
@@ -667,6 +670,10 @@ impl FakeState {
                 } else {
                     false
                 };
+                let bad_gain = feature == "GAIN" && self.faults.bad_gain_replies > 0;
+                if bad_gain {
+                    self.faults.bad_gain_replies -= 1;
+                }
                 let firmware_version = (feature == "FIRMWARE")
                     .then_some(self.faults.firmware_version.as_deref())
                     .flatten();
@@ -680,6 +687,13 @@ impl FakeState {
                         ..key
                     };
                     Some(fake_wire::reply(seq, unknown, &[0x00]))
+                } else if bad_gain {
+                    let too_high = DeviceState {
+                        gain_tenths: 1000,
+                        ..DeviceState::default()
+                    };
+                    self.feature(key)
+                        .map(|gain| fake_wire::reply(seq, key, &(gain.value)(&too_high)))
                 } else if let Some(version) = firmware_version {
                     Some(fake_wire::reply(seq, key, &fake_wire::lp_string(version)))
                 } else {
@@ -1327,6 +1341,38 @@ mod tests {
             fake.faults_mut(|faults| faults.refused_get = Some(feature.into()));
             let error = fake.open().get_state().err().expect("readback must fail");
             assert!(error.to_string().contains(label), "{model:?}: {error}");
+        }
+    }
+
+    /// One gain reply above the maximum is asked again, so a stray or corrupt
+    /// report costs one GET, not the whole readback. Two in a row still fail
+    /// it rather than show a gain the next step would jump to the maximum from.
+    #[test]
+    fn a_gain_above_the_maximum_is_asked_once_more() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7Plus,
+        ] {
+            let fake = FakeDevice::new(model);
+            fake.faults_mut(|faults| faults.bad_gain_replies = 1);
+            let readback = fake
+                .open()
+                .get_state()
+                .expect("one bad reply is asked again");
+            assert_eq!(readback.state.gain_tenths, 240, "{model:?}");
+            fake.faults_mut(|faults| faults.bad_gain_replies = 2);
+            let error = fake
+                .open()
+                .get_state()
+                .err()
+                .expect("two fail the readback");
+            assert!(
+                error.to_string().contains("above the"),
+                "{model:?}: {error}"
+            );
         }
     }
 

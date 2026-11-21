@@ -410,8 +410,10 @@ fn write_settings(
         progress.applied.push("--mode");
         // The mute went before the switch. Whether a mode switch can change
         // mute is unconfirmed on every model (the MV7's resets EQ and
-        // compressor), so if the re-read shows it did, send it again.
+        // compressor), so if the re-read shows it did, send it again. With no
+        // switch, a readback that lags the mute's SET isn't a reason to.
         if let Some(muted) = mute_to
+            && mode != switched_from
             && app.device_state.muted != muted
         {
             // Not applied any more, so a failure here doesn't say it was.

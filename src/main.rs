@@ -890,21 +890,22 @@ impl Step {
 }
 
 /// Run the live poll against `base`, the state shown before `step`, and say
-/// whether the step must not go out: the device changed what the poll shows
-/// since (the status names it), it is gone, or the value stepped got no
-/// answer, so a step from the shown one could jump it. Otherwise the step is
-/// put on top of what the poll read, such as a gain moving in Auto Level.
-fn changed_on_device(
+/// whether the step may go out: not when the device changed what the poll
+/// shows since (the status names it), is gone, or gave the value stepped no
+/// answer, so a step from the shown one could jump it. When it may, the step
+/// is put on top of what the poll read, such as a gain moving in Auto Level,
+/// and the state as read is returned, for a failed write to put back.
+fn read_before_step(
     app: &mut App,
     device: &Option<ShureDevice>,
     base: &protocol::DeviceState,
     step: Step,
-) -> bool {
+) -> Option<protocol::DeviceState> {
     app.device_state = base.clone();
     let live = poll_live(app, device);
     let model = app.device_model;
     if !app.device_connected || shown_live(model, &app.device_state) != shown_live(model, base) {
-        return true;
+        return None;
     }
     let read = live.is_some_and(|live| match step {
         Step::Gain(_) => live.gain_tenths.is_some(),
@@ -914,23 +915,25 @@ fn changed_on_device(
     });
     if !read {
         match reread_stepped(app, device, base, step) {
-            Some(changed) if changed => return true,
+            Some(changed) if changed => return None,
             Some(_) => {}
             None => {
                 app.set_err(
                     "Couldn't read the device before this step, so it wasn't sent. Press again.",
                 );
-                return true;
+                return None;
             }
         }
     }
+    // What a failed write puts back: the device's values as just read.
+    let polled = app.device_state.clone();
     let state = &mut app.device_state;
     match step {
         Step::Gain(gain_tenths) => state.gain_tenths = gain_tenths,
         Step::MonitorMix(mix) => state.monitor_mix = mix,
         Step::PlaybackMix(mix) => state.playback_mix = mix,
     }
-    false
+    Some(polled)
 }
 
 /// On the MV7, read the value `step` changes again, waiting as long as a
@@ -1032,24 +1035,30 @@ fn send_from_tui(
     // the level. Read the device first, in the same turn as the write, and
     // step only if nothing changed there; the status names what did.
     let mut turn = None;
+    let mut read_before = None;
     if let (Some(base), Some(dev), Some(step)) = (&before, device.as_ref(), Step::of(&action))
         && app.device_connected
         && !app.state_unread
     {
         match dev.exclusive() {
-            Ok(exclusive) if changed_on_device(app, device, base, step) => {
-                drop(exclusive);
-                loop_state.last_live_poll = now;
-                return;
-            }
-            Ok(exclusive) => turn = Some(exclusive),
+            Ok(exclusive) => match read_before_step(app, device, base, step) {
+                Some(polled) => {
+                    turn = Some(exclusive);
+                    read_before = Some(polled);
+                }
+                None => {
+                    drop(exclusive);
+                    loop_state.last_live_poll = now;
+                    return;
+                }
+            },
             Err(e) => {
                 recover_from_failure(app, device, &action, before.clone(), &e);
                 return;
             }
         }
     }
-    apply_action(app, device, action, before);
+    apply_action(app, device, action, read_before.or(before));
     drop(turn);
     let took = started.elapsed();
     loop_state.last_live_poll = now
@@ -1379,6 +1388,14 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 app.name_draft.clone_from(&slot.name);
                 app.editing_preset_name = true;
                 app.editing_preset_index = i;
+                return None;
+            }
+            // Neither can go until the settings are read (`reads_no_state()`),
+            // so don't start one only to refuse it at the end.
+            if matches!(app.focus, app::Focus::DeviceName | app::Focus::FactoryReset)
+                && app.state_unread
+            {
+                app.set_err(STATE_UNREAD_HINT);
                 return None;
             }
             if app.focus == app::Focus::DeviceName {
@@ -1947,11 +1964,15 @@ fn action_kind(action: &DeviceAction) -> ActionKind {
     }
 }
 
-/// Whether `action` is safe before the device's settings have been read: it
-/// reads them, or it doesn't depend on them.
+/// Whether `action` may go before the device's settings have been read: it
+/// reads them, it touches only the preset files, or it is mute, which
+/// refusing would leave live. A rename and Factory Reset, fixed writes too,
+/// wait for a read like any other change, so they never come from a screen
+/// showing stale values or none.
 fn reads_no_state(action: &DeviceAction) -> bool {
     match action_kind(action) {
-        ActionKind::Connection | ActionKind::PresetFile | ActionKind::FixedWrite => true,
+        ActionKind::Connection | ActionKind::PresetFile => true,
+        ActionKind::FixedWrite => matches!(action, DeviceAction::SetMute(_)),
         ActionKind::SavePreset | ActionKind::Write | ActionKind::Writes => false,
     }
 }
@@ -2145,7 +2166,7 @@ fn note_stale_mouse(app: &mut App, kind: MouseEventKind) {
         STALE_MOUSE_NOTE.to_string()
     } else if status.contains(STALE_MOUSE_NOTE) {
         status.to_string()
-    } else if after.chars().count() <= STATUS_FIT {
+    } else if ratatui::text::Span::raw(after.as_str()).width() <= STATUS_FIT {
         after
     } else if app.state_unread {
         status.to_string()
@@ -2312,6 +2333,14 @@ fn mark_never_read(app: &mut App, serial_number: &str, e: &anyhow::Error) {
     app.focus = app::Focus::Mute;
     app.device_state.muted = false;
     app.device_state.serial_number = serial_number.to_string();
+    // Nothing pending may survive onto a screen that doesn't show it: the
+    // Enter meant for Mute would confirm a Factory Reset or save a rename.
+    app.confirming_factory_reset = false;
+    app.confirming_preset_load = None;
+    app.armed_preset_action = None;
+    app.editing_preset_name = false;
+    app.editing_device_name = false;
+    app.name_draft.clear();
 }
 
 /// The status for a readback on a new connection that failed, not busy. The
@@ -3654,7 +3683,7 @@ mod tests {
 
     /// Writing a pending wheel adjustment can change what the frame showed
     /// before a click aimed at it is handled; here the read before the step
-    /// (`changed_on_device()`) finds the mic switched to Auto elsewhere, so
+    /// (`read_before_step()`) finds the mic switched to Auto elsewhere, so
     /// the gain isn't written. The click is dropped: it was on Auto Level,
     /// counted as one step from the Manual shown, and the read moved focus to
     /// Mode, so it would have sent Manual to a mic just switched to Auto.
@@ -4307,6 +4336,51 @@ mod tests {
             app.presets[0].as_ref().map(|slot| slot.name.as_str()),
             Some("Voice")
         );
+    }
+
+    /// A Factory Reset prompt or a rename open when a reconnect's readback
+    /// fails is cancelled: the Mute-only screen doesn't show it, so the Enter
+    /// meant for Mute must not confirm it. Neither can start again until the
+    /// settings are read.
+    #[test]
+    fn a_failed_reconnect_cancels_what_its_screen_hides() {
+        let read_failed = anyhow::anyhow!("no usable reply");
+        for pending in [0, 1] {
+            let mut app = App {
+                device_model: DeviceModel::Mvx2uGen2,
+                active_tab: app::Tab::Info,
+                focus: app::Focus::FactoryReset,
+                ..App::default()
+            };
+            if pending == 0 {
+                app.confirming_factory_reset = true;
+            } else {
+                app.focus = app::Focus::DeviceName;
+                app.editing_device_name = true;
+                app.name_draft = "Studio".into();
+            }
+            mark_never_read(&mut app, "", &read_failed);
+            assert!(!app.editing_name() && !app.confirming_factory_reset);
+            assert!(matches!(
+                handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
+                Some(DeviceAction::SetMute(true))
+            ));
+        }
+        for focus in [app::Focus::FactoryReset, app::Focus::DeviceName] {
+            let mut app = App {
+                device_model: DeviceModel::Mvx2uGen2,
+                active_tab: app::Tab::Info,
+                focus,
+                state_unread: true,
+                ..App::default()
+            };
+            assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+            assert!(
+                !app.confirming_factory_reset && !app.editing_device_name,
+                "{focus:?}"
+            );
+            assert!(app.status_message.contains(STATE_UNREAD_HINT), "{focus:?}");
+        }
     }
 
     #[test]
