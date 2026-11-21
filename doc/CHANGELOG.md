@@ -61,9 +61,10 @@ leave the screen showing the wrong gain or mute.
   the status asks you to press again. The MV6's Playback Level can't be read this way, so
   it steps as before. All models.
 - If you plugged the mic back in and shurectl couldn't read its settings, the screen kept
-  showing the ones from before the unplug, including Mute ON while the mic, unmuted by the
-  replug, was live. It now shows only Mute, as OFF until shurectl reads it, and asks you to
-  press `r`, as it does when the first read at startup fails. All models.
+  showing the ones from before the unplug, including Mute ON while the mic was live: a
+  replug unmutes it (tested on the MVX2U Gen 2; unconfirmed on other models). It now shows
+  only Mute, as OFF until shurectl reads it, and asks you to press `r`, as it does when the
+  first read at startup fails. All models.
 - On the MVX2U Gen 2, MV6 and MV7+, pressing `Enter` on Mode twice, to switch to Auto Level
   and back, unmuted a muted mic: the first press moved focus to Mute. Focus now stays on
   Mode. A mode switch that fails also leaves focus on Mode on every model.

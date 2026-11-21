@@ -2295,7 +2295,9 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>, wait_for_turn: boo
         }
         Err(e) => {
             // The shown state came from the old handle and may be out of date
-            // (the mic unmuted by its replug, a factory reset, or another app
+            // (the mic unmuted by its replug: muted, replugged, read back
+            // unmuted in 3 of 3 tries on the MVX2U Gen 2, 2026-11-20,
+            // unconfirmed on other models; a factory reset; or another app
             // changing settings while unplugged): show what a first readback
             // that failed shows.
             mark_never_read(app, &serial_number, &e);
