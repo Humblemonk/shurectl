@@ -31,6 +31,11 @@ pub const METER_SILENT: i32 = i32::MIN;
 /// Minimum dBFS we display (-60 dB floor).
 pub const METER_FLOOR_DB: f32 = -60.0;
 
+/// Highest dBFS a reading can hold. A float stream may go past full scale,
+/// but an infinite sample from a broken host would overflow the gain check's
+/// arithmetic (`gain_check::advise()`).
+const METER_CEILING_DB: f32 = 20.0;
+
 // ── Rolling peak window ───────────────────────────────────────────────────────
 
 /// A rolling time-window that tracks the maximum dBFS value seen within the
@@ -99,6 +104,11 @@ impl PeakWindow {
     pub fn push(&mut self, now: Instant, value: i32) {
         self.short.push(now, value);
         self.long.push(now, value);
+    }
+
+    /// Forget every reading, so a stopped meter shows none at once.
+    pub fn clear(&mut self) {
+        *self = Self::new();
     }
 }
 
@@ -453,7 +463,7 @@ where
         .map(|&s| <f32 as FromSample<S>>::from_sample_(s).abs())
         .fold(0.0_f32, f32::max);
     let dbfs = if peak > 0.0 {
-        (20.0 * peak.log10()).max(METER_FLOOR_DB)
+        (20.0 * peak.log10()).clamp(METER_FLOOR_DB, METER_CEILING_DB)
     } else {
         METER_FLOOR_DB
     };
@@ -679,5 +689,7 @@ mod tests {
         assert_eq!(peak_dbfs_x10::<f32>(&[]), -600);
         // Rounds rather than truncates: -2.96 dB is -3.0, not -2.9.
         assert_eq!(peak_dbfs_x10(&[10f32.powf(-2.96 / 20.0)]), -30);
+        // Past full scale it caps, so the gain check's arithmetic can't overflow.
+        assert_eq!(peak_dbfs_x10(&[f32::INFINITY]), 200);
     }
 }

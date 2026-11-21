@@ -93,7 +93,7 @@ struct Cli {
     /// several, the TUI asks which, and the other commands need this flag;
     /// with none, the TUI waits for one to be plugged in.
     /// A path can change when the device is replugged; a serial doesn't.
-    #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
+    #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL", conflicts_with_all = ["list", "demo"])]
     device: Option<String>,
 
     /// Set or read the mute state without launching the TUI; toggle when no
@@ -790,6 +790,11 @@ fn run_event_loop(
         if was_connected && !app.device_connected {
             *meter_stream = None;
             app.meter_input = None;
+            // Without this the bar and "pk" would show the old input's last
+            // readings for up to 3 s.
+            if let Ok(mut window) = app.peak_window.lock() {
+                window.clear();
+            }
         }
         // A device back from lost has its input back too, however it came back.
         if !was_connected && app.device_connected {
@@ -1259,10 +1264,12 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     // Handled before the quit keys so `q` can be typed in a name, and Ctrl+C
     // doesn't quit while editing.
     if app.editing_name() {
+        // Characters, not bytes: a preset name may hold any, and a device
+        // name only ASCII (`is_device_name_char()`), one byte each.
         let (max_len, device_name) = if app.editing_device_name {
             (protocol::DEVICE_NAME_MAX_LEN, true)
         } else {
-            (40, false)
+            (PRESET_NAME_MAX_CHARS, false)
         };
         match code {
             KeyCode::Enter if device_name => {
@@ -1278,7 +1285,9 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 app.editing_preset_name = false;
                 let name = std::mem::take(&mut app.name_draft);
                 let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i] {
+                if name.trim().is_empty() {
+                    app.set_err("The preset name can't be empty.");
+                } else if let Some(slot) = &mut app.presets[i] {
                     slot.name = name;
                     return Some(DeviceAction::PersistPresetName(i));
                 }
@@ -1293,7 +1302,7 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
             KeyCode::Char(c)
                 if !mods.contains(KeyModifiers::CONTROL)
-                    && app.name_draft.len() < max_len
+                    && app.name_draft.chars().count() < max_len
                     && (!device_name || protocol::is_device_name_char(c)) =>
             {
                 app.name_draft.push(c);
@@ -2208,6 +2217,9 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         return wait_if_never_read(app, read_err);
     }
     app.device_connected = !is_disconnect(&read_err);
+    // The lock was free, so the screen no longer waits for another shurectl;
+    // a reconnect that finds it busy again says so itself.
+    app.waiting_for_device = false;
     // A busy reopened handle keeps its type, so `recover_from_failure()`
     // neither re-reads nor loses "press r".
     reconnect(app, device, true).map_err(|e| {
@@ -2274,6 +2286,9 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>, wait_for_turn: boo
         }
     }
 }
+
+/// Longest preset name, in characters.
+const PRESET_NAME_MAX_CHARS: usize = 40;
 
 /// Why `s` won't save over a preset slot whose file couldn't be read.
 fn unreadable_preset_note(index: usize) -> String {
@@ -3565,14 +3580,10 @@ mod tests {
         assert_eq!(mic.gain_tenths, gain_tenths);
     }
 
-    /// Writing a pending wheel adjustment can change what the frame showed
-    /// before a click aimed at it is handled; here the read before the step
-    /// (`changed_on_device()`) finds the mic switched to Auto elsewhere, so
-    /// the gain isn't written. The click is dropped: it was on Auto Level,
-    /// counted as one step from the Manual shown, and the read moved focus to
-    /// Mode, so it would have sent Manual to a mic just switched to Auto.
-    #[test]
-    fn a_click_after_a_failed_wheel_write_changed_the_screen_is_dropped() {
+    /// Scroll the MV7's gain, let `between` change the fake, then click the
+    /// Auto Level pill: the pending wheel step is written first. Returns the
+    /// app and what the mic has afterwards.
+    fn wheel_then_click_auto_level(between: impl FnOnce(&FakeDevice, &App)) -> (App, DeviceState) {
         let model = DeviceModel::Mv7;
         let fake = FakeDevice::new(model);
         let mut device = Some(fake.open());
@@ -3620,12 +3631,7 @@ mod tests {
             &mut loop_state,
         );
         assert!(loop_state.pending_scroll.is_some());
-        // Switched to Auto elsewhere, and the pending gain write gets no reply.
-        let auto = DeviceState {
-            mode: InputMode::Auto,
-            ..DeviceState::default()
-        };
-        fake.set_on_device(fake_hid::LiveField::Mode, &auto);
+        between(&fake, &app);
         let hits = draw(&app);
         let auto_level = at(&hits, mouse::Target::Pill(app::Focus::Mode, 1));
         step(
@@ -3637,6 +3643,30 @@ mod tests {
             now,
             &mut loop_state,
         );
+        let mic = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        (app, mic)
+    }
+
+    /// Writing a pending wheel adjustment can change what the frame showed
+    /// before a click aimed at it is handled; here the read before the step
+    /// (`changed_on_device()`) finds the mic switched to Auto elsewhere, so
+    /// the gain isn't written. The click is dropped: it was on Auto Level,
+    /// counted as one step from the Manual shown, and the read moved focus to
+    /// Mode, so it would have sent Manual to a mic just switched to Auto.
+    #[test]
+    fn a_click_after_a_failed_wheel_write_changed_the_screen_is_dropped() {
+        let (app, mic) = wheel_then_click_auto_level(|fake, _| {
+            let auto = DeviceState {
+                mode: InputMode::Auto,
+                ..DeviceState::default()
+            };
+            fake.set_on_device(fake_hid::LiveField::Mode, &auto);
+        });
         // Without the read finding the change, this tests nothing.
         assert!(
             app.status_message.contains("(changed on the device)"),
@@ -3651,13 +3681,31 @@ mod tests {
         );
         assert_eq!(app.device_state.mode, InputMode::Auto);
         assert_eq!(app.focus, app::Focus::Mode);
-        let mic = device
-            .as_ref()
-            .expect("device")
-            .get_state()
-            .expect("readback")
-            .state;
         assert_eq!(mic.mode, InputMode::Auto);
+    }
+
+    /// The same with nothing changed elsewhere, but the pending gain write
+    /// unanswered: it fails and is read back, which puts the old gain on
+    /// screen, so the click aimed at the frame before is dropped too.
+    #[test]
+    fn a_click_after_a_failed_wheel_write_read_back_is_dropped() {
+        let (app, mic) = wheel_then_click_auto_level(|fake, app| {
+            // The line the pending write sends, whatever the gain step is.
+            let pending_gain = protocol::mv7_text::set_gain(app.device_state.gain_tenths).line;
+            fake.faults_mut(|faults| faults.unanswered_line = Some(pending_gain));
+        });
+        assert!(
+            app.status_is_error && app.status_message.contains(READ_BACK_NOTE),
+            "the gain write must fail and be read back: {}",
+            app.status_message
+        );
+        assert!(
+            app.status_message.contains(STALE_MOUSE_NOTE),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(mic.mode, InputMode::Manual);
+        assert_eq!(app.device_state.mode, InputMode::Manual);
     }
 
     /// A device lost during the read after a mode switch that landed keeps
@@ -4225,6 +4273,40 @@ mod tests {
         assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
         assert!(!app.editing_device_name);
         assert!(app.status_is_error);
+    }
+
+    /// A preset name takes 40 characters of any kind, not 40 bytes, and an
+    /// empty or blank one is refused, keeping the name the file has.
+    #[test]
+    fn preset_names_count_characters_and_cannot_be_blank() {
+        let mut app = App {
+            active_tab: app::Tab::Presets,
+            ..App::default()
+        };
+        app.presets[0] = Some(PresetSlot::from_device_state(
+            "Voice",
+            &app.device_state,
+            app.device_model,
+        ));
+        let edit = |app: &mut App| {
+            app.editing_preset_name = true;
+            app.editing_preset_index = 0;
+            app.name_draft.clear();
+        };
+        edit(&mut app);
+        for _ in 0..PRESET_NAME_MAX_CHARS + 5 {
+            handle_key(&mut app, KeyCode::Char('é'), KeyModifiers::NONE);
+        }
+        assert_eq!(app.name_draft.chars().count(), PRESET_NAME_MAX_CHARS);
+
+        edit(&mut app);
+        handle_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+        assert!(app.status_is_error && !app.editing_preset_name);
+        assert_eq!(
+            app.presets[0].as_ref().map(|slot| slot.name.as_str()),
+            Some("Voice")
+        );
     }
 
     #[test]

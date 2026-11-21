@@ -1836,13 +1836,13 @@ impl App {
     }
 }
 
-/// Status for a write refused because the device's settings haven't been read,
-/// and the TUI's note after a mute that still goes through then.
 /// Status while the first readback waits for another shurectl
 /// (`App::waiting_for_device`).
 pub const WAITING_FOR_DEVICE: &str =
     "Another shurectl has the device. Your settings show as soon as it's done.";
 
+/// Status for a write refused because the device's settings haven't been read,
+/// and the TUI's note after a mute that still goes through then.
 pub const STATE_UNREAD_HINT: &str = "Settings not read from the device yet — press r to retry.";
 
 /// Status for `g` outside Manual mode.

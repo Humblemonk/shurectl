@@ -86,6 +86,13 @@ leave the screen showing the wrong gain or mute.
 - Help lists `f` (Flatten EQ) only on models with the 5-band EQ, and says when it works.
   The Info tab lists Gain Lock on the MV6 and MV6 Gen 2. The Factory Reset prompt and the
   demo mode status now fit an 80-column terminal, with the key hints never cut mid-word.
+- After an unplug, the level meter clears at once instead of showing the last readings for
+  up to 3 seconds.
+- A preset name can be 40 characters of any kind; names with accents or other non-ASCII
+  letters used to stop short. An empty preset name is refused instead of saved.
+- `--device` with `--list` or `--demo` is now an error, instead of being ignored.
+- The Info tab describes the MVX2U Gen 1 and Gen 2 EQ by its range and steps, and the EQ
+  tab's key hint says Enter adjusts too.
 
 ### Upgrading
 

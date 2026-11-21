@@ -419,9 +419,19 @@ impl Drop for Exclusive {
 /// This second handle is never read; the kernel skips new reports for it once
 /// its queue is full (`HIDRAW_BUFFER_SIZE`, 64, in `hidraw_report_event()`,
 /// drivers/hid/hidraw.c), so the main handle gets every report as before.
+/// A node that can't be opened a second time (an unusual permission set)
+/// falls back to the temp-directory file the other systems use, rather than
+/// no lock at all.
 #[cfg(target_os = "linux")]
-fn open_lock_file(hid_path: &str, _usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
-    File::open(hid_path).ok()
+fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+    File::open(hid_path)
+        .ok()
+        .or_else(|| open_temp_lock_file(hid_path, usb_serial))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+    open_temp_lock_file(hid_path, usb_serial)
 }
 
 /// Elsewhere hidapi's path isn't a file, so the lock is a file named after the
@@ -430,8 +440,10 @@ fn open_lock_file(hid_path: &str, _usb_serial: impl FnOnce() -> Option<String>) 
 /// process sees the same while it stays plugged in, so two such devices
 /// don't share a lock. Whether those systems share input reports between
 /// handles at all is unconfirmed (`.claude/rules/protocol.md`).
-#[cfg(not(target_os = "linux"))]
-fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+fn open_temp_lock_file(
+    hid_path: &str,
+    usb_serial: impl FnOnce() -> Option<String>,
+) -> Option<File> {
     let name: String = usb_serial()
         .filter(|serial| !serial.is_empty())
         .unwrap_or_else(|| hid_path.to_string())

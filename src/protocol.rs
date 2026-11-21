@@ -67,10 +67,11 @@
 //!   EQ master:      [0x02, 0x00]  — 1 byte: 0=bypass, 1=enabled
 //!   EQ band enable: [0x02, 0xN0]  — 1 byte: 0=off, 1=on  (N = 1,2,3,4,5 per band), per
 //!                                   shux (no Gen 1 probe output)
-//!   EQ band gain:   [0x02, 0xN4]  — Gen 1: 16-bit signed big-endian, units: gain_db * 10
+//!   EQ band gain:   [0x02, 0xN4]  — Gen 1: 16-bit signed big-endian, units: gain_db * 10,
+//!                                   per shux (no Gen 1 probe output)
 //!                                   Gen 2: 8-bit signed (i8), units: gain_db * 10
 //!                                   Same address; wire width distinguishes the model.
-//!                                   Confirmed by probe capture against Gen 2 firmware.
+//!                                   Gen 2 width confirmed by probe capture against Gen 2 firmware.
 //!
 //! EQ bands have fixed center frequencies: 100, 250, 1000, 4000, 10000 Hz.
 //! Frequency and Q are not adjustable on this device.
@@ -544,7 +545,8 @@ const FEAT_EQ: [u8; 2] = [0x02, 0x00];
 /// User-set device name (set in the MOTIV app, persisted on the device).
 /// SET is the same lock class and prefix with the GET reply's length-prefixed
 /// value, then CONFIRM. Found on the MVX2U Gen 2 by writing candidate formats and
-/// reading the name back; renaming has since been confirmed on other models' hardware.
+/// reading the name back. On the other models that offer it, renaming is
+/// unconfirmed: no test of it there is recorded.
 const FEAT_DEVICE_NAME: [u8; 2] = [0x00, 0x12];
 /// Longest device name shurectl writes. The firmware's own limit is unknown;
 /// this stays under a likely 32-byte buffer.
@@ -678,7 +680,8 @@ const MV7_FEAT_LED_SOLID_COLOR_RESP: [u8; 2] = [0x00, 0xA2];
 const MV7_FEAT_LED_PULSING_COLOR_RESP: [u8; 2] = [0x00, 0xA3];
 const MV7_FEAT_LED_BEHAVIOR_RESP: [u8; 2] = [0x00, 0xA4];
 const MV7_FEAT_LED_SOLID_THEME_RESP: [u8; 2] = [0x00, 0xA5];
-const MV7_FEAT_LED_PULSING_THEME_RESP: [u8; 2] = [0x00, 0xA6];
+// The pulsing theme's reply would come at [0x00, 0xA6], which is FEAT_LOCK, so
+// `apply_response()` can't tell it apart: the pulsing theme is write-only.
 
 // ── Factory reset (MV7+, MV6 Gen 2, MVX2U Gen 2) ──────────────────────────────
 //
@@ -1543,6 +1546,9 @@ impl LedPulsingTheme {
         }
     }
 
+    // Only a test decodes it: its reply would alias FEAT_LOCK, so the pulsing
+    // theme is write-only.
+    #[cfg(test)]
     pub(crate) fn from_byte(b: u8) -> Self {
         match b {
             0x01 => LedPulsingTheme::Custom,
@@ -2768,13 +2774,6 @@ pub fn apply_response(feat_addr: [u8; 2], value: &[u8], state: &mut DeviceState)
                 return false;
             }
             state.led_solid_theme = LedSolidTheme::from_byte(value[0]);
-            true
-        }
-        f if f == MV7_FEAT_LED_PULSING_THEME_RESP => {
-            if value.is_empty() {
-                return false;
-            }
-            state.led_pulsing_theme = LedPulsingTheme::from_byte(value[0]);
             true
         }
         f if f == MV7_FEAT_LED_SOLID_COLOR_RESP => {
@@ -4820,7 +4819,7 @@ mod tests {
     }
 
     // Note: apply_response_mv7_led_pulsing_theme is intentionally absent.
-    // MV7_FEAT_LED_PULSING_THEME_RESP = [0x00, 0xA6] aliases FEAT_LOCK — the
+    // The pulsing theme's reply address [0x00, 0xA6] aliases FEAT_LOCK — the
     // apply_response lock branch fires first, so pulsing theme is write-only
     // and cannot be round-tripped through apply_response. This matches the
     // comment in get_state_mv7_plus() which omits the pulsing theme GET.
@@ -4855,7 +4854,7 @@ mod tests {
             &[],
             &mut state
         ));
-        // MV7_FEAT_LED_PULSING_THEME_RESP aliases FEAT_LOCK — not tested here.
+        // The pulsing theme's [0x00, 0xA6] aliases FEAT_LOCK — not tested here.
     }
 
     #[test]

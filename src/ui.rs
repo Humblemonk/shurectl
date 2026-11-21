@@ -423,7 +423,7 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
         )
     } else if app.can_flatten_eq() {
         (
-            " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
+            " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
             " [?] Help  [q] Quit",
             C_DIM,
         )
@@ -3504,7 +3504,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cap_rows: &[(&str, &str)] = match model {
         DeviceModel::Mvx2u => &[
             ("  Phantom Pwr  : ", "48V"),
-            ("  EQ           : ", "5-band parametric"),
+            ("  EQ           : ", "5 bands, −8 to +6 dB in 2 dB steps"),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
@@ -3514,7 +3514,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
         ],
         DeviceModel::Mvx2uGen2 => &[
             ("  Phantom Pwr  : ", "48V"),
-            ("  EQ           : ", "5-band parametric"),
+            ("  EQ           : ", "5 bands, −8 to +6 dB in 0.5 dB steps"),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),

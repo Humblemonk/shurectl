@@ -469,6 +469,7 @@ fn write_settings(
             report,
         )
         .map_err(|e| progress.fail(&["--playback-mix"], e))?;
+        progress.applied.push("--playback-mix");
     }
     Ok(())
 }
