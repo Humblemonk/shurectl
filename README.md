@@ -186,8 +186,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Config Lock | ✓ | — | — | — | ✓ | — |
 | Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
 | Auto Tone (Dark / Natural / Bright) | Auto | — | — | — | Auto | — |
-| Auto Gain (Quiet / Normal / Loud) | Auto | — | — | — | — | — |
-| Target Level (Low / Med / High) | — | — | — | Auto | — | — |
+| Auto Level loudness | Auto: Quiet / Normal / Loud | — | — | Auto: Low / Med / High | — | — |
 | Adaptation Rate (Slow / Fast) | — | — | — | Auto | — | — |
 | Mic Preset (Speech / Singing / Instrument) | — | — | — | ✓ | — | — |
 | **EQ tab** | | | | | | |
