@@ -55,6 +55,9 @@ the mic's; Mute shows OFF until the live poll reads it. If another shurectl held
 live poll reads everything once the device is free; `r` tries for a second. Otherwise the
 Mute control shows, focused, since mute needs no readback. A readback that works clears both.
 Values put back or left unread after a failed write mid-session were read once, and still show.
+Factory Reset and a device rename wait for a full read too (`reads_no_state()`), so a mic whose
+readback always fails can't be reset from shurectl. That's deliberate (maintainer decision
+2026-11-21): a destructive write shouldn't go to a device that can't be read. Don't flag it.
 
 **Size.** Every screen of every model fits 80x24 (`MIN_SIZE`, btop's minimum); below it `draw()`
 shows only btop's "Terminal size too small" notice. Check a new block at 120x40 (the golden size)

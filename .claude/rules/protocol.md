@@ -213,7 +213,11 @@ and the binary `send_set()`/`send_get_past_strays()` refuse to run on the MV7.
   answer it still works
 - MOTIV and shurectl share one command channel, and shurectl's live poll sends `micMute`,
   `dspMode`, the gain and the Monitor Mix block every second (stopping after `micMute` when
-  it goes unanswered). Quit MOTIV before testing against the MV7
+  it goes unanswered). Quit MOTIV before testing against the MV7. With MOTIV running, an
+  unanswered first poll line can hide a mode change MOTIV just made from the read before a
+  step (`reread_stepped()` reads only the stepped value). That's accepted (maintainer
+  decision 2026-11-21): shurectl isn't used alongside MOTIV, and the gain itself is still
+  checked, so there's no jump. Don't flag it
 
 ## Debugging on real hardware
 
