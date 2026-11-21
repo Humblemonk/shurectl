@@ -293,3 +293,25 @@ fn pty_smoke() {
     let status = child.wait().expect("wait for shurectl");
     assert!(status.success(), "exit status {status:?}");
 }
+
+/// A one-shot command whose reader closed stdout early (`--list | head -1`)
+/// exits cleanly instead of panicking on the broken pipe.
+#[test]
+fn closed_stdout_is_not_a_panic() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_shurectl"))
+        .arg("--list")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn shurectl");
+    // Closed before it lists anything: it opens the HID device list first.
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("wait for shurectl");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        output.status.success(),
+        "exit status {:?}: {stderr}",
+        output.status
+    );
+}

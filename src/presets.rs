@@ -628,16 +628,21 @@ pub fn delete_preset(index: usize) -> Result<()> {
     }
 }
 
-/// Load all 4 preset slots. Missing files produce `None` entries.
-/// Parse errors are logged to stderr and treated as empty slots.
-pub fn load_all_presets() -> [Option<PresetSlot>; PRESET_COUNT] {
-    std::array::from_fn(|i| match load_preset(i) {
+/// Load all 4 preset slots. Missing files produce `None` entries. A file
+/// that can't be read is `None` too, and `true` in the second array, so the
+/// TUI says so and never saves over it unasked; its error goes to stderr,
+/// shown once the TUI quits.
+pub fn load_all_presets() -> ([Option<PresetSlot>; PRESET_COUNT], [bool; PRESET_COUNT]) {
+    let mut unreadable = [false; PRESET_COUNT];
+    let slots = std::array::from_fn(|i| match load_preset(i) {
         Ok(slot) => slot,
         Err(e) => {
             eprintln!("Warning: failed to load preset slot {}: {e}", i + 1);
+            unreadable[i] = true;
             None
         }
-    })
+    });
+    (slots, unreadable)
 }
 
 // ── Serialisable mirror types ─────────────────────────────────────────────────

@@ -26,7 +26,8 @@ Cases a QA sweep planned but no scenario checks. Remove a line when a scenario c
 - Mouse: click targets on the EQ, Reverb, LED, Presets and Info tabs and in Auto; a second
   click on a toggle fires it; preset Save and Delete arming by click; resize while editing a name
 - Connection: recovery from an I/O failure with `r`; poll timing (no disconnect before the
-  first poll); `r` in demo mode
+  first poll); `r` in demo mode; the never-read screens after a first readback that fails
+  (the harness's startup readback can't fail yet; unit tests in `main.rs` cover them)
 - Presets: an empty slot; name length limit; `s` and `d` on the name row; loading while
   disconnected. (Which SETs each load sends, in what order, is `preset_loads_match_golden`
   in `main.rs`.)

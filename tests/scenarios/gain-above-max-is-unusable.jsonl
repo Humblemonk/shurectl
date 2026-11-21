@@ -1,0 +1,13 @@
+{"scenario": "gain-above-max-is-unusable", "models": ["mvx2u", "mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
+{"device": {"gain_tenths": 1000}}
+{"tick": 1100}
+{"expect": {"state": {"gain_tenths": 240}, "status": "state loaded"}}
+{"key": "Down", "repeat": 2}
+{"key": "Left"}
+{"expect": {"focus": "Gain", "status": "Couldn't read the device before this step", "status_is_error": true, "state": {"gain_tenths": 240}}}
+{"device": {"gain_tenths": 240}}
+{"key": "Left"}
+{"expect": {"focus": "Gain", "status": "Gain → 23 dB", "state": {"gain_tenths": 230}}}
+{"device": {"gain_tenths": 1000}}
+{"key": "r"}
+{"expect": {"status_is_error": true, "status": "is above the", "screen_contains": "Settings not read from the device yet"}}

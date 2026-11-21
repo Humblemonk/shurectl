@@ -1,0 +1,11 @@
+{"scenario": "preset-unreadable-file-is-kept", "models": "all", "modes": ["fake", "demo"]}
+{"preset_dir": "fixtures/presets-unreadable"}
+{"click_on": "Presets"}
+{"expect": {"tab": "Presets", "screen_contains": "preset_1.toml couldn't be read"}}
+{"key": "Down"}
+{"key": "s"}
+{"expect": {"focus": "PresetActions(0)", "status_is_error": true, "status": "Preset 1's file couldn't be read. Press d to delete it", "screen_contains": "Unreadable file"}}
+{"key": "d"}
+{"expect": {"status": "Deleted Preset 1's unreadable file.", "screen_contains": "Empty"}}
+{"key": "s"}
+{"expect": {"status": "Saved to \"Preset 1\".", "screen_not_contains": "Unreadable file"}}

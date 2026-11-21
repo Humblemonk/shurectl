@@ -66,22 +66,50 @@ CRC-16/ANSI covers 0x11 up to the CRC
 - **One shurectl at a time:** on Linux every open handle gets every input report, so two
   shurectl reading at once took each other's replies: each GET was answered twice, the spare
   reply answered the next GET, and the settings read last kept their defaults with no error
-  (two `--json` runs at once on the MVX2U Gen 2, 2026-11-19: EQ bands 0 dB, firmware Unknown,
-  in 5 of 5 tries). Every exchange therefore runs under `ShureDevice::exclusive()`, which
-  holds the device's lockfile (`shurectl-<USB serial>.lock` in `$XDG_RUNTIME_DIR`, else the
-  temp directory) for up to 5 s of waiting, and drains queued input inside it; a readback
-  holds one guard from its drain to its last GET. A new I/O path takes the guard too:
-  `write()` and `read()` `debug_assert!` it, and the fake counts guards, so the tests catch
-  one that doesn't. The fake never locks. Unconfirmed whether macOS and Windows share reports
+  (two `--json` runs at once on the MVX2U Gen 2, 2026-11-19: EQ bands 0 dB, firmware
+  Unknown, in 5 of 5 tries). Every exchange therefore runs under `ShureDevice::exclusive()`,
+  which holds the device's lock for up to 5 s of waiting, and drains queued input inside it.
+  On Linux the lock is the hidraw node itself, so `sudo`, cron and a hotkey daemon lock the
+  same file as the TUI whatever their environment (20 `--json` runs each as the user, with
+  `sudo` and without `XDG_RUNTIME_DIR`, beside the TUI, all identical; MVX2U Gen 2,
+  2026-11-20); elsewhere it is `shurectl-<USB serial or hidapi path>.lock` in the temp
+  directory. An exchange that times out waiting fails with `device::Busy` having sent
+  nothing, so `recover_from_failure()` puts back the old values without a re-read, marked
+  unread (the other shurectl may have changed them), and `r` doesn't reconnect on it. The
+  live poll doesn't wait: it skips a turn while the lock is held (`exclusive_now()`), as
+  waiting froze the TUI for as long as another process held it (`flock` on the hidraw node
+  for 30 s, MVX2U Gen 2, 2026-11-20). Nor does the presence poll's reconnect after a replug:
+  it shows the waiting screen. Reads that only label a device in a list (`--list`,
+  the picker) wait a second (`exclusive_for_labels()`). A `--mute toggle` holds one guard
+  from its read through its write, or two at once both read the same state and unmute
+  (`cli.rs::toggle_turn()`). Two toggles started together left the mute as it was in 40 of
+  40 pairs, 20 from each state (MVX2U Gen 2, 2026-11-20), so there its read sees the write
+  before it; unconfirmed on other models. An MV7 SET and its `[Failed]` re-read are one
+  exchange, and so are a binary preset load (which also keeps anything from coming between
+  its Gain Lock unlock and re-lock) and `f`. A read after a write that landed carries
+  `WriteLanded`, so a failure there never undoes the write. A readback holds one guard from
+  its drain to its last GET. A new I/O path takes the guard too: `write()` and `read()`
+  `debug_assert!` it, so the tests (debug builds) panic on one that doesn't. `reopen()`
+  asserts it runs under none. The fake never locks. Unconfirmed whether macOS and Windows
+  share reports
 - **Live poll per model** (the design is under Live poll in `AGENTS.md`): each value is one
   GET, kept only when `answers_at_its_address()`, or one text line on the MV7. The binary
   models drain queued input before each poll. While the other settings are unread the poll
-  still runs, announcing only mute. In Auto a gain change is kept but not announced.
-  After any mode switch the MV7 re-reads everything; after a switch to Manual the MVX2U
-  Gen 1 and MV6, whose gain read in Auto is unconfirmed, re-read the gain
-  (`resync_after_mode()`). On the MV7 an unanswered `micMute` skips the poll's other lines.
-  The MV6's unconfirmed Playback Level GET (#99) isn't polled. A TUI write pushes the poll
-  back a second because whether a device applies a write before acking it is unconfirmed
+  still runs, announcing only mute. In Auto a gain change is kept but not announced. After
+  any mode switch the MV7 re-reads everything; after a switch to Manual the MVX2U Gen 1 and
+  MV6, whose gain read in Auto is unconfirmed, re-read the gain (`resync_after_mode()`). On
+  the MV7 an unanswered `micMute` skips the poll's other lines. The MV6's unconfirmed
+  Playback Level GET (#99) isn't polled. A TUI write pushes the poll back a second because
+  whether a device applies a write before acking it is unconfirmed; a gain or level step
+  then polls first in its own turn (`read_before_step()`), so a device that applied a write
+  late would read as changed and drop the next step (unconfirmed either way). A step the
+  poll got no answer for isn't sent; on the MV7 the value is first read again with a
+  readback's wait (`reread_stepped()`), since its poll gives each line 200 ms. On the MVX2U
+  Gen 2 a mute write is applied by the next read: `--mute on --json` read back muted in 20
+  of 20 runs (2026-11-20). `--mute off --json` can't show this, since the CLI shows Muted
+  only when the write and the readback both say so. A gain read above the model's maximum
+  is an unusable answer (`usable_gain()`), so it never shows and no step starts from it;
+  `get_state()` asks for the gain once more and fails only on a second one
 - **Live poll on hardware** (`read_live()`), by behaviour:
   - *A change made elsewhere shows in a running TUI.* On the MV6 Gen 2 under Linux, a
     pressed mute button sends no input report, and the poll shows the press (tested
@@ -103,10 +131,14 @@ CRC-16/ANSI covers 0x11 up to the CRC
     Auto at 40 dB, loaded in Auto over a Manual gain of 25 dB, left 40 dB after a switch to
     Manual (tested 2026-10-31), and the same on the MV6 Gen 2 (tested 2026-10-31).
     Unconfirmed on the MVX2U Gen 1, MV6 and MV7+
+  - *A replug unmutes the mic.* On the MVX2U Gen 2, `--mute on`, unplug, replug, then
+    `--mute status` printed `off` in 3 of 3 tries (2026-11-20). So a reconnect whose readback
+    fails shows Mute OFF (`mark_never_read()`). Unconfirmed on the other models
   - *Unconfirmed elsewhere:* whether the MVX2U Gen 1 and MV6 report a press, whether their
     GETs reflect changes made elsewhere, whether the gain GET in Auto reads the Manual gain
-    on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a mode change), and whether
-    the MV7 answers each line within the poll's 200 ms
+    on the MVX2U Gen 1 and MV6 (the MV7 re-reads everything after a mode change), whether
+    either reports a gain above its maximum in Auto (`get_state()` would then always fail on
+    it), and whether the MV7 answers each line within the poll's 200 ms
 - **Counterfeits are refused, not supported** (maintainer decision 2026-11-09, #139).
   `open_hid()` refuses a device whose product string contradicts its product ID
   (`DeviceModel::contradicted_by_product()`), from the OS device list, before any HID

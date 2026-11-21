@@ -146,7 +146,7 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
         [0x02, 0x11],
         "EQ_100HZ_FREQ_RO (Gen2 only — read-only, always 100)",
     ),
-    ([0x02, 0x14], "EQ_100HZ_GAIN (Gen1/Gen2)"),
+    ([0x02, 0x14], "EQ_100HZ_GAIN (Gen1/Gen2/MV6 Gen 2)"),
     (
         [0x02, 0x20],
         "EQ_250HZ_EN (Gen1 only — not present on Gen2)",
@@ -155,19 +155,19 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
         [0x02, 0x21],
         "EQ_250HZ_FREQ_RO (Gen2 only — read-only, always 250)",
     ),
-    ([0x02, 0x24], "EQ_250HZ_GAIN (Gen1/Gen2)"),
+    ([0x02, 0x24], "EQ_250HZ_GAIN (Gen1/Gen2/MV6 Gen 2)"),
     ([0x02, 0x30], "EQ_1KHZ_EN (Gen1 only — not present on Gen2)"),
     (
         [0x02, 0x31],
         "EQ_1KHZ_FREQ_RO (Gen2 only — read-only, always 1000)",
     ),
-    ([0x02, 0x34], "EQ_1KHZ_GAIN (Gen1/Gen2)"),
+    ([0x02, 0x34], "EQ_1KHZ_GAIN (Gen1/Gen2/MV6 Gen 2)"),
     ([0x02, 0x40], "EQ_4KHZ_EN (Gen1 only — not present on Gen2)"),
     (
         [0x02, 0x41],
         "EQ_4KHZ_FREQ_RO (Gen2 only — read-only, always 4000)",
     ),
-    ([0x02, 0x44], "EQ_4KHZ_GAIN (Gen1/Gen2)"),
+    ([0x02, 0x44], "EQ_4KHZ_GAIN (Gen1/Gen2/MV6 Gen 2)"),
     (
         [0x02, 0x50],
         "EQ_10KHZ_EN (Gen1 only — not present on Gen2)",
@@ -176,7 +176,7 @@ const KNOWN_FEATURES: &[([u8; 2], &str)] = &[
         [0x02, 0x51],
         "EQ_10KHZ_FREQ_RO (Gen2 only — read-only, always 10000)",
     ),
-    ([0x02, 0x54], "EQ_10KHZ_GAIN (Gen1/Gen2)"),
+    ([0x02, 0x54], "EQ_10KHZ_GAIN (Gen1/Gen2/MV6 Gen 2)"),
     ([0x03, 0x81], "POPPER_STOPPER (MV6/MV6 Gen 2/Gen2/MV7+)"),
     ([0x03, 0x82], "MV7+_REVERB_OUTPUT (MV7+ only — 0=off, 1=on)"),
     (

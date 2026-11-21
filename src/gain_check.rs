@@ -52,6 +52,9 @@ pub struct Listening {
     pub gain_tenths: u16,
     /// The loudest peak heard so far, in dBFS × 10.
     pub loudest_x10: Option<i32>,
+    /// Whether the meter was on the device's own input when the check
+    /// started, not the system default input, which may be another mic.
+    pub own_input: bool,
 }
 
 /// What a finished check heard, and the gain it suggests.
@@ -59,6 +62,8 @@ pub struct Outcome {
     /// The loudest peak, in dBFS × 10; `None` when nothing came in at all.
     pub loudest_x10: Option<i32>,
     pub advice: Advice,
+    /// As [`Listening::own_input`].
+    pub own_input: bool,
 }
 
 /// What a check found, before it is put in words.
@@ -76,11 +81,12 @@ pub enum Advice {
 }
 
 impl Listening {
-    pub fn new(gain_tenths: u16) -> Self {
+    pub fn new(gain_tenths: u16, own_input: bool) -> Self {
         Self {
             started: None,
             gain_tenths,
             loudest_x10: None,
+            own_input,
         }
     }
 
@@ -113,6 +119,7 @@ impl Listening {
         (elapsed >= Duration::from_secs(CHECK_SECS)).then(|| Outcome {
             loudest_x10: self.loudest_x10,
             advice: advise(model, self.gain_tenths, self.loudest_x10),
+            own_input: self.own_input,
         })
     }
 }
@@ -208,7 +215,7 @@ mod tests {
     #[test]
     fn the_check_skips_the_settle_time_and_ends_after_check_secs() {
         let start = Instant::now();
-        let mut check = Listening::new(240);
+        let mut check = Listening::new(240, true);
         assert_eq!(check.seconds_left(start), CHECK_SECS);
         let model = DeviceModel::Mv6;
         // A loud click while settling is left out.

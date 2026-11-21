@@ -241,6 +241,7 @@ fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     draw_tabs(f, app, chunks[1]);
 
     match app.active_tab {
+        _ if app.settings_never_read => draw_never_read(f, app, chunks[2]),
         Tab::Main => draw_main_tab(f, app, chunks[2]),
         Tab::Eq => draw_eq_tab(f, app, chunks[2]),
         Tab::Dynamics => draw_dynamics_tab(f, app, chunks[2]),
@@ -255,7 +256,7 @@ fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     draw_preset_load_box(f, app, chunks[2]);
 
     if app.help_visible {
-        draw_help_overlay(f, size);
+        draw_help_overlay(f, app.device_model, size);
     }
     context.hits
 }
@@ -407,9 +408,22 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             " [Enter] save  [Esc] cancel",
             C_ACCENT,
         )
+    } else if app.is_waiting_for_device() {
+        // No control to adjust; `r` tries for the device for a second.
+        (
+            " [r] Retry  [?] Help  [q] Quit",
+            " [?] Help  [q] Quit",
+            C_DIM,
+        )
+    } else if app.settings_never_read {
+        (
+            " [Enter] Mute  [r] Refresh  [?] Help  [q] Quit",
+            " [?] Help  [q] Quit",
+            C_DIM,
+        )
     } else if app.can_flatten_eq() {
         (
-            " [Tab] Next section  [↑↓] Focus  [←→] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
+            " [Tab] Next section  [↑↓] Focus  [←→/Enter] Adjust  [f] Flat  [r] Refresh  [?] Help  [q] Quit",
             " [?] Help  [q] Quit",
             C_DIM,
         )
@@ -427,7 +441,8 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 /// A status bar `width` wide: `msg` first so errors are never cut, then the
-/// full key hint, or the short one when the full one no longer fits after it.
+/// full key hint, or the short one when the full one no longer fits after it,
+/// or none when neither does, so no key is cut mid-word.
 fn status_bar(
     msg: String,
     color: Color,
@@ -436,11 +451,14 @@ fn status_bar(
 ) -> Paragraph<'static> {
     let msg = Span::styled(msg, Style::default().fg(color));
     let gap = Span::raw("   ");
-    let full_width = msg.width() + gap.width() + Span::raw(hint).width();
-    let hint = if full_width <= usize::from(width) {
+    let fits =
+        |hint: &str| msg.width() + gap.width() + Span::raw(hint).width() <= usize::from(width);
+    let hint = if fits(hint) {
         hint
-    } else {
+    } else if fits(short_hint) {
         short_hint
+    } else {
+        ""
     };
     Paragraph::new(Line::from(vec![
         msg,
@@ -1633,10 +1651,11 @@ fn draw_gain_check_card(f: &mut UiFrame, app: &App, check: &GainCheck, area: Rec
                     if app.gain_locked() {
                         lines.push(note("Turn Gain Lock off first.", C_WARN));
                     }
-                    lines.push(if gain == suggested {
-                        note("Set. Check again to confirm.", C_DIM)
-                    } else {
-                        note("Set it on Gain with ←→, then check again.", C_DIM)
+                    lines.push(match (gain == suggested, outcome.own_input) {
+                        (true, _) => note("Set. Check again to confirm.", C_DIM),
+                        (false, true) => note("Set it on Gain with ←→, then check again.", C_DIM),
+                        // The suggestion may be for another mic altogether.
+                        (false, false) => note("Heard the default input: is it the Shure?", C_WARN),
                     });
                 }
                 Advice::Good => lines.push(note("Gain looks right.", C_SUCCESS)),
@@ -2477,6 +2496,50 @@ fn draw_tab_locked_notice(f: &mut UiFrame, area: Rect, tab_name: &str) {
     render_notice(f, area, lines);
 }
 
+/// The first readback failed, so every setting but mute would show a
+/// default that was never the mic's. Mute shows only when it could be sent:
+/// not while another shurectl holds the device, when nothing can be, and
+/// the live poll reads everything once it is free.
+fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
+    let dim = |text: &'static str| Line::from(Span::styled(text, Style::default().fg(C_DIM)));
+    let heading = |text: &'static str| {
+        Line::from(Span::styled(
+            text,
+            Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+        ))
+    };
+    if app.is_waiting_for_device() {
+        let notice = Layout::vertical([Constraint::Min(0)])
+            .horizontal_margin(1)
+            .split(area)[0];
+        let lines = vec![
+            Line::from(""),
+            heading("Another shurectl is using the device"),
+            Line::from(""),
+            dim("Your settings show here as soon as it is done."),
+        ];
+        render_notice(f, notice, lines);
+        return;
+    }
+    let [mute_row, notice] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)])
+        .horizontal_margin(1)
+        .areas(area);
+    // Wide enough for its hint at 80 columns.
+    let [mute, _] =
+        Layout::horizontal([Constraint::Length(34), Constraint::Fill(1)]).areas(mute_row);
+    draw_mute_block(f, app, mute);
+    let lines = vec![
+        Line::from(""),
+        heading("Settings not read from the device yet"),
+        Line::from(""),
+        dim("The other settings show once shurectl has read them."),
+        dim("Mute doesn't need them."),
+        Line::from(""),
+        dim("Press r to read the device again."),
+    ];
+    render_notice(f, notice, lines);
+}
+
 fn render_notice(f: &mut UiFrame, area: Rect, lines: Vec<Line>) {
     let p = Paragraph::new(lines)
         .block(
@@ -3086,7 +3149,12 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
             } else {
                 Style::default().fg(C_DIM)
             };
-            (String::from("Empty"), color, style)
+            let name = if app.preset_unreadable[index] {
+                "Unreadable file"
+            } else {
+                "Empty"
+            };
+            (String::from(name), color, style)
         }
     };
 
@@ -3105,6 +3173,13 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
         Some(slot) if !editing => Line::from(Span::styled(
             slot.summary(app.device_model),
             Style::default().fg(C_DIM),
+        )),
+        None if app.preset_unreadable[index] => Line::from(Span::styled(
+            format!(
+                "preset_{}.toml couldn't be read, so it isn't saved over",
+                index + 1
+            ),
+            Style::default().fg(C_WARN),
         )),
         _ => Line::from(""),
     };
@@ -3147,8 +3222,20 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
 fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
     let focused = app.focus == Focus::PresetActions(index);
     let filled = app.presets[index].is_some();
+    let unreadable = app.preset_unreadable[index];
 
-    let actions: Line = if filled {
+    let actions: Line = if unreadable {
+        Line::from(vec![
+            Span::styled(
+                " [d] ",
+                Style::default().fg(if focused { C_ERROR } else { C_DIM }),
+            ),
+            Span::styled(
+                "Delete the file",
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
+            ),
+        ])
+    } else if filled {
         Line::from(vec![
             Span::styled(
                 " [Enter] ",
@@ -3206,7 +3293,9 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
         .border_style(Style::default().fg(border_color))
         .padding(Padding::horizontal(1));
     let action_row = text_row(border.inner(area), 0);
-    let keys: &[KeyCode] = if filled {
+    let keys: &[KeyCode] = if unreadable {
+        &[KeyCode::Char('d')]
+    } else if filled {
         &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('d')]
     } else {
         &[KeyCode::Char('s')]
@@ -3415,7 +3504,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
     let cap_rows: &[(&str, &str)] = match model {
         DeviceModel::Mvx2u => &[
             ("  Phantom Pwr  : ", "48V"),
-            ("  EQ           : ", "5-band parametric"),
+            ("  EQ           : ", "5 bands, −8 to +6 dB in 2 dB steps"),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
@@ -3425,7 +3514,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
         ],
         DeviceModel::Mvx2uGen2 => &[
             ("  Phantom Pwr  : ", "48V"),
-            ("  EQ           : ", "5-band parametric"),
+            ("  EQ           : ", "5 bands, −8 to +6 dB in 0.5 dB steps"),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Compressor   : ", "Off / Light / Medium / Heavy"),
             ("  Limiter      : ", "On / Off"),
@@ -3448,6 +3537,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
+            ("  Gain Lock    : ", "On / Off (Manual mode)"),
             ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             ("  Mute Button  : ", "Works / Ignored"),
         ],
@@ -3467,6 +3557,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  Target Level : ", "Low / Med / High (Auto mode)"),
             ("  Adaptation   : ", "Slow / Fast (Auto mode)"),
             ("  Mic Preset   : ", "Speech / Singing / Instrument"),
+            ("  Gain Lock    : ", "On / Off (Manual mode)"),
             ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             ("  Mute Button  : ", "Works / Ignored"),
         ],
@@ -3577,11 +3668,13 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     let fit = usize::from((body.height.saturating_sub(2) / 3).max(1));
     let first = (picker.selected + 1).saturating_sub(fit);
     // The name column, or "Can't open" for a device that wouldn't open (it
-    // has no name then) and "Not genuine" for one shurectl refuses; the
+    // has no name then), "Busy" for one another shurectl held while its
+    // labels were read, and "Not genuine" for one shurectl refuses; the
     // reason shows in the status bar when selected.
     fn middle(row: &PickerRow) -> (&str, Color) {
         match (&row.problem, row.name.as_deref()) {
             _ if row.not_genuine => ("Not genuine", C_WARN),
+            (None, None) if row.busy => ("Busy", C_WARN),
             (Some(_), _) => ("Can't open", C_WARN),
             (None, name) => (name.unwrap_or_default(), C_TEXT),
         }
@@ -3655,11 +3748,16 @@ pub fn draw_picker(f: &mut Frame, picker: &Picker) -> Vec<(usize, Rect)> {
     }
 
     // Until a key or click reports something else, a selected device that
-    // wouldn't open says why.
+    // wouldn't open, or whose name another shurectl kept from being read,
+    // says why.
     let problem = picker
         .rows
         .get(picker.selected)
-        .and_then(|row| row.problem.as_deref())
+        .and_then(|row| {
+            row.problem
+                .as_deref()
+                .or(row.busy.then_some(crate::picker::LABELS_BUSY))
+        })
         .filter(|_| !picker.status_is_error);
     let (msg, color) = match problem {
         Some(problem) => status_message(problem, true),
@@ -3697,7 +3795,7 @@ fn help_row(key: &str, description: &'static str) -> Line<'static> {
     ])
 }
 
-fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
+fn draw_help_overlay(f: &mut UiFrame, model: DeviceModel, area: Rect) {
     let heading = |text| {
         Line::from(Span::styled(
             text,
@@ -3706,13 +3804,21 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
                 .add_modifier(Modifier::UNDERLINED),
         ))
     };
-    let lines = vec![
+    // `f` only where the 5 bands can show (`App::eq_bands_shown()`).
+    let flatten = match model {
+        DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => Some("Flatten 5-band EQ (EQ tab, Manual)"),
+        DeviceModel::Mv6Gen2 => Some("Flatten 5-band EQ (EQ tab, Advanced)"),
+        DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => None,
+    };
+    let mut lines = vec![
         heading("  Controls"),
         help_row("Tab / Shift+Tab", "Switch section"),
         help_row("↑ ↓ / k j", "Focus previous / next control"),
         help_row("← → / h l", "Decrease / increase value"),
         help_row("Enter / Space", "Toggle boolean / cycle option"),
-        help_row("f", "Flatten 5-band EQ (EQ tab)"),
+    ];
+    lines.extend(flatten.map(|text| help_row("f", text)));
+    lines.extend([
         help_row("g", "Gain check (Main tab, Manual)"),
         Line::from(""),
         heading("  General"),
@@ -3734,7 +3840,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
             "  Wheel: adjust; click outside name: cancel",
             Style::default().fg(C_DIM),
         )),
-    ];
+    ]);
 
     // Sized to its lines, so it fits the 80x24 `MIN_SIZE`.
     let popup_width = 58u16.min(area.width.saturating_sub(4));
@@ -4488,6 +4594,26 @@ mod tests {
                 ..App::default()
             };
             visit(&format!("{model:?} help"), &help);
+            for muted in [false, true] {
+                let mut never_read = App {
+                    device_model: model,
+                    settings_never_read: true,
+                    state_unread: true,
+                    focus: Focus::Mute,
+                    ..App::default()
+                };
+                never_read.device_state.muted = muted;
+                visit(&format!("{model:?} never read muted={muted}"), &never_read);
+            }
+            let waiting = App {
+                device_model: model,
+                settings_never_read: true,
+                waiting_for_device: true,
+                state_unread: true,
+                focus: Focus::Mute,
+                ..App::default()
+            };
+            visit(&format!("{model:?} waiting for device"), &waiting);
             for (name, check) in gain_check_states() {
                 let mut app = App {
                     device_model: model,
@@ -4499,6 +4625,16 @@ mod tests {
                 app.device_state.gain_tenths = 240;
                 app.device_state.mv6_gain_locked = true;
                 visit(&format!("{model:?} gain check {name}"), &app);
+                // On the system default input the suggestion warns instead.
+                if let Some(GainCheck::Done(outcome)) = &mut app.gain_check
+                    && name == "raise"
+                {
+                    outcome.own_input = false;
+                    visit(
+                        &format!("{model:?} gain check {name} on the default input"),
+                        &app,
+                    );
+                }
             }
             for (name, app) in preset_load_states(model) {
                 visit(&format!("{model:?} preset load {name}"), &app);
@@ -4765,12 +4901,13 @@ mod tests {
     fn gain_check_states() -> Vec<(&'static str, GainCheck)> {
         use crate::gain_check::{Advice, Listening, Outcome};
 
-        let mut listening = Listening::new(240);
+        let mut listening = Listening::new(240, true);
         listening.loudest_x10 = Some(-184);
         let done = |loudest_x10, advice| {
             GainCheck::Done(Outcome {
                 loudest_x10,
                 advice,
+                own_input: true,
             })
         };
         vec![
@@ -4818,9 +4955,15 @@ mod tests {
             name: None,
             problem: Some("Cannot open /dev/hidraw7: device busy".into()),
             not_genuine: false,
+            busy: false,
         });
         let mut problem = Picker::new(rows);
         problem.selected = 2;
+        let mut busy_rows = sample_rows();
+        busy_rows[1].name = None;
+        busy_rows[1].busy = true;
+        let mut busy = Picker::new(busy_rows);
+        busy.selected = 1;
         let mut refused = Picker::new(sample_rows());
         refused.set_err("Cannot open /dev/hidraw3: device busy");
         let not_genuine = Picker::new(vec![PickerRow {
@@ -4830,11 +4973,13 @@ mod tests {
             name: None,
             problem: Some(crate::device::NOT_GENUINE.into()),
             not_genuine: true,
+            busy: false,
         }]);
         vec![
             ("picker first", Picker::new(sample_rows())),
             ("picker second", second),
             ("picker problem", problem),
+            ("picker busy", busy),
             ("picker refused", refused),
             ("picker not genuine", not_genuine),
             ("picker empty", Picker::new(Vec::new())),
@@ -4884,6 +5029,7 @@ mod tests {
                         "Can't open"
                     }
                 }));
+                expected.extend(row.busy.then_some("Busy"));
                 expected.push(row.serial.as_deref().unwrap_or("unknown"));
                 for part in expected {
                     assert!(
@@ -4902,11 +5048,11 @@ mod tests {
                 let tip = format!("Skip this next time: shurectl --device {serial}");
                 assert!(text.contains(&tip), "{label}: no tip\n{text}");
             }
-            let status = match picker
-                .rows
-                .get(picker.selected)
-                .and_then(|row| row.problem.as_deref())
-            {
+            let status = match picker.rows.get(picker.selected).and_then(|row| {
+                row.problem
+                    .as_deref()
+                    .or(row.busy.then_some(crate::picker::LABELS_BUSY))
+            }) {
                 Some(problem) if !picker.status_is_error => problem,
                 Some(_) | None => picker.status.as_str(),
             };

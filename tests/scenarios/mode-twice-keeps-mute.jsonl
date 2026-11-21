@@ -1,0 +1,10 @@
+{"scenario": "mode-twice-keeps-mute", "models": ["mvx2u-gen2", "mv6", "mv7plus"], "modes": ["fake"]}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}}}
+{"key": "Up"}
+{"expect": {"focus": "Mode", "state": {"mode": "Manual"}}}
+{"key": "Enter"}
+{"expect": {"focus": "Mode", "state": {"mode": "Auto", "muted": true}}}
+{"key": "Enter"}
+{"expect": {"focus": "Gain", "state": {"mode": "Manual", "muted": true}}}

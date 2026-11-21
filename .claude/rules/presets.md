@@ -51,6 +51,8 @@ TOML files in `~/.config/shurectl/presets/`, 4 fixed slots (`preset_1.toml`–`p
 - **Older files** hold every field from every model and still apply them all: before
   2.12.0 that includes `phantom_power = false`, before 2.13.1 every other per-model setting.
   Nothing in them records which model saved them
-- `load_all_presets()` runs at startup; missing files → `None`
+- `load_all_presets()` runs at startup; missing files → `None`. A file that doesn't parse is
+  `None` too, flagged in `App::preset_unreadable`: its card says so, `s` refuses to save over
+  it, and `d` deletes it
 - `DeviceAction` variants: `SavePreset`, `LoadPreset` (applies, then sends a SET for each
   saved setting; the MV7 only the changed ones), `DeletePreset`, `PersistPresetName`

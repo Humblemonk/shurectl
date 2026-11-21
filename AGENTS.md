@@ -83,13 +83,14 @@ traffic. A device that is back is reconnected one poll later through `DeviceActi
 (`r` does it on demand), so `apply_action()` stays the only writer. Only a
 `device::Disconnected` error marks it disconnected; one that refuses a command stays connected.
 
-**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second while
-connected (`read_live()`), so a change made elsewhere shows without `r` and the next arrow
-key steps from the device's value, not a stale one. It only reads: an unusable answer is
-ignored and a `Disconnected` error marks the device disconnected. A mode change it sees
-re-reads everything; a mode switch from the TUI or `--mode` re-reads what the model needs
-(`resync_after_mode()`). A TUI write pushes the next poll back a second (`send_from_tui()`).
-Per-model exceptions and hardware results: `.claude/rules/protocol.md`.
+**Live poll:** `poll_live()` reads mute, mode, gain and the monitor levels every second
+while connected (`read_live()`), skipping a turn while another shurectl holds the device, so
+a change made elsewhere shows without `r`. It only reads: an unusable answer is ignored and a
+`Disconnected` marks the device disconnected. A mode change it sees re-reads everything; a
+mode switch from the TUI or `--mode` re-reads what the model needs (`resync_after_mode()`). A
+TUI write pushes the next poll back a second, so a gain or level step runs it first, in the
+write's turn, and writes only if nothing changed (`send_from_tui()`); a relative CLI step
+holds one turn from its readback to its write. Per-model detail: `.claude/rules/protocol.md`.
 
 **Mute** is a fixed write (`ActionKind`), allowed before a readback in the TUI and CLI,
 because refusing it would leave the mic live. A mute whose outcome nothing could read back
@@ -222,10 +223,9 @@ rather than promoting a lower one.
   only in `from_device_state()`'s `match` for models that have it. Check `#[serde(default)]`
   and `apply_to_device_state()`.
 - **Failed writes**: `recover_from_failure()` puts back the key's `before` snapshot only for
-  one write that clearly didn't land (`Disconnected`, or the MV7's `Rejected`). A timeout, or
-  a preset load or `f` that stopped partway, re-reads the device or marks the state unread.
-  `step()` writes a pending wheel adjustment before the next event changes the screen, so
-  each snapshot holds only its own change.
+  a write that clearly didn't land: `Disconnected`, the MV7's `Rejected`, or `Busy` (then
+  unread until `r`, a busy mute OFF). Anything else, `WriteLanded` included, re-reads or marks
+  unread. `step()` writes a pending wheel step first, so a snapshot holds only its own change.
 - **Model checks**: a wildcard `_` over `DeviceModel` sent the MV6 Gen 2 the wrong EQ
   encoding (a800e26, 2.9.0). See Rust Rules.
 - **Click targets**: `mouse.rs` regions come from drawn rows. Short terminals squash blocks;
