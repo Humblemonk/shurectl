@@ -408,10 +408,14 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             " [Enter] save  [Esc] cancel",
             C_ACCENT,
         )
+    } else if app.input_cut_short {
+        // Keys meant for what the reconnect closed are held until Esc
+        // (`App::input_cut_short`), so offer nothing else.
+        (" [Esc] Continue", " [Esc] Continue", C_ACCENT)
     } else if app.is_waiting_for_device() {
-        // Mute waits its turn; `r` tries for the device for a second.
+        // No control to adjust; `r` tries for the device for a second.
         (
-            " [Enter] Mute  [r] Retry  [?] Help  [q] Quit",
+            " [r] Retry  [?] Help  [q] Quit",
             " [?] Help  [q] Quit",
             C_DIM,
         )
@@ -2496,11 +2500,10 @@ fn draw_tab_locked_notice(f: &mut UiFrame, area: Rect, tab_name: &str) {
     render_notice(f, area, lines);
 }
 
-/// The first readback on this connection failed, so every setting but mute
-/// would show a default that was never the mic's: only Mute shows, as it
-/// needs no readback. While another shurectl holds the device it still shows,
-/// since refusing it would leave the mic live; it waits its turn, and the live
-/// poll reads everything once the device is free.
+/// The first readback failed, so every setting but mute would show a
+/// default that was never the mic's. Mute shows only when it could be sent:
+/// not while another shurectl holds the device, when nothing can be, and
+/// the live poll reads everything once it is free.
 fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
     let dim = |text: &'static str| Line::from(Span::styled(text, Style::default().fg(C_DIM)));
     let heading = |text: &'static str| {
@@ -2509,6 +2512,19 @@ fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
             Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
         ))
     };
+    if app.is_waiting_for_device() {
+        let notice = Layout::vertical([Constraint::Min(0)])
+            .horizontal_margin(1)
+            .split(area)[0];
+        let lines = vec![
+            Line::from(""),
+            heading("Another shurectl is using the device"),
+            Line::from(""),
+            dim("Your settings show here as soon as it is done."),
+        ];
+        render_notice(f, notice, lines);
+        return;
+    }
     let [mute_row, notice] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)])
         .horizontal_margin(1)
         .areas(area);
@@ -2516,17 +2532,6 @@ fn draw_never_read(f: &mut UiFrame, app: &App, area: Rect) {
     let [mute, _] =
         Layout::horizontal([Constraint::Length(34), Constraint::Fill(1)]).areas(mute_row);
     draw_mute_block(f, app, mute);
-    if app.is_waiting_for_device() {
-        let lines = vec![
-            Line::from(""),
-            heading("Another shurectl is using the device"),
-            Line::from(""),
-            dim("Your settings show here as soon as it is done."),
-            dim("Mute waits up to 5 seconds for its turn."),
-        ];
-        render_notice(f, notice, lines);
-        return;
-    }
     let lines = vec![
         Line::from(""),
         heading("Settings not read from the device yet"),

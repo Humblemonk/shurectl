@@ -177,12 +177,12 @@ pub struct App {
     /// The settings were never read on this connection: the first readback
     /// failed, so `device_state` holds defaults that were never the mic's.
     /// Until a readback works the content area shows a notice instead
-    /// (`ui.rs::draw_never_read()`) with Mute alone, and the other tabs are
-    /// locked.
+    /// (`ui.rs::draw_never_read()`), with Mute unless `waiting_for_device`,
+    /// and the other tabs are locked.
     pub settings_never_read: bool,
-    /// The first readback found another shurectl holding the device: only
-    /// Mute shows, waiting its turn when pressed, and the live poll reads the
-    /// settings the moment the device is free.
+    /// The first readback found another shurectl holding the device: no
+    /// control shows (not even Mute, which couldn't be sent either), and the
+    /// live poll reads the settings the moment the device is free.
     pub waiting_for_device: bool,
     /// The optional GETs the last readback got no usable answer to, such as
     /// the MV6's unconfirmed Playback Level (#99): their fields hold defaults.
@@ -203,10 +203,15 @@ pub struct App {
     pub editing_device_name: bool,
     /// Uncommitted preset or device name; nothing changes until Enter.
     pub name_draft: String,
-    /// A name edit a failed reconnect cancelled (`main.rs::mark_never_read()`):
-    /// typing still meant for it is ignored, saying so, so a `q` in the name
-    /// doesn't quit. Any other key, a click or a readback that works ends it.
-    pub name_edit_cut: bool,
+    /// The name a preset rename replaced, put back if saving the new one fails.
+    pub preset_name_before: Option<String>,
+    /// A prompt or name edit a failed reconnect closed (`main.rs::mark_never_read()`):
+    /// a Factory Reset or preset load prompt, or a rename. Keys still meant
+    /// for it must not act on the Mute-only screen: Enter would toggle Mute,
+    /// unmuting a muted mic, and a `q` in a name would quit. Enter, Space or
+    /// Esc ends it, saying nothing was sent; other typing is ignored, saying
+    /// so. Any other key, a click or a readback that works also ends it.
+    pub input_cut_short: bool,
     /// Set to `true` after the user first presses Enter on the factory reset button.
     /// A second Enter fires the action; any other key cancels.
     pub confirming_factory_reset: bool,
@@ -263,7 +268,8 @@ impl Default for App {
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
             preset_unreadable: [false; PRESET_COUNT],
-            name_edit_cut: false,
+            input_cut_short: false,
+            preset_name_before: None,
             editing_preset_name: false,
             editing_preset_index: 0,
             editing_device_name: false,
@@ -1296,8 +1302,7 @@ impl App {
     // ── Value adjustment helpers ──────────────────────────────────────────────
     /// Increment the focused parameter by `delta` (usually ±1).
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
-        // Only Mute shows while waiting for another shurectl, and it has no
-        // value to adjust.
+        // No control shows while waiting for another shurectl.
         if self.is_waiting_for_device() {
             return None;
         }
@@ -1497,9 +1502,9 @@ impl App {
     /// Every press goes to the control focused now, so a control whose toggle
     /// moves focus (Mode) must never be more than one press from any option.
     pub fn toggle_focused(&mut self) -> Option<DeviceAction> {
-        // Only Mute shows while waiting for another shurectl: refusing it
-        // would leave the mic live, so it waits its turn like any write.
-        if self.is_waiting_for_device() && self.focus != Focus::Mute {
+        // No control shows while waiting for another shurectl: nothing
+        // could be sent, Mute included, while it holds the device.
+        if self.is_waiting_for_device() {
             return None;
         }
         let mut action = None;

@@ -92,9 +92,9 @@ TUI write pushes the next poll back a second, so a gain or level step runs it fi
 write's turn, and writes only if nothing changed (`send_from_tui()`); a relative CLI step
 holds one turn from its readback to its write. Per-model detail: `.claude/rules/protocol.md`.
 
-**Mute** is a fixed write (`ActionKind`), allowed before a readback in the TUI and CLI,
-because refusing it would leave the mic live. A mute whose outcome nothing could read back
-shows as OFF, never Muted over a live mic (`recover_from_failure()`).
+**Mute** is a fixed write (`ActionKind`), allowed before a readback in the TUI and CLI, as
+refusing it would leave the mic live (not on the waiting screen: nothing can be sent there). A
+mute nothing could read back shows OFF, never Muted over a live mic (`recover_from_failure()`).
 
 **Focus model:** `Tab` is the panel, `Focus` the control in it. `adjust_focused()` (←/→) and
 `toggle_focused()` (Enter/Space) return `Option<DeviceAction>`; `None` is a UI-only change.

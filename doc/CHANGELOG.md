@@ -6,7 +6,7 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## 2.18.2 — 2026-11-20
+## 2.18.2 — 2026-11-21
 
 A Stream Deck mute button now mutes even when the rest of its command fails, shurectl copes
 better when another shurectl is using the device, and a gain step or replug can no longer
@@ -44,10 +44,10 @@ leave the screen showing the wrong gain or mute.
   hotkey daemon beside the TUI, could still read each other's replies and get settings
   wrong. They now always take turns.
 - If shurectl couldn't read your mic's settings when it started, the screen showed default
-  values as if they were your mic's, such as 48V OFF. Now it shows only Mute. If another
-  shurectl is using the device, it says so, Mute waits up to 5 seconds for its turn, and
-  your settings show by themselves as soon as the other one is done. If reading failed for
-  another reason, it asks you to press `r`. All models.
+  values as if they were your mic's, such as 48V OFF. Now, if another shurectl is using
+  the device, it says so, shows no controls, and reads your settings by itself as soon as
+  the other one is done. If reading failed for another reason, it shows only Mute and asks
+  you to press `r`. All models.
 - When a mode switch went through but the device was unplugged while shurectl read it
   afterwards, the screen went back to the old mode while the status said it had switched.
   It now shows the new mode. The same holds for the MV7's Mic Position and Tone.
@@ -70,7 +70,8 @@ leave the screen showing the wrong gain or mute.
   Mode. A mode switch that fails also leaves focus on Mode on every model.
 - A gain read from the device above its maximum, such as 100 dB, is no longer shown, so
   the next step can't jump to the maximum gain. shurectl asks the mic again once, and says
-  it couldn't read the settings only if the answer repeats. All models; whether an MVX2U
+  it couldn't read the settings only if that second answer is out of range too or doesn't
+  come. All models; whether an MVX2U
   Gen 1 or MV6 can report such a gain in Auto Level is unconfirmed.
 - Renaming the device and Factory Reset now wait until shurectl has read your settings,
   like every other change except mute. Before, both went through while the settings were

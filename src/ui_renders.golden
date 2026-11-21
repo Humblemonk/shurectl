@@ -93,7 +93,7 @@ Mvx2u Auto adv=false muted=true locked=true Info band=0 DeviceName 22f04d9ceebf7
 Mvx2u help 77a844245e9d57ef
 Mvx2u never read muted=false 91bce9a5006cb7c1
 Mvx2u never read muted=true b094616cd86dbf7f
-Mvx2u waiting for device 8bd4a2980ba34c19
+Mvx2u waiting for device de808eb7d1175bde
 Mvx2u gain check listening 530e1fc90c601620
 Mvx2u gain check raise e5ef211f90fbfe90
 Mvx2u gain check raise on the default input 51727f1300689a9f
@@ -200,7 +200,7 @@ Mvx2uGen2 Auto adv=false muted=true locked=true Info band=0 FactoryReset 42aaa52
 Mvx2uGen2 help e06ffad2e180ac30
 Mvx2uGen2 never read muted=false 4c87cbaeb5345c1d
 Mvx2uGen2 never read muted=true 32fc4ec699a994fb
-Mvx2uGen2 waiting for device f5b18807800160b5
+Mvx2uGen2 waiting for device 7f4ca9bfb7404f82
 Mvx2uGen2 gain check listening 51fa191306d6adaf
 Mvx2uGen2 gain check raise 978e48c1f8ee3602
 Mvx2uGen2 gain check raise on the default input f053c85021da777f
@@ -293,7 +293,7 @@ Mv6 Auto adv=false muted=true locked=true Info band=0 DeviceName cb1f3a400e3d2d4
 Mv6 help 0b66d20d6d278e2e
 Mv6 never read muted=false 39572d605f2704e4
 Mv6 never read muted=true eaf56ada80cb8752
-Mv6 waiting for device 51b1a69c0e9f65ee
+Mv6 waiting for device 52e7fcacb4f16265
 Mv6 gain check listening 2e1e420636e57064
 Mv6 gain check raise 287501734a1df0d3
 Mv6 gain check raise on the default input f5af65d8b96307a8
@@ -512,7 +512,7 @@ Mv6Gen2 Auto adv=true muted=true locked=true Info band=0 FactoryReset dc9c830501
 Mv6Gen2 help c9eb819c2735598e
 Mv6Gen2 never read muted=false 5e7f994571390570
 Mv6Gen2 never read muted=true 1f3fdcfd7d297efe
-Mv6Gen2 waiting for device 74cc34d277278d7a
+Mv6Gen2 waiting for device f751269c75d90ba9
 Mv6Gen2 gain check listening dd01d1a905e10ccc
 Mv6Gen2 gain check raise bdc0e0496d540f21
 Mv6Gen2 gain check raise on the default input b4301c3cb7e8d6b8
@@ -605,7 +605,7 @@ Mv7 Auto adv=false muted=true locked=true Info band=0 FactoryReset ebc4ddbb24ca5
 Mv7 help 9a072cf3e9243cf8
 Mv7 never read muted=false d98014bcca8a8a2a
 Mv7 never read muted=true 801c478600c79334
-Mv7 waiting for device 2da55bf625597f90
+Mv7 waiting for device 79516ff066f2dcb3
 Mv7 gain check listening d024084980d804a1
 Mv7 gain check raise 95801dd3e0370481
 Mv7 gain check raise on the default input ede49f1b793a92b0
@@ -784,7 +784,7 @@ Mv7Plus Auto adv=false muted=true locked=true Led led=custom band=0 LedLiveInter
 Mv7Plus help 0c8beaf64231c0df
 Mv7Plus never read muted=false 0ba8877589884fcb
 Mv7Plus never read muted=true 175b12f61cdb79f5
-Mv7Plus waiting for device f0bd268e66e8245f
+Mv7Plus waiting for device 99154eae4e72de78
 Mv7Plus gain check listening c406f94216631d9c
 Mv7Plus gain check raise 0f077670bc8f2a12
 Mv7Plus gain check raise on the default input 6633d2fd1febcfa5

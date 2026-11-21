@@ -51,10 +51,9 @@ wraps; don't break lines by hand.
 `App::settings_never_read`), the content area shows a notice instead of the settings
 (`draw_never_read()`), the other tabs lock, and no default or pre-unplug value is drawn as
 the mic's; Mute shows OFF until the live poll reads it. If another shurectl held the device
-(`App::waiting_for_device`), the notice says so and Mute still shows: refusing it would leave
-the mic live, so it waits its 5 s turn like any write. The live poll reads everything once the
-device is free; `r` tries for a second. Mute shows focused either way, since it needs no
-readback, and nothing else is offered. A readback that works clears both.
+(`App::waiting_for_device`), no control shows at all, since nothing could be sent, and the
+live poll reads everything once the device is free; `r` tries for a second. Otherwise the
+Mute control shows, focused, since mute needs no readback. A readback that works clears both.
 Values put back or left unread after a failed write mid-session were read once, and still show.
 
 **Size.** Every screen of every model fits 80x24 (`MIN_SIZE`, btop's minimum); below it `draw()`

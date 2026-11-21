@@ -1191,7 +1191,7 @@ fn step(
             Event::Mouse(event) => {
                 // A click is no more typing for a name edit cut short.
                 if !matches!(event.kind, MouseEventKind::Moved) {
-                    app.name_edit_cut = false;
+                    app.input_cut_short = false;
                 }
                 let action = mouse::handle_mouse(app, event, hits)
                     .and_then(|key| handle_key(app, key, KeyModifiers::NONE));
@@ -1292,21 +1292,21 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     // ── Preset or device name editing mode ────────────────────────────────────
     // Handled before the quit keys so `q` can be typed in a name, and Ctrl+C
     // doesn't quit while editing.
-    // The rest of a name edit a failed reconnect cancelled: typing is ignored,
-    // saying so, so a `q` in the name doesn't quit. Any other key ends it and
-    // does what it does: Enter still mutes, which refusing would leave live.
-    if app.name_edit_cut {
+    // Keys still meant for a prompt or name edit a failed reconnect closed
+    // (`App::input_cut_short`): the Enter that would have confirmed or saved
+    // it must not toggle Mute instead.
+    if app.input_cut_short {
         match code {
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Esc => {
+                app.input_cut_short = false;
+                app.set_ok("The reconnect closed it, so nothing was sent. Keys work again.");
+                return None;
+            }
             KeyCode::Char(_) | KeyCode::Backspace if !mods.contains(KeyModifiers::CONTROL) => {
-                app.set_err(NAME_EDIT_CUT_NOTE);
+                app.set_err(INPUT_CUT_SHORT_NOTE);
                 return None;
             }
-            KeyCode::Esc => {
-                app.name_edit_cut = false;
-                app.set_ok("Typing goes to the controls again.");
-                return None;
-            }
-            _ => app.name_edit_cut = false,
+            _ => app.input_cut_short = false,
         }
     }
     if app.editing_name() {
@@ -1334,7 +1334,7 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 if name.trim().is_empty() {
                     app.set_err("The preset name can't be empty.");
                 } else if let Some(slot) = &mut app.presets[i] {
-                    slot.name = name;
+                    app.preset_name_before = Some(std::mem::replace(&mut slot.name, name));
                     return Some(DeviceAction::PersistPresetName(i));
                 }
             }
@@ -1881,6 +1881,7 @@ fn apply_action(
             Err(e) => Err(e),
         },
         DeviceAction::PersistPresetName(i) => {
+            let before = app.preset_name_before.take();
             if let Some(slot) = &app.presets[*i] {
                 match presets::save_preset(*i, slot) {
                     Ok(()) => {
@@ -1889,8 +1890,8 @@ fn apply_action(
                     }
                     Err(e) => {
                         // Show the name the file still has, not the one typed.
-                        if let Ok(Some(saved)) = presets::load_preset(*i) {
-                            app.presets[*i] = Some(saved);
+                        if let (Some(before), Some(slot)) = (before, &mut app.presets[*i]) {
+                            slot.name = before;
                         }
                         Err(e)
                     }
@@ -2347,8 +2348,9 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>, wait_for_turn: boo
     }
 }
 
-/// Status for a key typed into a name edit a failed reconnect cancelled.
-const NAME_EDIT_CUT_NOTE: &str = "Name edit closed by the reconnect; typing is ignored. Press Esc.";
+/// Status for a key typed into a prompt or name edit a failed reconnect closed.
+const INPUT_CUT_SHORT_NOTE: &str =
+    "The reconnect closed what you were typing in; keys are ignored. Press Esc.";
 
 /// Longest preset name, in characters.
 const PRESET_NAME_MAX_CHARS: usize = 40;
@@ -2365,7 +2367,7 @@ fn unreadable_preset_note(index: usize) -> String {
 /// nothing shown came from it: show the Mute control alone
 /// (`App::settings_never_read`), as OFF until the live poll reads it, since
 /// Muted over a live mic is the worse mistake. Busy waits for the other
-/// shurectl instead (`App::waiting_for_device`), still showing Mute.
+/// shurectl instead, showing no control (`App::waiting_for_device`).
 fn mark_never_read(app: &mut App, serial_number: &str, e: &anyhow::Error) {
     app.device_connected = !is_disconnect(e);
     app.state_unread = true;
@@ -2376,11 +2378,14 @@ fn mark_never_read(app: &mut App, serial_number: &str, e: &anyhow::Error) {
     app.device_state.muted = false;
     app.device_state.serial_number = serial_number.to_string();
     // Nothing pending may survive onto a screen that doesn't show it: the
-    // Enter meant for Mute would confirm a Factory Reset or save a rename.
+    // Enter meant for it would confirm a Factory Reset or save a rename. The
+    // keys still meant for it are held back too (`App::input_cut_short`), or
+    // that Enter would toggle Mute instead.
+    app.input_cut_short =
+        app.editing_name() || app.confirming_factory_reset || app.confirming_preset_load.is_some();
     app.confirming_factory_reset = false;
     app.confirming_preset_load = None;
     app.armed_preset_action = None;
-    app.name_edit_cut = app.editing_name();
     app.editing_preset_name = false;
     app.editing_device_name = false;
     app.name_draft.clear();
@@ -2394,7 +2399,7 @@ fn never_read_status(e: &dyn std::fmt::Display) -> String {
 
 /// A readback (`r`, or a reconnect) found another shurectl holding the
 /// device. Never read, it waits as the startup readback does
-/// (`App::waiting_for_device`): only Mute, and the live poll reads the
+/// (`App::waiting_for_device`): no controls, and the live poll reads the
 /// device once it is free. Otherwise `busy` goes to `recover_from_failure()`.
 fn wait_if_never_read(app: &mut App, busy: anyhow::Error) -> Result<()> {
     if !app.settings_never_read {
@@ -2716,7 +2721,7 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     app.settings_never_read = false;
     app.waiting_for_device = false;
     // The full screen is back, so typing goes to its controls again.
-    app.name_edit_cut = false;
+    app.input_cut_short = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
 }
@@ -3360,13 +3365,12 @@ mod tests {
     }
 
     /// A first readback that found another shurectl holding the device shows
-    /// only Mute: Enter on it mutes (waiting its turn, as every write does),
-    /// and arrows or Enter elsewhere send nothing. Once the device is free the
+    /// no control: Enter and arrows send nothing. Once the device is free the
     /// live poll reads everything, and so does `r` (which tries for a second,
     /// not 5); the fake never locks, so both read at once here. Unplugged, the
     /// screen no longer blames another shurectl.
     #[test]
-    fn waiting_for_the_device_reads_it_once_free_and_offers_only_mute() {
+    fn waiting_for_the_device_reads_it_once_free_and_offers_nothing_before() {
         let waiting = |model| App {
             device_model: model,
             settings_never_read: true,
@@ -3380,14 +3384,8 @@ mod tests {
             let fake = FakeDevice::new(model);
             let mut device = Some(fake.open());
             let mut app = waiting(model);
-            assert!(
-                matches!(app.toggle_focused(), Some(DeviceAction::SetMute(true))),
-                "{model:?}: refusing a mute would leave the mic live"
-            );
-            app.device_state.muted = false;
-            assert!(app.adjust_focused(1).is_none(), "{model:?}");
-            app.focus = app::Focus::Mode;
             assert!(app.toggle_focused().is_none(), "{model:?}");
+            assert!(app.adjust_focused(1).is_none(), "{model:?}");
             poll_live(&mut app, &device);
             assert!(
                 !app.waiting_for_device && !app.settings_never_read && !app.state_unread,
@@ -4413,15 +4411,19 @@ mod tests {
             }
             mark_never_read(&mut app, "", &read_failed);
             assert!(!app.editing_name() && !app.confirming_factory_reset);
-            // The rest of a cut name edit is ignored, saying so, so its `q`
-            // doesn't quit; Enter, below, still mutes.
-            if pending == 1 {
-                assert!(handle_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE).is_none());
-                assert!(!app.should_quit && app.status_message == NAME_EDIT_CUT_NOTE);
-            }
+            // The live poll found the mic muted before the user's next keys.
+            app.device_state.muted = true;
+            // Typing still meant for it is ignored, saying so, so a `q`
+            // doesn't quit; the Enter meant to confirm or save sends nothing,
+            // where toggling Mute would unmute the mic.
+            assert!(handle_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE).is_none());
+            assert!(!app.should_quit && app.status_message == INPUT_CUT_SHORT_NOTE);
+            assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+            assert!(app.device_state.muted && !app.input_cut_short, "{pending}");
+            // After it, Enter is the Mute control's again.
             assert!(matches!(
                 handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
-                Some(DeviceAction::SetMute(true))
+                Some(DeviceAction::SetMute(false))
             ));
         }
         for focus in [app::Focus::FactoryReset, app::Focus::DeviceName] {
