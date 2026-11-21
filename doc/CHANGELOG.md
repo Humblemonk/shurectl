@@ -6,7 +6,7 @@ have, run `shurectl -V` or open the Info tab.
 
 Releases that need you to do something after upgrading have an **Upgrading** note.
 
-## 2.18.2 — 2026-11-21
+## 2.19.0 — 2026-11-21
 
 A Stream Deck mute button now mutes even when the rest of its command fails, shurectl copes
 better when another shurectl is using the device, and a gain step or replug can no longer

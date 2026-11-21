@@ -105,7 +105,9 @@ fn load_scenarios() -> Vec<Scenario> {
 /// One long-lived `shurectl --qa` process for a model and device mode.
 struct Session {
     child: Child,
-    stdin: ChildStdin,
+    /// Closed first on drop, so `--qa` sees the end of its input and exits
+    /// cleanly, dropping its fake device (and with it the fake's lock file).
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
 
@@ -124,7 +126,7 @@ impl Session {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("start shurectl --qa");
-        let stdin = child.stdin.take().expect("stdin");
+        let stdin = Some(child.stdin.take().expect("stdin"));
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         Self {
             child,
@@ -134,8 +136,9 @@ impl Session {
     }
 
     fn send(&mut self, line: &str) -> Value {
-        writeln!(self.stdin, "{line}").expect("write to shurectl --qa");
-        self.stdin.flush().expect("flush");
+        let stdin = self.stdin.as_mut().expect("stdin open until drop");
+        writeln!(stdin, "{line}").expect("write to shurectl --qa");
+        stdin.flush().expect("flush");
         let mut reply = String::new();
         self.stdout
             .read_line(&mut reply)
@@ -146,6 +149,15 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        // Killed only if it doesn't exit by itself: a kill skips its cleanup.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

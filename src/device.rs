@@ -216,11 +216,16 @@ pub trait HidTransport {
     /// A new handle to the same device after it was unplugged and plugged back in.
     fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>>;
     /// The file whose lock keeps other shurectl processes off this device
-    /// while an exchange runs ([`ShureDevice::exclusive()`]), when another
-    /// process can reach it. The fake device in tests and `--qa` can't, and
-    /// never touches a lock file.
+    /// while an exchange runs ([`ShureDevice::exclusive()`]). `None` runs
+    /// without one. The fake device locks a temp file of its own, which its
+    /// `busy` fault holds as another shurectl would.
     fn lock_file(&self) -> Option<File> {
         None
+    }
+    /// How long [`ShureDevice::exclusive()`] and its label variant wait for
+    /// that lock: [`LOCK_WAIT`] and [`LABEL_LOCK_WAIT`] on a real device.
+    fn lock_waits(&self) -> (Duration, Duration) {
+        (LOCK_WAIT, LABEL_LOCK_WAIT)
     }
 }
 
@@ -367,14 +372,17 @@ pub struct ShureDevice {
     /// The lock other shurectl processes take for this device, shared with
     /// every guard on it.
     lock: Arc<DeviceLock>,
+    /// How long `exclusive()` and `exclusive_for_labels()` wait for it.
+    lock_waits: (Duration, Duration),
 }
 
 /// A device's lock, owned jointly by the device and its guards, so a guard
 /// can stay held while the device moves (the CLI holds one from a toggle's
 /// read through its write).
 struct DeviceLock {
-    /// This device's lock file ([`open_lock_file()`]), on a transport other
-    /// processes can reach; `None` for the fake, or when it can't be opened.
+    /// This device's lock file (`HidTransport::lock_file()`: [`open_lock_file()`]
+    /// on a real device, a temp file on the fake); `None` when the transport
+    /// has none or it can't be opened.
     file: Option<File>,
     /// How many [`Exclusive`] guards are alive: nested exchanges take the
     /// lock file once, the outermost one.
@@ -508,6 +516,7 @@ impl ShureDevice {
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
         let product = transport.product();
         let lock = DeviceLock::new(transport.lock_file());
+        let lock_waits = transport.lock_waits();
         Self {
             transport,
             model,
@@ -515,6 +524,7 @@ impl ShureDevice {
             serial_number,
             product,
             lock,
+            lock_waits,
         }
     }
 
@@ -526,7 +536,7 @@ impl ShureDevice {
     /// [`LOCK_WAIT`] ([`Busy`]). `main.rs` holds one around a preset load, so
     /// no other shurectl comes between its Gain Lock unlock and re-lock.
     pub fn exclusive(&self) -> Result<Exclusive> {
-        self.exclusive_within(LOCK_WAIT)
+        self.exclusive_within(self.lock_waits.0)
     }
 
     /// [`Self::exclusive()`] without the wait: [`Busy`] at once while another
@@ -539,7 +549,7 @@ impl ShureDevice {
     /// [`Self::exclusive()`] with a shorter wait, for reads that only label a
     /// device in a list (`--list`, the device picker): [`LABEL_LOCK_WAIT`].
     pub fn exclusive_for_labels(&self) -> Result<Exclusive> {
-        self.exclusive_within(LABEL_LOCK_WAIT)
+        self.exclusive_within(self.lock_waits.1)
     }
 
     fn exclusive_within(&self, wait: Duration) -> Result<Exclusive> {
@@ -799,7 +809,12 @@ impl ShureDevice {
 
     fn send_set(&self, set_packet: &[u8]) -> Result<()> {
         self.ensure_binary_protocol()?;
-        let _exclusive = self.exclusive()?;
+        let _exclusive = self.exclusive().inspect_err(|_| {
+            // Busy sent nothing: give back the sequence number `set_packet`
+            // took, so the next packet follows the last one sent. Whether a
+            // device minds a gap is unconfirmed; the fake refuses one.
+            self.seq.fetch_sub(1, Ordering::Relaxed);
+        })?;
         self.write(set_packet)?;
         let confirm = cmd_confirm(self.next_seq());
         self.write(&confirm)?;

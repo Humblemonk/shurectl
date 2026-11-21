@@ -14,8 +14,8 @@
 //! the MVX2U Gen 2. A packet with the wrong header byte for its command, or a
 //! sequence byte that doesn't follow the previous one on its handle, is refused.
 //! The MV7 runs `mv7_text::shell` instead. Faults (dropped or extra acks, failed
-//! I/O, refused commands, unplugging) give disconnect and readback-order tests
-//! something to bite on. Every packet received is logged, decoded by name.
+//! I/O, refused commands, unplugging, another shurectl holding the device's lock)
+//! give disconnect, busy and readback-order tests something to bite on. Every packet received is logged, decoded by name.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -493,7 +493,22 @@ struct FakeState {
     faults: Faults,
     /// Replies held back by `Faults::late_replies` or `queue_reply_to()`.
     held: Vec<Vec<u8>>,
+    /// The lock file every handle on this fake locks, as `device.rs` locks a
+    /// real device's, so the real lock code runs against the fake too.
+    lock_path: std::path::PathBuf,
+    /// Another shurectl holding the device (`FakeDevice::hold_elsewhere()`),
+    /// kept only for the lock it holds until dropped.
+    _held_elsewhere: Option<std::fs::File>,
 }
+
+impl Drop for FakeState {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+/// Names each fake's lock file apart within one process.
+static FAKE_LOCKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl FakeState {
     fn new(model: DeviceModel, seed: DeviceState) -> Self {
@@ -511,6 +526,12 @@ impl FakeState {
             rebooting_polls: 0,
             faults: Faults::default(),
             held: Vec::new(),
+            lock_path: std::env::temp_dir().join(format!(
+                "shurectl-fake-{}-{}.lock",
+                std::process::id(),
+                FAKE_LOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )),
+            _held_elsewhere: None,
         };
         state.load_seed();
         state
@@ -853,6 +874,30 @@ impl FakeDevice {
         ShureDevice::with_transport(self.model(), Box::new(FakeHid::new(&self.0, generation)))
     }
 
+    /// Hold the device as another shurectl would (`true`), or let it go: every
+    /// handle's lock waits, then fails with `device::Busy`, until released.
+    /// Errors only if the lock file can't be opened or locked.
+    pub fn hold_elsewhere(&self, held: bool) -> Result<()> {
+        let mut state = self.0.borrow_mut();
+        if held == state._held_elsewhere.is_some() {
+            return Ok(());
+        }
+        state._held_elsewhere = if held {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&state.lock_path)?;
+            file.try_lock()
+                .map_err(|e| anyhow!("Couldn't hold the fake's lock: {e}"))?;
+            Some(file)
+        } else {
+            None
+        };
+        Ok(())
+    }
+
     pub fn unplug(&self) {
         let mut state = self.0.borrow_mut();
         state.plugged = false;
@@ -1029,6 +1074,25 @@ impl HidTransport for FakeHid {
             return Ok(false);
         }
         Ok(state.plugged)
+    }
+
+    fn lock_file(&self) -> Option<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&self.state.borrow().lock_path)
+            .ok()
+    }
+
+    /// Milliseconds, not the real 5 s and 1 s: the harness and tests wait in
+    /// real time, and only that it gives up matters there.
+    fn lock_waits(&self) -> (std::time::Duration, std::time::Duration) {
+        (
+            std::time::Duration::from_millis(60),
+            std::time::Duration::from_millis(20),
+        )
     }
 
     fn reopen(&self, model: DeviceModel, _serial: &str) -> Result<Box<dyn HidTransport>> {

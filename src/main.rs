@@ -3367,7 +3367,7 @@ mod tests {
     /// A first readback that found another shurectl holding the device shows
     /// no control: Enter and arrows send nothing. Once the device is free the
     /// live poll reads everything, and so does `r` (which tries for a second,
-    /// not 5); the fake never locks, so both read at once here. Unplugged, the
+    /// not 5); the fake isn't held here, so both read at once. Unplugged, the
     /// screen no longer blames another shurectl.
     #[test]
     fn waiting_for_the_device_reads_it_once_free_and_offers_nothing_before() {

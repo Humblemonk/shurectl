@@ -441,6 +441,10 @@ impl Harness {
                         "extra_acks" => fake.faults_mut(|f| f.extra_acks = count),
                         "refuse" => fake.faults_mut(|f| f.refuse = count),
                         "refuse_writes" => fake.faults_mut(|f| f.refuse_writes = count),
+                        "busy" => match amount {
+                            Value::Bool(held) => fake.hold_elsewhere(*held)?,
+                            _ => bail!("\"busy\" takes true or false"),
+                        },
                         "refused_get" => {
                             let feature = match amount {
                                 Value::Null => None,

@@ -91,8 +91,10 @@ CRC-16/ANSI covers 0x11 up to the CRC
   `WriteLanded`, so a failure there never undoes the write. A readback holds one guard from
   its drain to its last GET. A new I/O path takes the guard too: `write()` and `read()`
   `debug_assert!` it, so the tests (debug builds) panic on one that doesn't. `reopen()`
-  asserts it runs under none. The fake never locks. Unconfirmed whether macOS and Windows
-  share reports
+  asserts it runs under none. The fake locks a temp file of its own, with waits of
+  milliseconds, and its `busy` fault (`FakeDevice::hold_elsewhere()`) holds it as another
+  shurectl would. A busy SET gives back the sequence number its packet took. Unconfirmed
+  whether macOS and Windows share reports
 - **Live poll per model** (the design is under Live poll in `AGENTS.md`): each value is one
   GET, kept only when `answers_at_its_address()`, or one text line on the MV7. The binary
   models drain queued input before each poll. While the other settings are unread the poll
@@ -103,10 +105,13 @@ CRC-16/ANSI covers 0x11 up to the CRC
   Playback Level GET (#99) isn't polled. A TUI write pushes the poll back a second because
   whether a device applies a write before acking it is unconfirmed; a gain or level step
   then polls first in its own turn (`read_before_step()`), so a device that applied a write
-  late would read as changed and drop the next step (unconfirmed either way). A step the
-  poll got no answer for isn't sent; on the MV7 the value is first read again for up to
-  500 ms (`reread_stepped()`), since its poll gives each line 200 ms, and a longer wait
-  would let a held arrow queue seconds of steps (unconfirmed whether that's enough). On the MVX2U
+  late would read as changed and drop the next step. On the MVX2U Gen 2 each read saw the
+  write before it: 30 back-to-back `--monitor-mix +1` runs about 100 ms apart, each reading
+  then writing, all landed, and 10 of 10 pairs of them started together added 2 (2026-11-21).
+  Unconfirmed for its gain, and on other models. A step the poll got no answer for isn't
+  sent; on the MV7 the value is first read again for up to 500 ms (`reread_stepped()`),
+  since its poll gives each line 200 ms, and a longer wait would let a held arrow queue
+  seconds of steps (unconfirmed whether that's enough). On the MVX2U
   Gen 2 a mute write is applied by the next read: `--mute on --json` read back muted in 20
   of 20 runs (2026-11-20). `--mute off --json` can't show this, since the CLI shows Muted
   only when the write and the readback both say so. A gain read above the model's maximum
