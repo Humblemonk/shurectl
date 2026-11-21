@@ -1,5 +1,5 @@
 {"scenario": "demo-starts-like-shurectl-demo", "models": "all", "modes": ["demo"]}
-{"expect": {"tab": "Main", "focus": "Mode", "status": "Demo mode (", "status_is_error": false, "state": {"mode": "Auto", "gain_tenths": 360, "muted": false}, "screen_contains": ["[DEMO — no device]", "S/N: Unknown"]}}
+{"expect": {"tab": "Main", "focus": "Mode", "status": "Demo mode — nothing is sent to a device.", "status_is_error": false, "state": {"mode": "Auto", "gain_tenths": 360, "muted": false}, "screen_contains": ["[DEMO — no device]", "S/N: Unknown"]}}
 {"key": "Enter"}
 {"expect": {"status": "Mode → Manual", "state": {"mode": "Manual"}}}
 {"key": "Tab"}

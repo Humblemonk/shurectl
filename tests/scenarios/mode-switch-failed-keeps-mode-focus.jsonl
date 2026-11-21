@@ -1,0 +1,9 @@
+{"scenario": "mode-switch-failed-keeps-mode-focus", "models": "all", "modes": ["fake"]}
+{"expect": {"focus": "Mode", "state": {"mode": "Manual"}}}
+{"device": {"fail_io": true}}
+{"key": "Enter"}
+{"expect": {"connected": false, "state": {"mode": "Manual"}, "focus": "Mode"}}
+{"device": {"fail_io": false}}
+{"tick": 4000}
+{"key": "Enter"}
+{"expect": {"status": "Mode → Auto Level", "state": {"muted": false, "mode": "Auto"}}}

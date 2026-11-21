@@ -14,8 +14,8 @@
 //! the MVX2U Gen 2. A packet with the wrong header byte for its command, or a
 //! sequence byte that doesn't follow the previous one on its handle, is refused.
 //! The MV7 runs `mv7_text::shell` instead. Faults (dropped or extra acks, failed
-//! I/O, refused commands, unplugging) give disconnect and readback-order tests
-//! something to bite on. Every packet received is logged, decoded by name.
+//! I/O, refused commands, unplugging, another shurectl holding the device's lock)
+//! give disconnect, busy and readback-order tests something to bite on. Every packet received is logged, decoded by name.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -112,9 +112,15 @@ pub struct Faults {
     pub fail_io: bool,
     /// Commands to answer with an unknown address (binary) or `[Failed]` (MV7).
     pub refuse: usize,
+    /// MV7 lines that change something to answer `[Failed]`, the reads
+    /// around them answered as usual (a TUI step reads the mic first).
+    pub refuse_writes: usize,
     /// Feature whose GETs are answered with an unknown address, as `refuse`
     /// does, until cleared.
     pub refused_get: Option<String>,
+    /// Binary GAIN GETs to answer with 100 dB, above every model's maximum,
+    /// as a stray or corrupt report might, before answering as usual.
+    pub bad_gain_replies: usize,
     /// Firmware version for FIRMWARE GETs to answer with, until cleared.
     pub firmware_version: Option<String>,
     /// GET replies to hold back until just before the next GET's, as a reply
@@ -487,7 +493,22 @@ struct FakeState {
     faults: Faults,
     /// Replies held back by `Faults::late_replies` or `queue_reply_to()`.
     held: Vec<Vec<u8>>,
+    /// The lock file every handle on this fake locks, as `device.rs` locks a
+    /// real device's, so the real lock code runs against the fake too.
+    lock_path: std::path::PathBuf,
+    /// Another shurectl holding the device (`FakeDevice::hold_elsewhere()`),
+    /// kept only for the lock it holds until dropped.
+    _held_elsewhere: Option<std::fs::File>,
 }
+
+impl Drop for FakeState {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+/// Names each fake's lock file apart within one process.
+static FAKE_LOCKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl FakeState {
     fn new(model: DeviceModel, seed: DeviceState) -> Self {
@@ -505,6 +526,12 @@ impl FakeState {
             rebooting_polls: 0,
             faults: Faults::default(),
             held: Vec::new(),
+            lock_path: std::env::temp_dir().join(format!(
+                "shurectl-fake-{}-{}.lock",
+                std::process::id(),
+                FAKE_LOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )),
+            _held_elsewhere: None,
         };
         state.load_seed();
         state
@@ -580,8 +607,12 @@ impl FakeState {
             });
             return;
         }
+        let is_write = line.contains(' ') && !line.starts_with("getBlock ");
         let reply = if self.faults.refuse > 0 {
             self.faults.refuse -= 1;
+            mv7_text::FAILED_REPLY.to_string()
+        } else if is_write && self.faults.refuse_writes > 0 {
+            self.faults.refuse_writes -= 1;
             mv7_text::FAILED_REPLY.to_string()
         } else {
             match &mut self.shell {
@@ -660,6 +691,10 @@ impl FakeState {
                 } else {
                     false
                 };
+                let bad_gain = feature == "GAIN" && self.faults.bad_gain_replies > 0;
+                if bad_gain {
+                    self.faults.bad_gain_replies -= 1;
+                }
                 let firmware_version = (feature == "FIRMWARE")
                     .then_some(self.faults.firmware_version.as_deref())
                     .flatten();
@@ -673,6 +708,13 @@ impl FakeState {
                         ..key
                     };
                     Some(fake_wire::reply(seq, unknown, &[0x00]))
+                } else if bad_gain {
+                    let too_high = DeviceState {
+                        gain_tenths: 1000,
+                        ..DeviceState::default()
+                    };
+                    self.feature(key)
+                        .map(|gain| fake_wire::reply(seq, key, &(gain.value)(&too_high)))
                 } else if let Some(version) = firmware_version {
                     Some(fake_wire::reply(seq, key, &fake_wire::lp_string(version)))
                 } else {
@@ -830,6 +872,30 @@ impl FakeDevice {
     pub fn open(&self) -> ShureDevice {
         let generation = self.0.borrow().generation;
         ShureDevice::with_transport(self.model(), Box::new(FakeHid::new(&self.0, generation)))
+    }
+
+    /// Hold the device as another shurectl would (`true`), or let it go: every
+    /// handle's lock waits, then fails with `device::Busy`, until released.
+    /// Errors only if the lock file can't be opened or locked.
+    pub fn hold_elsewhere(&self, held: bool) -> Result<()> {
+        let mut state = self.0.borrow_mut();
+        if held == state._held_elsewhere.is_some() {
+            return Ok(());
+        }
+        state._held_elsewhere = if held {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&state.lock_path)?;
+            file.try_lock()
+                .map_err(|e| anyhow!("Couldn't hold the fake's lock: {e}"))?;
+            Some(file)
+        } else {
+            None
+        };
+        Ok(())
     }
 
     pub fn unplug(&self) {
@@ -1010,6 +1076,25 @@ impl HidTransport for FakeHid {
         Ok(state.plugged)
     }
 
+    fn lock_file(&self) -> Option<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&self.state.borrow().lock_path)
+            .ok()
+    }
+
+    /// Milliseconds, not the real 5 s and 1 s: the harness and tests wait in
+    /// real time, and only that it gives up matters there.
+    fn lock_waits(&self) -> (std::time::Duration, std::time::Duration) {
+        (
+            std::time::Duration::from_millis(60),
+            std::time::Duration::from_millis(20),
+        )
+    }
+
     fn reopen(&self, model: DeviceModel, _serial: &str) -> Result<Box<dyn HidTransport>> {
         let state = self.state.borrow();
         if !state.plugged || state.rebooting_polls > 0 {
@@ -1123,14 +1208,14 @@ mod tests {
         for model in MODELS {
             let dev = FakeDevice::new(model).open();
             assert_eq!(
-                dev.read_factory_serial().as_deref(),
+                dev.read_factory_serial().ok().flatten().as_deref(),
                 Some("FAKE0001"),
                 "{model:?}"
             );
             let name = model
                 .has_device_rename()
                 .then(|| format!("Fake {}", model.display_name()));
-            assert_eq!(dev.read_device_name(), name, "{model:?}");
+            assert_eq!(dev.read_device_name().ok().flatten(), name, "{model:?}");
         }
     }
 
@@ -1320,6 +1405,38 @@ mod tests {
             fake.faults_mut(|faults| faults.refused_get = Some(feature.into()));
             let error = fake.open().get_state().err().expect("readback must fail");
             assert!(error.to_string().contains(label), "{model:?}: {error}");
+        }
+    }
+
+    /// One gain reply above the maximum is asked again, so a stray or corrupt
+    /// report costs one GET, not the whole readback. Two in a row still fail
+    /// it rather than show a gain the next step would jump to the maximum from.
+    #[test]
+    fn a_gain_above_the_maximum_is_asked_once_more() {
+        for model in [
+            DeviceModel::Mvx2u,
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv6Gen2,
+            DeviceModel::Mv7Plus,
+        ] {
+            let fake = FakeDevice::new(model);
+            fake.faults_mut(|faults| faults.bad_gain_replies = 1);
+            let readback = fake
+                .open()
+                .get_state()
+                .expect("one bad reply is asked again");
+            assert_eq!(readback.state.gain_tenths, 240, "{model:?}");
+            fake.faults_mut(|faults| faults.bad_gain_replies = 2);
+            let error = fake
+                .open()
+                .get_state()
+                .err()
+                .expect("two fail the readback");
+            assert!(
+                error.to_string().contains("above the"),
+                "{model:?}: {error}"
+            );
         }
     }
 

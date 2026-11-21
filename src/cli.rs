@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::app::{App, DeviceAction, Focus};
-use crate::device::ShureDevice;
+use crate::device::{Exclusive, ShureDevice};
 use crate::presets::{self, PresetSlot};
 use crate::protocol::{DeviceState, InputMode};
 
@@ -95,6 +95,15 @@ impl Request<'_> {
         self.json || self.preset.is_some() || self.writes_settings()
     }
 
+    /// Whether a write steps from the value read: `--mode toggle`, or a
+    /// relative `--gain`, `--monitor-mix` or `--playback-mix`.
+    fn steps_from_reading(&self) -> bool {
+        matches!(self.mode, Some(ModeChoice::Toggle))
+            || [&self.gain, &self.monitor_mix, &self.playback_mix]
+                .iter()
+                .any(|amount| matches!(amount, Some(Amount::By(_))))
+    }
+
     fn writes_settings(&self) -> bool {
         self.mode.is_some()
             || self.gain.is_some()
@@ -113,15 +122,15 @@ pub fn run(request: &Request) -> Result<()> {
     };
     if !request.json {
         let (preset, dev) = opened()?;
-        return execute(request, preset, dev, &mut |line| println!("{line}")).map(|_| ());
+        return execute(request, preset, dev, &mut |line| outln!("{line}")).map(|_| ());
     }
     let printed = opened()
         .and_then(|(preset, dev)| execute(request, preset, dev, &mut |_| {}))
         .and_then(|app| state_json(&app));
     match printed {
-        Ok(value) => println!("{value}"),
+        Ok(value) => outln!("{value}"),
         Err(e) => {
-            println!("{}", json!({ "error": format!("{e:#}") }));
+            outln!("{}", json!({ "error": format!("{e:#}") }));
             std::process::exit(1);
         }
     }
@@ -149,6 +158,23 @@ pub fn check(request: &Request) -> Result<()> {
     Ok(())
 }
 
+/// Print one line of a one-shot command's output. A reader that closed
+/// stdout early (`shurectl --list | head -1`, a wrapper that doesn't wait for
+/// the output) isn't this run's failure: the line is dropped, and the writes
+/// and the exit code still say what happened, where `println!` would panic.
+pub fn print_line(line: std::fmt::Arguments) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout().lock(), "{line}");
+}
+
+/// `println!` through [`print_line()`].
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        $crate::cli::print_line(format_args!($($arg)*))
+    };
+}
+pub(crate) use outln;
+
 /// Do what `request` asks, reporting each write's status line. Returns the
 /// app, whose state is what the device has after the writes.
 fn execute(
@@ -169,6 +195,10 @@ fn execute(
     if !request.combined()
         && let Some(action) = mute
     {
+        // A toggle holds one turn at the device from its read through its
+        // write, so two at once (a double press) can't both read the same
+        // state and leave the mic live.
+        let turn = toggle_turn(action, Some(&dev))?;
         let muted = match action {
             MuteAction::On => true,
             MuteAction::Off => false,
@@ -183,6 +213,9 @@ fn execute(
             }
         };
         let mut device = Some(dev);
+        // Printed once the turn is over, so a slow reader of stdout never
+        // keeps the device locked.
+        let mut said = Vec::new();
         write(
             &mut app,
             &mut device,
@@ -191,33 +224,177 @@ fn execute(
             |state| {
                 state.muted = muted;
             },
-            report,
+            &mut |line: &str| said.push(line.to_owned()),
         )?;
+        drop(turn);
+        said.iter().for_each(|line| report(line));
         return Ok(app);
     }
 
-    check_values(request, &app)?;
-    crate::reload_state(&mut app, &dev).context("Could not read device state")?;
-    check_writes(request, &app)?;
     let mut device = Some(dev);
+    let mut progress = Progress::new(request);
+    // Mute first, before even the other values are checked: it needs no
+    // readback (AGENTS.md, Mute), so a bad value, a failed readback or a
+    // refusal later never leaves the mic live. clap keeps --preset apart.
+    // As for mute alone: one turn from a toggle's read through its write.
+    let turn = match mute {
+        Some(action) => {
+            toggle_turn(action, device.as_ref()).map_err(|e| progress.fail(&["--mute"], e))?
+        }
+        None => None,
+    };
+    let mute_to = match mute {
+        Some(MuteAction::On) => Some(true),
+        Some(MuteAction::Off) => Some(false),
+        Some(MuteAction::Toggle) => match device.as_ref() {
+            Some(dev) => {
+                Some(!read_muted(&mut app, dev).map_err(|e| progress.fail(&["--mute"], e))?)
+            }
+            None => None,
+        },
+        // Refused above when combined; alone it returned already.
+        Some(MuteAction::Status) | None => None,
+    };
+    // Printed once the turns are over, as for mute alone.
+    let mut said = Vec::new();
+    if let Some(muted) = mute_to {
+        write_mute(&mut app, &mut device, muted, &mut |line: &str| {
+            said.push(line.to_owned())
+        })
+        .map_err(|e| progress.fail(&["--mute"], e))?;
+        progress.applied.push("--mute");
+        // A toggle whose mute read fell back to a full readback read before
+        // this write: read again after it, so Muted shows only when the
+        // device says so too (`write_settings()`).
+        app.state_unread = true;
+    }
+    // A --mode toggle or a relative step works from the readback, so it
+    // holds one turn at the device from that read through its last write, as
+    // --mute toggle does: two at once (a double press) can't both step from
+    // the same value. Taken before a toggle's turn ends (nested, it doesn't
+    // wait), so nothing comes between a toggle's read and the steps' readback.
+    let steps_turn = match device.as_ref() {
+        Some(dev) if request.steps_from_reading() => match dev.exclusive() {
+            Ok(steps_turn) => Some(steps_turn),
+            Err(e) => {
+                drop(turn);
+                said.iter().for_each(|line| report(line));
+                return Err(progress.fail(&[], e.context("Could not read device state")));
+            }
+        },
+        Some(_) | None => None,
+    };
+    drop(turn);
+    if steps_turn.is_none() {
+        said.drain(..).for_each(|line| report(&line));
+    }
+    let result = if steps_turn.is_some() {
+        write_settings(
+            request,
+            preset,
+            &mut app,
+            &mut device,
+            &mut progress,
+            mute_to,
+            &mut |line: &str| said.push(line.to_owned()),
+        )
+    } else {
+        write_settings(
+            request,
+            preset,
+            &mut app,
+            &mut device,
+            &mut progress,
+            mute_to,
+            report,
+        )
+    };
+    drop(steps_turn);
+    said.iter().for_each(|line| report(line));
+    result.map(|()| app)
+}
+
+/// Everything a combined run does after the mute: check the values, read
+/// the device, then load the preset and write mode, gain and the monitor
+/// levels in the TUI's focus order.
+fn write_settings(
+    request: &Request,
+    preset: Option<(usize, PresetSlot)>,
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    progress: &mut Progress,
+    mute_to: Option<bool>,
+    report: &mut dyn FnMut(&str),
+) -> Result<()> {
+    check_values(request, app).map_err(|e| progress.fail(&[], e))?;
+    // Read everything, after any mute: `execute()` marks the state unread
+    // once it is written, even if a toggle's fallback readback came first.
+    if let Some(dev) = device.as_ref()
+        && app.state_unread
+    {
+        crate::reload_state(app, dev)
+            .context("Could not read device state")
+            .map_err(|e| progress.fail(&[], e))?;
+    }
+    // The readback came straight after the mute's SET, and whether a device
+    // applies a write before acking it is unconfirmed (AGENTS.md, Live poll),
+    // so either the write or the readback may be stale. Muted shows only when
+    // both say so, never over a mic that may be live.
+    if let Some(muted) = mute_to {
+        app.device_state.muted &= muted;
+    }
+    check_writes(request, app).map_err(|e| progress.fail(&[], e))?;
     if let Some((index, slot)) = preset {
         app.presets[index] = Some(slot);
         let action = DeviceAction::LoadPreset(index);
-        write(&mut app, &mut device, "--preset", action, |_| {}, report)?;
+        write(app, device, "--preset", action, |_| {}, report)
+            .map_err(|e| progress.fail(&["--preset"], e))?;
+        progress.applied.push("--preset");
     }
-    // The TUI's focus order: mode, mute, gain, then the monitor levels.
+    // The TUI's focus order after mute: mode, gain, then the monitor levels.
     if let Some(choice) = request.mode {
         let switched_from = app.device_state.mode;
         let mode = mode_after(choice, switched_from);
         let action = DeviceAction::SetMode(mode);
-        write(
-            &mut app,
-            &mut device,
+        if let Err(e) = write(
+            app,
+            device,
             "--mode",
             action,
             |state| state.mode = mode,
             report,
-        )?;
+        ) {
+            // Only a read shows the new mode here: recovery puts the old one
+            // back for a switch that didn't land (Disconnected, Rejected,
+            // Busy). So the switch landed, its own re-read failed
+            // (`resync_after_mode()`), and recovery's re-read worked. If that
+            // shows the mute undone, send it again, as after a switch that
+            // went through.
+            let switched_and_read =
+                app.device_connected && !app.state_unread && app.device_state.mode != switched_from;
+            if let Some(muted) = mute_to
+                && switched_and_read
+                && app.device_state.muted != muted
+            {
+                progress.applied.retain(|flag| *flag != "--mute");
+                if let Err(mute_err) = write_mute(app, device, muted, report) {
+                    let e = format!("{e:#}");
+                    let both = anyhow!(
+                        "{}. Sending --mute again failed: {mute_err:#}",
+                        e.trim_end_matches('.')
+                    );
+                    return Err(progress.fail(&["--mode", "--mute"], both));
+                }
+                progress.applied.insert(0, "--mute");
+                progress.mute_resent = true;
+            }
+            // Unread, a switch that landed shows the new mode, and the mute
+            // sent before it wasn't read after it. Refused or busy, it shows
+            // the old mode and nothing switched.
+            progress.mute_unchecked =
+                mute_to.is_some() && app.state_unread && app.device_state.mode != switched_from;
+            return Err(progress.fail(&["--mode"], e));
+        }
         // Whether every model keeps its gain across the switch is unconfirmed,
         // so read the device again before a gain step or the JSON uses it. The
         // MV7, and the MVX2U Gen 1 and MV6 switching to Manual, are read twice,
@@ -227,77 +404,189 @@ fn execute(
         if mode != switched_from
             && let Some(dev) = device.as_ref()
         {
-            // Say the switch landed, so a script doesn't take the error as
-            // "nothing changed" and toggle again.
-            crate::reload_state(&mut app, dev).with_context(|| {
-                format!("The mode was switched to {mode}, but the read after the switch failed")
-            })?;
+            // Until the re-read shows it, a mute sent before the switch is
+            // unchecked after it.
+            progress.mute_unchecked = mute_to.is_some();
+            crate::reload_state(app, dev)
+                .with_context(|| crate::mode_switched_note(mode))
+                .map_err(|e| progress.fail(&["--mode"], e))?;
+            progress.mute_unchecked = false;
         }
-    }
-    let mute_to = mute.and_then(|action| match action {
-        MuteAction::On => Some(true),
-        MuteAction::Off => Some(false),
-        MuteAction::Toggle => Some(!app.device_state.muted),
-        // Refused above when combined; alone it returned already.
-        MuteAction::Status => None,
-    });
-    if let Some(muted) = mute_to {
-        let action = DeviceAction::SetMute(muted);
-        write(
-            &mut app,
-            &mut device,
-            "--mute",
-            action,
-            |state| state.muted = muted,
-            report,
-        )?;
+        progress.applied.push("--mode");
+        // The mute went before the switch. Whether a mode switch can change
+        // mute is unconfirmed on every model (the MV7's resets EQ and
+        // compressor), so if the re-read shows it did, send it again. With no
+        // switch, a readback that lags the mute's SET isn't a reason to.
+        if let Some(muted) = mute_to
+            && mode != switched_from
+            && app.device_state.muted != muted
+        {
+            // Not applied any more, so a failure here doesn't say it was.
+            progress.applied.retain(|flag| *flag != "--mute");
+            write_mute(app, device, muted, report).map_err(|e| progress.fail(&["--mute"], e))?;
+            progress.applied.insert(0, "--mute");
+        }
     }
     if let Some(amount) = request.gain {
         let tenths = match amount {
-            Amount::To(db) => absolute_gain(&app, db)?,
-            Amount::By(presses) => pressed(&app, Focus::Gain, presses).gain_tenths,
+            Amount::To(db) => absolute_gain(app, db)?,
+            Amount::By(presses) => pressed(app, Focus::Gain, presses).gain_tenths,
         };
         let action = DeviceAction::SetGain(tenths);
         write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--gain",
             action,
             |state| state.gain_tenths = tenths,
             report,
-        )?;
+        )
+        .map_err(|e| progress.fail(&["--gain"], e))?;
+        progress.applied.push("--gain");
     }
     if let Some(amount) = request.monitor_mix {
         let mix = match amount {
             Amount::To(value) => absolute_level("--monitor-mix", value)?,
-            Amount::By(presses) => pressed(&app, Focus::MonitorMix, presses).monitor_mix,
+            Amount::By(presses) => pressed(app, Focus::MonitorMix, presses).monitor_mix,
         };
         let action = DeviceAction::SetMonitorMix(mix);
         write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--monitor-mix",
             action,
             |state| state.monitor_mix = mix,
             report,
-        )?;
+        )
+        .map_err(|e| progress.fail(&["--monitor-mix"], e))?;
+        progress.applied.push("--monitor-mix");
     }
     if let Some(amount) = request.playback_mix {
         let mix = match amount {
             Amount::To(value) => absolute_level("--playback-mix", value)?,
-            Amount::By(presses) => pressed(&app, Focus::PlaybackMix, presses).playback_mix,
+            Amount::By(presses) => pressed(app, Focus::PlaybackMix, presses).playback_mix,
         };
         let action = DeviceAction::SetMv7PlaybackMix(mix);
         write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--playback-mix",
             action,
             |state| state.playback_mix = mix,
             report,
-        )?;
+        )
+        .map_err(|e| progress.fail(&["--playback-mix"], e))?;
+        progress.applied.push("--playback-mix");
     }
-    Ok(app)
+    Ok(())
+}
+
+/// For `--mute toggle`, the device's lock, held until the caller drops it:
+/// its nested reads and writes don't wait or lock again. `None` for the other
+/// mute actions, whose one exchange takes its own turn.
+fn toggle_turn(action: MuteAction, dev: Option<&ShureDevice>) -> Result<Option<Exclusive>> {
+    match (action, dev) {
+        (MuteAction::Toggle, Some(dev)) => Ok(Some(
+            dev.exclusive().context("Could not read the mute state")?,
+        )),
+        (MuteAction::Toggle, None) | (MuteAction::On | MuteAction::Off | MuteAction::Status, _) => {
+            Ok(None)
+        }
+    }
+}
+
+/// Send `--mute`'s value, as the TUI's Mute control does.
+fn write_mute(
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    muted: bool,
+    report: &mut dyn FnMut(&str),
+) -> Result<()> {
+    write(
+        app,
+        device,
+        "--mute",
+        DeviceAction::SetMute(muted),
+        |state| state.muted = muted,
+        report,
+    )
+}
+
+/// The writing flags of one run, in the order they are written, and those
+/// written so far, so an error partway through says what landed and what
+/// wasn't sent.
+struct Progress {
+    requested: Vec<&'static str>,
+    applied: Vec<&'static str>,
+    /// A `--mute` sent before a mode switch whose re-read hasn't shown it.
+    mute_unchecked: bool,
+    /// A `--mute` sent again after a failed mode switch had undone it.
+    mute_resent: bool,
+}
+
+impl Progress {
+    fn new(request: &Request) -> Self {
+        let requested = [
+            ("--mute", request.mute.is_some()),
+            ("--preset", request.preset.is_some()),
+            ("--mode", request.mode.is_some()),
+            ("--gain", request.gain.is_some()),
+            ("--monitor-mix", request.monitor_mix.is_some()),
+            ("--playback-mix", request.playback_mix.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, asked)| asked.then_some(flag))
+        .collect();
+        Self {
+            requested,
+            applied: Vec::new(),
+            mute_unchecked: false,
+            mute_resent: false,
+        }
+    }
+
+    /// `e`, then what was applied before it and which flags weren't sent.
+    /// `failed` are the flags whose steps failed (none for a check or the
+    /// readback): their own message says how far they got (a mode switch
+    /// whose re-read failed did switch). The result is
+    /// a plain message, without `e`'s types (`Busy`, `Disconnected`): a
+    /// one-shot run only prints it, and nothing downcasts it.
+    fn fail(&self, failed: &[&str], e: anyhow::Error) -> anyhow::Error {
+        let not_sent: Vec<&str> = self
+            .requested
+            .iter()
+            .copied()
+            .filter(|flag| !self.applied.contains(flag) && !failed.contains(flag))
+            .collect();
+        // Nothing landed and no step ran (a bad value, a failed readback):
+        // the error alone says the run changed nothing.
+        if self.applied.is_empty() && (failed.is_empty() || not_sent.is_empty()) {
+            return e;
+        }
+        let mut message = format!("{e:#}");
+        if !message.ends_with('.') {
+            message.push('.');
+        }
+        let applied: Vec<&str> = self
+            .applied
+            .iter()
+            .filter(|&&flag| !(flag == "--mute" && self.mute_resent))
+            .map(|&flag| match flag {
+                "--mute" if self.mute_unchecked => "--mute (not checked after the mode switch)",
+                flag => flag,
+            })
+            .collect();
+        if !applied.is_empty() {
+            message.push_str(&format!(" Applied before it: {}.", applied.join(", ")));
+        }
+        if self.mute_resent {
+            message.push_str(" --mute was sent again after it.");
+        }
+        if !not_sent.is_empty() {
+            message.push_str(&format!(" Not sent: {}.", not_sent.join(", ")));
+        }
+        anyhow!(message)
+    }
 }
 
 /// Open the device `--device` names, or the only one plugged in.
@@ -337,14 +626,10 @@ fn write(
     report: &mut dyn FnMut(&str),
 ) -> Result<()> {
     if !app.offers(&action) {
-        // check_writes() passed the run on the first readback (mute alone,
-        // which skips it, is always offered), so only a re-read after --mode
-        // gets here, with any earlier flags written.
-        bail!(
-            "{} The changes before it, in the order mode, mute, gain, monitor \
-             levels, were applied.",
-            refusal(app, flag, &action)
-        );
+        // check_writes() passed the run on the first readback (mute, which
+        // goes before it, is always offered), so only a re-read after --mode
+        // gets here, with any earlier flags written; execute() says which.
+        bail!("{}", refusal(app, flag, &action));
     }
     let is_mute = matches!(action, DeviceAction::SetMute(_));
     let before = app.device_state.clone();
@@ -382,6 +667,12 @@ fn without_tui_hints(status: &str) -> String {
             crate::STATE_UNREAD_HINT,
             "The device's settings couldn't be read back.",
         )
+        .replace(&format!(", {}", crate::BUSY_MUTE_OFF), "")
+        .replace(
+            crate::BUSY_HINT,
+            "Try again once the other shurectl is done.",
+        )
+        .replace(crate::LANDED_HINT, ".")
         .replace(crate::MUTE_UNKNOWN_NOTE, "The mute state is unknown.")
         .replace(crate::RECONNECT_HINT, "the device disconnected.")
         .replace(crate::READ_BACK_NOTE, "The device was read back.")
@@ -411,13 +702,15 @@ fn check_values(request: &Request, app: &App) -> Result<()> {
     Ok(())
 }
 
-/// Refuse the whole run before its first write if the TUI would refuse any
-/// part of it: replay the writes in order on a copy of the state just read,
-/// asking `offers()` before each, as `write()` will. So `--mode toggle --gain
-/// 30` from Manual, or anything with `--gain` under Gain Lock, changes nothing.
-/// The exception is the re-read after a `--mode` switch: if it changes what
-/// `offers()` allows (the MV6's Playback Level going unread), `write()` refuses
-/// a later flag after the earlier ones were written, and says so.
+/// Refuse the run before its first write after mute if the TUI would refuse
+/// any part of it: replay the writes in order on a copy of the state just
+/// read, asking `offers()` before each, as `write()` will. So `--mode toggle
+/// --gain 30` from Manual, or anything with `--gain` under Gain Lock, changes
+/// nothing but a `--mute`, which went first so a refusal never leaves the mic
+/// live. The exception is the re-read after a `--mode` switch: if it changes
+/// what `offers()` allows (the MV6's Playback Level going unread), `write()`
+/// refuses a later flag after the earlier ones were written, and the error
+/// says which (`Progress`).
 fn check_writes(request: &Request, app: &App) -> Result<()> {
     // A copy for the replay to change.
     let mut planned = app.scratch();
@@ -430,12 +723,8 @@ fn check_writes(request: &Request, app: &App) -> Result<()> {
         planned.device_state.mode = mode;
     }
     // The values don't matter to offers(), only which control sends them.
+    // --mute went before the readback, and is always offered.
     let writes = [
-        (
-            request.mute.is_some(),
-            "--mute",
-            DeviceAction::SetMute(true),
-        ),
         (request.gain.is_some(), "--gain", DeviceAction::SetGain(0)),
         (
             request.monitor_mix.is_some(),
@@ -592,6 +881,66 @@ mod tests {
         (result, lines, fake.log_since(start))
     }
 
+    /// How many turns at the device `request` takes on `model`'s fake.
+    fn turns_for(model: DeviceModel, request: &Request) -> usize {
+        let dev = FakeDevice::new(model).open();
+        let turns = dev.turns();
+        check(request)
+            .and_then(|()| execute(request, None, dev, &mut |_| {}))
+            .expect("run");
+        turns()
+    }
+
+    /// A toggle reads and writes in one turn at the device, so a second
+    /// toggle (a double press) can't read between them and unmute too.
+    /// With a relative step the steps' turn starts inside the toggle's, so
+    /// nothing comes between them either: one turn in all.
+    #[test]
+    fn a_toggle_reads_and_writes_in_one_turn() {
+        for model in MODELS {
+            assert_eq!(turns_for(model, &mute(MuteAction::Toggle)), 1, "{model:?}");
+            let with_gain = |action| Request {
+                mute: Some(action),
+                gain: Some(Amount::By(1)),
+                ..Request::default()
+            };
+            assert_eq!(
+                turns_for(model, &with_gain(MuteAction::Toggle)),
+                1,
+                "{model:?}"
+            );
+            // A fixed mute goes first in a turn of its own.
+            assert_eq!(turns_for(model, &with_gain(MuteAction::On)), 2, "{model:?}");
+        }
+    }
+
+    /// A step from the value read (`--mode toggle`, a relative level) reads
+    /// and writes in one turn, so a second run (a double press) can't read
+    /// between them and step from the same value.
+    #[test]
+    fn a_step_from_the_reading_reads_and_writes_in_one_turn() {
+        for model in MODELS {
+            let requests = [
+                Request {
+                    gain: Some(Amount::By(1)),
+                    ..Request::default()
+                },
+                Request {
+                    mode: Some(ModeChoice::Toggle),
+                    ..Request::default()
+                },
+                Request {
+                    monitor_mix: Some(Amount::By(-1)),
+                    gain: Some(Amount::By(1)),
+                    ..Request::default()
+                },
+            ];
+            for request in &requests {
+                assert_eq!(turns_for(model, request), 1, "{model:?} {request:?}");
+            }
+        }
+    }
+
     /// Whether an MV7 line reads: a name alone (`micMute`) or `getBlock N`.
     fn reads_text(line: &str) -> bool {
         !line.contains(' ') || line.starts_with("getBlock ")
@@ -619,6 +968,20 @@ mod tests {
                 PacketKind::Get { .. } | PacketKind::Confirm | PacketKind::Refused { .. } => false,
             })
             .count()
+    }
+
+    /// Whether `packets` set mute to `muted` and the device took it.
+    fn sent_mute(packets: &[Packet], muted: bool) -> bool {
+        let line = format!("micMute {}", if muted { "on" } else { "off" });
+        packets.iter().any(|packet| match &packet.kind {
+            PacketKind::Set {
+                feature,
+                value,
+                applied,
+            } => feature == "MUTE" && *value == json!(muted) && *applied,
+            PacketKind::Text { line: sent, .. } => *sent == line,
+            PacketKind::Get { .. } | PacketKind::Confirm | PacketKind::Refused { .. } => false,
+        })
     }
 
     fn mute(action: MuteAction) -> Request<'static> {
@@ -917,8 +1280,9 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_known_from_the_readback_sends_nothing() {
-        // Gain Lock is read before any write: the mute doesn't go out either.
+    fn a_refusal_known_from_the_readback_sends_only_the_mute() {
+        // Gain Lock is read before any other write. The mute went first, as
+        // refusing it would leave the mic live, and the error says so.
         let locked = DeviceState {
             mv6_gain_locked: true,
             ..FakeDevice::seed_state(DeviceModel::Mv6Gen2)
@@ -930,9 +1294,15 @@ mod tests {
             ..Request::default()
         };
         let (result, lines, packets) = run_on(&fake, &request);
-        assert!(error_of(result).contains("Gain Lock"));
-        assert!(lines.is_empty(), "{lines:?}");
-        assert_eq!(writes(&packets), 0);
+        let err = error_of(result);
+        assert!(err.contains("Gain Lock"), "{err}");
+        assert!(
+            err.ends_with("Applied before it: --mute. Not sent: --gain."),
+            "{err}"
+        );
+        assert_eq!(lines, ["Mute → ON"]);
+        assert_eq!(writes(&packets), 1);
+        assert!(sent_mute(&packets, true));
 
         // From Manual, toggling to Auto would leave no gain to set.
         for mode in [ModeChoice::Toggle, ModeChoice::Auto] {
@@ -1012,10 +1382,18 @@ mod tests {
             without_tui_hints(&gone),
             "Device error: gone — the device disconnected."
         );
-        for message in [unread, mute, gone] {
+        let busy = crate::busy_status(&format!("not sent, {}", crate::BUSY_MUTE_OFF));
+        assert_eq!(
+            without_tui_hints(&busy),
+            format!(
+                "{}: not sent. Try again once the other shurectl is done.",
+                crate::device::Busy
+            )
+        );
+        for message in [unread, mute, gone, busy] {
             let plain = without_tui_hints(&message);
             assert!(
-                !plain.contains("press r") && !plain.contains("shown as OFF"),
+                !plain.to_lowercase().contains("press r") && !plain.contains("shown"),
                 "{plain}"
             );
         }
@@ -1143,6 +1521,112 @@ mod tests {
             err.contains("didn't answer the Playback Level read"),
             "{err}"
         );
-        assert!(err.ends_with("were applied."), "{err}");
+    }
+
+    /// An error partway through a run says what landed and what wasn't sent;
+    /// the failing flag's own message says how far it got.
+    #[test]
+    fn a_failure_partway_names_what_landed_and_what_was_not_sent() {
+        let request = Request {
+            mute: Some(MuteAction::On),
+            mode: Some(ModeChoice::Toggle),
+            gain: Some(Amount::By(1)),
+            playback_mix: Some(Amount::To(40.0)),
+            ..Request::default()
+        };
+        let mut progress = Progress::new(&request);
+        progress.applied.extend(["--mute", "--mode"]);
+        let err = progress.fail(&["--gain"], anyhow!("Device error: no reply"));
+        assert_eq!(
+            err.to_string(),
+            "Device error: no reply. Applied before it: --mute, --mode. Not sent: --playback-mix."
+        );
+        // A mute sent again after a failed switch: both steps failed.
+        let resent = Progress::new(&request);
+        let err = resent.fail(&["--mode", "--mute"], anyhow!("Device error: no reply"));
+        assert_eq!(
+            err.to_string(),
+            "Device error: no reply. Not sent: --gain, --playback-mix."
+        );
+        // A mute sent again after the failed switch went after it.
+        let mut resent = Progress::new(&request);
+        resent.applied.push("--mute");
+        resent.mute_resent = true;
+        let err = resent.fail(&["--mode"], anyhow!("Device error: no reply"));
+        assert_eq!(
+            err.to_string(),
+            "Device error: no reply. --mute was sent again after it. \
+             Not sent: --gain, --playback-mix."
+        );
+        let alone = Progress::new(&mute(MuteAction::On));
+        let err = alone.fail(&["--mute"], anyhow!("Device error: no reply"));
+        assert_eq!(err.to_string(), "Device error: no reply");
+    }
+
+    /// A value out of range next to `--mute` is refused after the mute went
+    /// out, never instead of it.
+    #[test]
+    fn a_bad_value_beside_mute_still_mutes() {
+        let fake = FakeDevice::new(DeviceModel::Mv7Plus);
+        let request = Request {
+            mute: Some(MuteAction::On),
+            gain: Some(Amount::To(99.0)),
+            ..Request::default()
+        };
+        let (result, lines, packets) = run_on(&fake, &request);
+        let err = error_of(result);
+        assert!(
+            err.ends_with("Applied before it: --mute. Not sent: --gain."),
+            "{err}"
+        );
+        assert_eq!(lines, ["Mute → ON"]);
+        assert!(sent_mute(&packets, true));
+        assert_eq!(writes(&packets), 1);
+    }
+
+    /// A failed readback never keeps a `--mute` combined with other flags
+    /// from going out: it is a fixed write and goes first (AGENTS.md, Mute).
+    #[test]
+    fn a_combined_mute_is_sent_when_the_readback_fails() {
+        for (action, muted) in [(MuteAction::On, true), (MuteAction::Off, false)] {
+            for model in MODELS {
+                let start = DeviceState {
+                    muted: !muted,
+                    ..FakeDevice::seed_state(model)
+                };
+                let fake = FakeDevice::with_state(model, start);
+                let feature = match model {
+                    DeviceModel::Mv7 => {
+                        fake.faults_mut(|faults| faults.unanswered_line = Some("inputGain".into()));
+                        "inputGain"
+                    }
+                    DeviceModel::Mvx2u
+                    | DeviceModel::Mvx2uGen2
+                    | DeviceModel::Mv6
+                    | DeviceModel::Mv6Gen2
+                    | DeviceModel::Mv7Plus => {
+                        fake.faults_mut(|faults| faults.refused_get = Some("GAIN".into()));
+                        "GAIN"
+                    }
+                };
+                let request = Request {
+                    mute: Some(action),
+                    gain: Some(Amount::To(30.0)),
+                    ..Request::default()
+                };
+                let (result, lines, packets) = run_on(&fake, &request);
+                let err = error_of(result);
+                assert!(
+                    err.contains("Could not read device state"),
+                    "{model:?}: {err}"
+                );
+                assert!(
+                    err.ends_with("Applied before it: --mute. Not sent: --gain."),
+                    "{model:?} ({feature} unanswered): {err}"
+                );
+                assert_eq!(lines.len(), 1, "{model:?}: {lines:?}");
+                assert!(sent_mute(&packets, muted), "{model:?}: {packets:?}");
+            }
+        }
     }
 }

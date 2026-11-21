@@ -1,0 +1,17 @@
+{"scenario": "reconnect-failed-read-shows-mute-only", "models": "all", "modes": ["fake"]}
+{"key": "Down"}
+{"key": "Enter"}
+{"expect": {"state": {"muted": true}}}
+{"device": "unplug"}
+{"tick": 2000}
+{"device": {"muted": false, "gain_tenths": 120}}
+{"device": "replug"}
+{"tick": 2000}
+{"device": {"refuse": 100}}
+{"tick": 2000}
+{"expect": {"connected": true, "status_is_error": true, "status": "Press r to retry", "focus": "Mute", "tab": "Main", "state": {"muted": false}, "screen_contains": "Settings not read from the device yet", "screen_not_contains": "24 dB"}}
+{"tick": 5000}
+{"expect": {"state": {"muted": false}, "screen_contains": "○ OFF", "screen_not_contains": "● ON"}}
+{"device": {"refuse": 0}}
+{"key": "r"}
+{"expect": {"status": "State refreshed", "state": {"muted": false, "gain_tenths": 120}, "screen_not_contains": "Settings not read"}}

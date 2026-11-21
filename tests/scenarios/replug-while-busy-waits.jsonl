@@ -1,0 +1,16 @@
+{"scenario": "replug-while-busy-waits", "models": "all", "modes": ["fake"]}
+{"device": "unplug"}
+{"tick": 2000}
+{"expect": {"connected": false}}
+{"device": {"busy": true}}
+{"device": "replug"}
+{"tick": 2000}
+{"tick": 2000}
+{"expect": {"connected": true, "status": "Another shurectl has the device", "screen_contains": "Another shurectl is using the device", "screen_not_contains": "Mute:"}}
+{"key": "Enter"}
+{"expect": {"no_packets": true, "screen_not_contains": "Mute:"}}
+{"key": "r"}
+{"expect": {"status": "Another shurectl has the device", "no_packets": true}}
+{"device": {"busy": false}}
+{"tick": 1100}
+{"expect": {"status": "state loaded", "screen_not_contains": "Another shurectl is using the device", "screen_contains": "24 dB"}}

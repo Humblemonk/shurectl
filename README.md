@@ -134,8 +134,7 @@ shurectl --mode manual --gain 24 --json  # Several changes, then the JSON
 A change the TUI wouldn't make right now, such as gain in Auto Level mode, is refused with the
 reason, and a failure exits with status 1 (`--json` prints `{"error": "..."}`). With two mics,
 pick one by the serial `--list` shows: `--device 3EK26001276`. If the TUI is open, press `r`
-there after loading a preset from the command line, and avoid running commands while
-recording, since both then talk to the device at once. `shurectl --help` explains each option.
+there after loading a preset from the command line. `shurectl --help` explains each option.
 
 ## Troubleshooting
 
@@ -149,7 +148,7 @@ shurectl with `--device`.
 
 **"Couldn't read a setting" in the status bar** — the device didn't answer a query, or
 answered with a setting shurectl doesn't know, often after a firmware update. shurectl
-sends no changes until a full read succeeds; press `r` to retry. If it keeps happening,
+sends no changes except mute until a full read succeeds; press `r` to retry. If it keeps happening,
 please open an issue with the message and your firmware version.
 
 **No gain slider in Auto Level mode** — This is correct hardware behaviour; the device
@@ -187,7 +186,7 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Config Lock | ✓ | — | — | — | ✓ | — |
 | Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
 | Auto Tone (Dark / Natural / Bright) | Auto | — | — | — | Auto | — |
-| Target Level (Low / Med / High) | Auto | — | — | Auto | — | — |
+| Auto Level loudness | Auto: Quiet / Normal / Loud | — | — | Auto: Low / Med / High | — | — |
 | Adaptation Rate (Slow / Fast) | — | — | — | Auto | — | — |
 | Mic Preset (Speech / Singing / Instrument) | — | — | — | ✓ | — | — |
 | **EQ tab** | | | | | | |

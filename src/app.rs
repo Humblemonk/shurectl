@@ -174,6 +174,16 @@ pub struct App {
     /// never read (defaults), or a failed write or reconnect left them unknown.
     /// Writes based on it are refused until a refresh reads the device.
     pub state_unread: bool,
+    /// The settings were never read on this connection: the first readback
+    /// failed, so `device_state` holds defaults that were never the mic's.
+    /// Until a readback works the content area shows a notice instead
+    /// (`ui.rs::draw_never_read()`), with Mute unless `waiting_for_device`,
+    /// and the other tabs are locked.
+    pub settings_never_read: bool,
+    /// The first readback found another shurectl holding the device: no
+    /// control shows (not even Mute, which couldn't be sent either), and the
+    /// live poll reads the settings the moment the device is free.
+    pub waiting_for_device: bool,
     /// The optional GETs the last readback got no usable answer to, such as
     /// the MV6's unconfirmed Playback Level (#99): their fields hold defaults.
     pub unread_gets: Vec<Vec<u8>>,
@@ -182,6 +192,9 @@ pub struct App {
     pub device_model: DeviceModel,
     /// Loaded preset slots. `None` means the slot file does not exist yet.
     pub presets: [Option<PresetSlot>; PRESET_COUNT],
+    /// Slots whose file couldn't be read at startup: shown as such, and `s`
+    /// refuses to save over them until `d` deletes the file.
+    pub preset_unreadable: [bool; PRESET_COUNT],
     /// Set to `true` while the user is typing a new name for a preset slot.
     pub editing_preset_name: bool,
     /// Which slot index is being edited (valid when `editing_preset_name` is true).
@@ -190,6 +203,15 @@ pub struct App {
     pub editing_device_name: bool,
     /// Uncommitted preset or device name; nothing changes until Enter.
     pub name_draft: String,
+    /// The name a preset rename replaced, put back if saving the new one fails.
+    pub preset_name_before: Option<String>,
+    /// A prompt or name edit a failed reconnect closed (`main.rs::mark_never_read()`):
+    /// a Factory Reset or preset load prompt, or a rename. Keys still meant
+    /// for it must not act on the Mute-only screen: Enter would toggle Mute,
+    /// unmuting a muted mic, and a `q` in a name would quit. Enter, Space or
+    /// Esc ends it, saying nothing was sent; other typing is ignored, saying
+    /// so. Any other key, a click or a readback that works also ends it.
+    pub input_cut_short: bool,
     /// Set to `true` after the user first presses Enter on the factory reset button.
     /// A second Enter fires the action; any other key cancels.
     pub confirming_factory_reset: bool,
@@ -239,10 +261,15 @@ impl Default for App {
             demo_mode: false,
             device_connected: true,
             state_unread: false,
+            settings_never_read: false,
+            waiting_for_device: false,
             unread_gets: Vec::new(),
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
+            preset_unreadable: [false; PRESET_COUNT],
+            input_cut_short: false,
+            preset_name_before: None,
             editing_preset_name: false,
             editing_preset_index: 0,
             editing_device_name: false,
@@ -410,19 +437,27 @@ impl App {
             self.set_ok("Gain check cancelled.");
         } else if self.demo_mode {
             self.set_err("Gain check needs a device: demo mode has no level meter.");
-        } else if self.device_state.mode != InputMode::Manual {
-            self.set_err(GAIN_CHECK_AUTO);
         } else if !self.device_connected {
             self.set_err("Gain check needs the device connected.");
         } else if self.state_unread {
-            self.set_err(STATE_UNREAD_HINT);
+            // Before the mode: unread, the mode shown may be a default.
+            self.set_err(if self.is_waiting_for_device() {
+                WAITING_FOR_DEVICE
+            } else {
+                STATE_UNREAD_HINT
+            });
+        } else if self.device_state.mode != InputMode::Manual {
+            self.set_err(GAIN_CHECK_AUTO);
         } else if self.meter_unavailable {
             self.set_err("Gain check needs the level meter, which couldn't start.");
         } else if self.device_state.muted {
             self.set_err("Gain check needs the mic unmuted.");
         } else {
+            // `None` only before the meter's first start: no warning then.
+            let own_input = !matches!(self.meter_input, Some(MeterInput::Default));
             self.gain_check = Some(GainCheck::Listening(Listening::new(
                 self.device_state.gain_tenths,
+                own_input,
             )));
         }
     }
@@ -467,6 +502,7 @@ impl App {
         {
             self.gain_check = Some(GainCheck::Listening(Listening::new(
                 self.device_state.gain_tenths,
+                listening.own_input,
             )));
         }
         let peak = self
@@ -551,8 +587,21 @@ impl App {
             Tab::Eq | Tab::Dynamics => true,
             Tab::Main | Tab::Reverb | Tab::Led | Tab::Presets | Tab::Info => false,
         };
+        // Never read, only Main has anything true to show (its Mute).
+        let needs_settings = match tab {
+            Tab::Main => false,
+            Tab::Eq | Tab::Dynamics | Tab::Reverb | Tab::Led | Tab::Presets | Tab::Info => true,
+        };
         self.is_tab_hidden(tab)
             || (auto_managed && locked_in_auto && self.device_state.mode == InputMode::Auto)
+            || (needs_settings && self.settings_never_read)
+    }
+
+    /// Whether the screen waits for another shurectl (`waiting_for_device`).
+    /// Not once the device is unplugged: that, not the other shurectl, is
+    /// then why nothing is read, and a replug reads it or waits again.
+    pub fn is_waiting_for_device(&self) -> bool {
+        self.waiting_for_device && self.device_connected
     }
 
     /// Select a visible, available tab (shared by keyboard and mouse navigation).
@@ -691,6 +740,11 @@ impl App {
     // MV7+ EQ: Tone. MV7+ Dynamics: Limiter → Compressor → Denoiser → PopperStopper
     //   → MuteBtnDisable → Hpf → (wrap). Reverb and LED tabs: MV7+ only.
     pub fn focus_next(&mut self) {
+        // Mute is the only control shown until the settings are read.
+        if self.settings_never_read {
+            self.focus = Focus::Mute;
+            return;
+        }
         self.focus = match (
             &self.active_tab,
             &self.focus,
@@ -953,6 +1007,10 @@ impl App {
     }
 
     pub fn focus_prev(&mut self) {
+        if self.settings_never_read {
+            self.focus = Focus::Mute;
+            return;
+        }
         self.focus = match (
             &self.active_tab,
             &self.focus,
@@ -1244,6 +1302,10 @@ impl App {
     // ── Value adjustment helpers ──────────────────────────────────────────────
     /// Increment the focused parameter by `delta` (usually ±1).
     pub fn adjust_focused(&mut self, delta: i32) -> Option<DeviceAction> {
+        // No control shows while waiting for another shurectl.
+        if self.is_waiting_for_device() {
+            return None;
+        }
         match self.focus {
             Focus::Gain => {
                 if self.gain_locked() {
@@ -1440,6 +1502,11 @@ impl App {
     /// Every press goes to the control focused now, so a control whose toggle
     /// moves focus (Mode) must never be more than one press from any option.
     pub fn toggle_focused(&mut self) -> Option<DeviceAction> {
+        // No control shows while waiting for another shurectl: nothing
+        // could be sent, Mute included, while it holds the device.
+        if self.is_waiting_for_device() {
+            return None;
+        }
         let mut action = None;
         for _ in 0..self.pill_presses.take().unwrap_or(1) {
             action = self.toggle_once();
@@ -1455,11 +1522,18 @@ impl App {
                     InputMode::Auto => InputMode::Manual,
                     InputMode::Manual => InputMode::Auto,
                 };
-                self.focus = match (self.device_model, self.device_state.mode) {
-                    (DeviceModel::Mvx2u | DeviceModel::Mv7, InputMode::Auto) => Focus::AutoPosition,
-                    (DeviceModel::Mv6Gen2, InputMode::Auto) => Focus::AutoGain,
-                    (_, InputMode::Manual) => Focus::Gain,
-                    (_, InputMode::Auto) => Focus::Mute,
+                // The new mode's first control: its Auto Level rows, or Gain.
+                // A mode with no rows of its own keeps focus on Mode, so a
+                // second Enter switches back instead of unmuting the mic.
+                self.focus = match self.device_state.mode {
+                    InputMode::Manual => Focus::Gain,
+                    InputMode::Auto => match self.device_model {
+                        DeviceModel::Mvx2u | DeviceModel::Mv7 => Focus::AutoPosition,
+                        DeviceModel::Mv6Gen2 => Focus::AutoGain,
+                        DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7Plus => {
+                            Focus::Mode
+                        }
+                    },
                 };
                 Some(DeviceAction::SetMode(self.device_state.mode))
             }
@@ -1774,6 +1848,11 @@ impl App {
         }
     }
 }
+
+/// Status while the first readback waits for another shurectl
+/// (`App::waiting_for_device`).
+pub const WAITING_FOR_DEVICE: &str =
+    "Another shurectl has the device. Your settings show as soon as it's done.";
 
 /// Status for a write refused because the device's settings haven't been read,
 /// and the TUI's note after a mute that still goes through then.
@@ -2705,6 +2784,7 @@ mod tests {
         app.gain_check = Some(GainCheck::Done(crate::gain_check::Outcome {
             loudest_x10: Some(-180),
             advice: crate::gain_check::Advice::Change(300),
+            own_input: true,
         }));
         app.set_ok("Gain → 24 dB");
         app.device_connected = false;
@@ -2834,22 +2914,41 @@ mod tests {
         assert_eq!(app.focus, Focus::AutoPosition);
     }
 
-    /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to Mute.
+    /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to
+    /// Mute. A switch to an Auto Level with no rows of its own keeps focus on
+    /// Mode: on Mute, a second Enter meant to switch back unmuted the mic.
     #[test]
-    fn mv7plus_mode_toggle_focuses_gain_in_manual_and_mute_in_auto() {
-        let mut app = App {
-            device_model: DeviceModel::Mv7Plus,
-            focus: Focus::Mode,
-            ..App::default()
-        };
-        app.toggle_focused();
-        assert_eq!(app.device_state.mode, InputMode::Manual);
-        assert_eq!(app.focus, Focus::Gain);
+    fn mode_toggle_focuses_gain_in_manual_and_never_mute() {
+        for model in [
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv7Plus,
+        ] {
+            let mut app = App {
+                device_model: model,
+                focus: Focus::Mode,
+                ..App::default()
+            };
+            app.toggle_focused();
+            assert_eq!(app.device_state.mode, InputMode::Manual, "{model:?}");
+            assert_eq!(app.focus, Focus::Gain, "{model:?}");
 
-        app.focus = Focus::Mode;
-        app.toggle_focused();
-        assert_eq!(app.device_state.mode, InputMode::Auto);
-        assert_eq!(app.focus, Focus::Mute);
+            app.device_state.muted = true;
+            app.focus = Focus::Mode;
+            assert!(matches!(
+                app.toggle_focused(),
+                Some(DeviceAction::SetMode(InputMode::Auto))
+            ));
+            assert_eq!(app.focus, Focus::Mode, "{model:?}");
+            assert!(
+                matches!(
+                    app.toggle_focused(),
+                    Some(DeviceAction::SetMode(InputMode::Manual))
+                ),
+                "{model:?}: the second Enter switches back"
+            );
+            assert!(app.device_state.muted, "{model:?}");
+        }
     }
 
     /// A refresh that finds a Gen 1 in Auto must not leave the EQ tab's

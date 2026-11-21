@@ -52,10 +52,12 @@
 //! read last keep their defaults (two `--json` runs at once, MVX2U Gen 2,
 //! 2026-11-19: EQ bands, firmware and serial wrong in both, both exit 0).
 //! Every exchange with a real device therefore runs under [`ShureDevice::exclusive()`],
-//! which holds that device's lock file, shared by every shurectl of this user;
+//! which holds that device's lock ([`open_lock_file()`]: on Linux its hidraw
+//! node, so every shurectl locks the same file whatever its environment);
 //! whatever the other process left queued is drained inside it.
 
 use std::fs::File;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -108,6 +110,12 @@ const STRAY_REPLIES_MAX: usize = 4;
 /// longer than a single read timeout, so waiting is bounded by time, not reads.
 const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// How long a TUI step waits for the MV7's value when the live poll before it
+/// got none (`reread_mv7_gain()`): longer than the poll's 200 ms, but short
+/// enough that a held arrow key can't queue seconds of steps. Unconfirmed on
+/// hardware whether a slow MV7 answers within it.
+pub const MV7_STEP_REREAD: Duration = Duration::from_millis(500);
+
 /// How long the live poll waits for each MV7 reply, as long as a
 /// binary GET waits. The full `MV7_REPLY_TIMEOUT` every second would leave
 /// the TUI waiting on a mic that doesn't answer; a reply that comes later is
@@ -121,16 +129,38 @@ const MV7_POLL_TIMEOUT: Duration = Duration::from_millis(READ_TIMEOUT_MS as u64)
 const DRAIN_MAX_REPORTS: usize = 256;
 
 /// How long an exchange waits for another shurectl to finish its own before
-/// giving up. A binary readback holds the lock a few hundred milliseconds; an
-/// MV7 readback whose lines time out can take a few seconds.
+/// giving up. How long others hold the lock is unmeasured; an MV7 readback
+/// whose lines go unanswered holds it for seconds (`MV7_REPLY_TIMEOUT` each).
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// How often a waiting exchange tries the lock again.
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 
-/// The error when another shurectl kept the device for all of [`LOCK_WAIT`].
-/// No closing period: status lines add one before what follows.
-const DEVICE_BUSY: &str = "Another shurectl is busy with this device";
+/// How long a read that only labels a device in a list waits for the lock
+/// before showing it as busy, so a scan with several devices doesn't wait
+/// [`LOCK_WAIT`] for each. How long other shurectl exchanges hold it is
+/// unmeasured; a readback, preset load or `f` holding it longer than this
+/// shows the device as busy, and `r` in the picker scans again.
+const LABEL_LOCK_WAIT: Duration = Duration::from_secs(1);
+
+/// Another shurectl kept the device for all of the wait: [`LOCK_WAIT`], or
+/// [`LABEL_LOCK_WAIT`] for labels, or none for the live poll. Every exchange
+/// takes the lock before it sends anything, and each `set_*` is one exchange,
+/// so a single write that fails with this sent nothing. A run of writes that
+/// must not be split (a preset load) holds [`ShureDevice::exclusive()`] around
+/// all of them, so it can't stop with this partway either. Kept as its own type so `main.rs`
+/// neither re-reads (waiting as long again) nor reconnects on it.
+#[derive(Debug)]
+pub struct Busy;
+
+impl std::fmt::Display for Busy {
+    /// No closing period: status lines add one before what follows.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Another shurectl has the device")
+    }
+}
+
+impl std::error::Error for Busy {}
 
 /// A HID read or write failed, or `reopen()` could not find the device: it was
 /// unplugged or its handle went stale. Kept as its own type so `main.rs` can
@@ -185,36 +215,47 @@ pub trait HidTransport {
     fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool>;
     /// A new handle to the same device after it was unplugged and plugged back in.
     fn reopen(&self, model: DeviceModel, serial: &str) -> Result<Box<dyn HidTransport>>;
-    /// Whether another process can talk to this device too, so each exchange
-    /// takes its lock file ([`ShureDevice::exclusive()`]). The fake device in
-    /// tests and `--qa` can't, and never touches a lock file.
-    fn shared_with_other_processes(&self) -> bool {
-        false
+    /// The file whose lock keeps other shurectl processes off this device
+    /// while an exchange runs ([`ShureDevice::exclusive()`]). `None` runs
+    /// without one. The fake device locks a temp file of its own, which its
+    /// `busy` fault holds as another shurectl would.
+    fn lock_file(&self) -> Option<File> {
+        None
+    }
+    /// How long [`ShureDevice::exclusive()`] and its label variant wait for
+    /// that lock: [`LOCK_WAIT`] and [`LABEL_LOCK_WAIT`] on a real device.
+    fn lock_waits(&self) -> (Duration, Duration) {
+        (LOCK_WAIT, LABEL_LOCK_WAIT)
     }
 }
 
 /// The only transport in a normal build: hidapi on the device's HID path.
-pub struct HidapiTransport(HidDevice);
+pub struct HidapiTransport {
+    device: HidDevice,
+    /// The OS path it was opened at: `/dev/hidrawN` on Linux, which is also
+    /// what [`open_lock_file()`] locks there.
+    path: String,
+}
 
 impl HidTransport for HidapiTransport {
     fn write(&self, packet: &[u8]) -> Result<usize> {
-        Ok(self.0.write(packet)?)
+        Ok(self.device.write(packet)?)
     }
 
     fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize> {
-        Ok(self.0.read_timeout(buf, timeout_ms)?)
+        Ok(self.device.read_timeout(buf, timeout_ms)?)
     }
 
     fn serial_number(&self) -> Option<String> {
-        self.0.get_serial_number_string().ok().flatten()
+        self.device.get_serial_number_string().ok().flatten()
     }
 
     fn product(&self) -> Option<String> {
-        self.0.get_product_string().ok().flatten()
+        self.device.get_product_string().ok().flatten()
     }
 
-    fn shared_with_other_processes(&self) -> bool {
-        true
+    fn lock_file(&self) -> Option<File> {
+        open_lock_file(&self.path, || self.serial_number())
     }
 
     fn is_present(&self, model: DeviceModel, serial: &str) -> Result<bool> {
@@ -277,7 +318,10 @@ fn open_hid(
         .open_path(c_path.as_c_str())
         .map_err(|e| anyhow!("Cannot open {what}: {e}\nHint: {ACCESS_HINT}."))?;
     device.set_blocking_mode(false).ok();
-    Ok(Box::new(HidapiTransport(device)))
+    Ok(Box::new(HidapiTransport {
+        device,
+        path: path.into_owned(),
+    }))
 }
 
 /// Supported devices in `api`'s list with this model and USB serial. One
@@ -325,25 +369,52 @@ pub struct ShureDevice {
     /// Product string from the USB device descriptor, which finds the
     /// device's audio input for the meter on some systems.
     pub product: Option<String>,
+    /// The lock other shurectl processes take for this device, shared with
+    /// every guard on it.
+    lock: Arc<DeviceLock>,
+    /// How long `exclusive()` and `exclusive_for_labels()` wait for it.
+    lock_waits: (Duration, Duration),
+}
+
+/// A device's lock, owned jointly by the device and its guards, so a guard
+/// can stay held while the device moves (the CLI holds one from a toggle's
+/// read through its write).
+struct DeviceLock {
+    /// This device's lock file (`HidTransport::lock_file()`: [`open_lock_file()`]
+    /// on a real device, a temp file on the fake); `None` when the transport
+    /// has none or it can't be opened.
+    file: Option<File>,
     /// How many [`Exclusive`] guards are alive: nested exchanges take the
     /// lock file once, the outermost one.
-    exclusive_depth: AtomicUsize,
-    /// This device's lock file ([`open_lock_file()`]), on a transport other
-    /// processes can reach; `None` for the fake, or when it can't be opened.
-    lock: Option<File>,
+    depth: AtomicUsize,
     /// Whether the outermost guard holds the lock file, and so unlocks it.
-    holds_lock: AtomicBool,
+    held: AtomicBool,
+    /// How many outermost guards were taken, for tests of what shares one.
+    #[cfg(test)]
+    turns: AtomicUsize,
+}
+
+impl DeviceLock {
+    fn new(file: Option<File>) -> Arc<Self> {
+        Arc::new(Self {
+            file,
+            depth: AtomicUsize::new(0),
+            held: AtomicBool::new(false),
+            #[cfg(test)]
+            turns: AtomicUsize::new(0),
+        })
+    }
 }
 
 /// Held while this process talks to the device; see [`ShureDevice::exclusive()`].
-struct Exclusive<'a>(&'a ShureDevice);
+pub struct Exclusive(Arc<DeviceLock>);
 
-impl Drop for Exclusive<'_> {
+impl Drop for Exclusive {
     fn drop(&mut self) {
-        let device = self.0;
-        if device.exclusive_depth.fetch_sub(1, Ordering::Relaxed) == 1
-            && device.holds_lock.swap(false, Ordering::Relaxed)
-            && let Some(file) = &device.lock
+        let lock = &self.0;
+        if lock.depth.fetch_sub(1, Ordering::Relaxed) == 1
+            && lock.held.swap(false, Ordering::Relaxed)
+            && let Some(file) = &lock.file
         {
             // A failed unlock leaves it to the OS, which drops the lock when
             // this process exits.
@@ -352,27 +423,72 @@ impl Drop for Exclusive<'_> {
     }
 }
 
-/// The lock file of the device with this USB serial, which every shurectl of
-/// this user opens for it: in `$XDG_RUNTIME_DIR` (a per-user tmpfs on Linux),
-/// else the temp directory. One per device, so a slow exchange with one mic
-/// never holds up another. `None` when it can't be opened, and shurectl then
-/// runs without it, as before it had one.
-fn open_lock_file(serial: &str) -> Option<File> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
-    let name: String = serial
+/// The file every shurectl locks for the device at `hid_path`. One per
+/// device, so a slow exchange with one mic never holds up another. `None` when
+/// it can't be opened, and shurectl then runs without it, as before it had one.
+///
+/// On Linux it is the device's hidraw node itself: the same file for every
+/// process whatever its environment or user (`sudo`, cron, a hotkey daemon),
+/// and only those allowed to use the device can open it to hold its lock.
+/// This second handle is never read; the kernel skips new reports for it once
+/// its queue is full (`HIDRAW_BUFFER_SIZE`, 64, in `hidraw_report_event()`,
+/// drivers/hid/hidraw.c), so the main handle gets every report as before.
+/// A node that can't be opened a second time (an unusual permission set)
+/// falls back to a lock file in [`lock_dir()`], `$XDG_RUNTIME_DIR` here,
+/// rather than no lock at all.
+#[cfg(target_os = "linux")]
+fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+    File::open(hid_path)
+        .ok()
+        .or_else(|| open_temp_lock_file(hid_path, usb_serial))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
+    open_temp_lock_file(hid_path, usb_serial)
+}
+
+/// Elsewhere hidapi's path isn't a file, so the lock is a file named after the
+/// USB serial in [`lock_dir()`].
+/// A device without one is named by its hidapi path instead, which every
+/// process sees the same while it stays plugged in, so two such devices
+/// don't share a lock. Whether those systems share input reports between
+/// handles at all is unconfirmed (`.claude/rules/protocol.md`).
+fn open_temp_lock_file(
+    hid_path: &str,
+    usb_serial: impl FnOnce() -> Option<String>,
+) -> Option<File> {
+    let name: String = usb_serial()
+        .filter(|serial| !serial.is_empty())
+        .unwrap_or_else(|| hid_path.to_string())
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
+    let path = lock_dir().join(format!("shurectl-{name}.lock"));
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(dir.join(format!("shurectl-{name}.lock")))
+        .open(&path)
+        // A file another user made there may be theirs to write: a lock needs
+        // only a handle, so reading it is enough.
+        .or_else(|_| File::open(&path))
         .ok()
+}
+
+/// Where the lock file goes: `$XDG_RUNTIME_DIR` on Linux (a per-user tmpfs,
+/// so another user's stale file can't get in the way), else the temp
+/// directory, which is per user on macOS and Windows.
+fn lock_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+    {
+        return dir;
+    }
+    std::env::temp_dir()
 }
 
 /// Take `file`'s lock, waiting up to `wait` while another process holds it.
@@ -386,7 +502,7 @@ fn wait_for_lock(file: &File, wait: Duration) -> Result<bool> {
             Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < wait => {
                 std::thread::sleep(LOCK_RETRY);
             }
-            Err(std::fs::TryLockError::WouldBlock) => return Err(anyhow!(DEVICE_BUSY)),
+            Err(std::fs::TryLockError::WouldBlock) => return Err(Busy.into()),
             Err(std::fs::TryLockError::Error(_)) => return Ok(false),
         }
     }
@@ -399,19 +515,16 @@ impl ShureDevice {
             .serial_number()
             .unwrap_or_else(|| UNKNOWN_SERIAL.to_string());
         let product = transport.product();
-        let lock = transport
-            .shared_with_other_processes()
-            .then(|| open_lock_file(&serial_number))
-            .flatten();
+        let lock = DeviceLock::new(transport.lock_file());
+        let lock_waits = transport.lock_waits();
         Self {
             transport,
             model,
             seq: AtomicU8::new(0),
             serial_number,
             product,
-            exclusive_depth: AtomicUsize::new(0),
             lock,
-            holds_lock: AtomicBool::new(false),
+            lock_waits,
         }
     }
 
@@ -420,23 +533,53 @@ impl ShureDevice {
     /// (module doc, "One shurectl at a time"). Every write and read runs under
     /// one; a readback holds one from its drain to its last GET. Nested guards
     /// lock once. Errors only when another shurectl kept the device for all of
-    /// [`LOCK_WAIT`].
-    fn exclusive(&self) -> Result<Exclusive<'_>> {
-        if self.exclusive_depth.load(Ordering::Relaxed) == 0
-            && let Some(file) = &self.lock
-        {
-            let locked = wait_for_lock(file, LOCK_WAIT)?;
-            self.holds_lock.store(locked, Ordering::Relaxed);
-        }
-        self.exclusive_depth.fetch_add(1, Ordering::Relaxed);
-        Ok(Exclusive(self))
+    /// [`LOCK_WAIT`] ([`Busy`]). `main.rs` holds one around a preset load, so
+    /// no other shurectl comes between its Gain Lock unlock and re-lock.
+    pub fn exclusive(&self) -> Result<Exclusive> {
+        self.exclusive_within(self.lock_waits.0)
     }
 
-    /// Every write and read checks it runs under [`Self::exclusive()`]. The
-    /// fake device counts guards too, so the tests catch a path that skips one.
+    /// [`Self::exclusive()`] without the wait: [`Busy`] at once while another
+    /// shurectl holds the device. For the TUI's live poll, which skips a turn
+    /// rather than stall the screen for [`LOCK_WAIT`] every second.
+    pub fn exclusive_now(&self) -> Result<Exclusive> {
+        self.exclusive_within(Duration::ZERO)
+    }
+
+    /// [`Self::exclusive()`] with a shorter wait, for reads that only label a
+    /// device in a list (`--list`, the device picker): [`LABEL_LOCK_WAIT`].
+    pub fn exclusive_for_labels(&self) -> Result<Exclusive> {
+        self.exclusive_within(self.lock_waits.1)
+    }
+
+    fn exclusive_within(&self, wait: Duration) -> Result<Exclusive> {
+        let lock = &self.lock;
+        if lock.depth.load(Ordering::Relaxed) == 0 {
+            if let Some(file) = &lock.file {
+                let locked = wait_for_lock(file, wait)?;
+                lock.held.store(locked, Ordering::Relaxed);
+            }
+            #[cfg(test)]
+            lock.turns.fetch_add(1, Ordering::Relaxed);
+        }
+        lock.depth.fetch_add(1, Ordering::Relaxed);
+        Ok(Exclusive(Arc::clone(lock)))
+    }
+
+    /// How many turns at the device this handle has taken so far (outermost
+    /// guards), still countable after the device itself is dropped.
+    #[cfg(test)]
+    pub fn turns(&self) -> impl Fn() -> usize + use<> {
+        let lock = Arc::clone(&self.lock);
+        move || lock.turns.load(Ordering::Relaxed)
+    }
+
+    /// Every write and read checks it runs under [`Self::exclusive()`], so a
+    /// debug build (every test, fake device included) panics on a path that
+    /// skips one.
     fn debug_assert_exclusive(&self) {
         debug_assert!(
-            self.exclusive_depth.load(Ordering::Relaxed) > 0,
+            self.lock.depth.load(Ordering::Relaxed) > 0,
             "device I/O outside ShureDevice::exclusive()"
         );
     }
@@ -481,7 +624,14 @@ impl ShureDevice {
     /// Open the same physical device again after it was unplugged and plugged
     /// back in, when this handle has gone stale. Errors are one line, for the
     /// status bar.
+    /// Never under a guard: the new handle has a lock of its own, which on
+    /// Linux is a second open of the same hidraw node, so it would wait on
+    /// this one's lock and report [`Busy`] with no other shurectl running.
     pub fn reopen(&self) -> Result<Self> {
+        debug_assert!(
+            self.lock.depth.load(Ordering::Relaxed) == 0,
+            "reopen() under ShureDevice::exclusive()"
+        );
         let transport = self.transport.reopen(self.model, &self.serial_number)?;
         Ok(Self::with_transport(self.model, transport))
     }
@@ -558,16 +708,28 @@ impl ShureDevice {
             .collect();
         // Why a device couldn't be asked, for when nothing matches.
         let mut open_error = None;
+        let mut busy = false;
+        let deadline = Instant::now() + LOCK_WAIT;
         if matches.is_empty() {
             matches = found
                 .iter()
                 // A refused device has no serial to ask for, and its refusal
                 // would hide why another couldn't be opened.
                 .filter(|(info, model)| !is_not_genuine(info, *model))
+                // The full wait, not `exclusive_for_labels()`'s: this is a
+                // command that should wait its turn, not a list. One wait for
+                // every device asked, so several busy ones don't wait 5 s each.
                 .filter(|(info, model)| match Self::open_info(&api, info, *model) {
-                    Ok(dev) => dev
-                        .read_factory_serial()
-                        .is_some_and(|serial| same(&serial)),
+                    Ok(dev) => match dev
+                        .exclusive_within(deadline.saturating_duration_since(Instant::now()))
+                        .and_then(|_turn| dev.read_factory_serial())
+                    {
+                        Ok(serial) => serial.is_some_and(|serial| same(&serial)),
+                        Err(_) => {
+                            busy = true;
+                            false
+                        }
+                    },
                     Err(e) => {
                         open_error.get_or_insert(e);
                         false
@@ -577,6 +739,17 @@ impl ShureDevice {
         }
         match matches.as_slice() {
             [(info, model)] => Self::open_info(&api, info, *model),
+            [] if busy => {
+                let busy = format!(
+                    "Another shurectl was busy with a Shure device, so its printed serial \
+                     couldn't be read to match {selector}. Try again, or use a path from --list."
+                );
+                // Another device that couldn't be opened may be the one meant.
+                Err(match open_error {
+                    Some(e) => e.context(format!("{busy} Another one couldn't be opened")),
+                    None => anyhow!(busy),
+                })
+            }
             [] if let Some(e) = open_error => Err(e.context(format!(
                 "No Shure device has the path or serial {selector}, and one couldn't be opened"
             ))),
@@ -636,7 +809,12 @@ impl ShureDevice {
 
     fn send_set(&self, set_packet: &[u8]) -> Result<()> {
         self.ensure_binary_protocol()?;
-        let _exclusive = self.exclusive()?;
+        let _exclusive = self.exclusive().inspect_err(|_| {
+            // Busy sent nothing: give back the sequence number `set_packet`
+            // took, so the next packet follows the last one sent. Whether a
+            // device minds a gap is unconfirmed; the fake refuses one.
+            self.seq.fetch_sub(1, Ordering::Relaxed);
+        })?;
         self.write(set_packet)?;
         let confirm = cmd_confirm(self.next_seq());
         self.write(&confirm)?;
@@ -784,6 +962,8 @@ impl ShureDevice {
         query: &mv7_text::TextCommand,
         is_set: impl FnOnce(&DeviceState) -> bool,
     ) -> Result<()> {
+        // One exchange, so that [`Busy`] can only mean nothing was sent.
+        let _exclusive = self.exclusive()?;
         let reply = self.send_text(command)?;
         if reply != mv7_text::FAILED_REPLY {
             return Self::check_text_reply(command, &reply);
@@ -907,7 +1087,55 @@ impl ShureDevice {
             DeviceModel::Mv7 => self.get_state_mv7(&mut readback),
             DeviceModel::Mv7Plus => self.get_state_mv7_plus(&mut readback),
         }?;
+        // A gain above the model's maximum is taken as not the device's (a
+        // stray or corrupt report), since shown, the next step would write the
+        // maximum gain. Unconfirmed whether the MVX2U Gen 1 or MV6 reports one
+        // in Auto (a moving Auto gain); if so, that mic's readback always
+        // fails. A one-off needn't come twice, so ask once more; only a second
+        // one fails the readback, which then shows nothing as the mic's.
+        if !self.usable_gain(readback.state.gain_tenths) {
+            // Only a lost device is its own error; no answer leaves the
+            // message about the gain above the maximum, which says why.
+            match self.read_gain_again() {
+                Ok(Some(gain_tenths)) => readback.state.gain_tenths = gain_tenths,
+                Ok(None) => {}
+                Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+                Err(_) => {}
+            }
+        }
+        if !self.usable_gain(readback.state.gain_tenths) {
+            return Err(anyhow!(
+                "Couldn't read a setting: the gain read back, {} dB, is above the {} dB maximum",
+                f32::from(readback.state.gain_tenths) / 10.0,
+                f32::from(self.model.max_gain_tenths()) / 10.0
+            ));
+        }
         readback.finish()
+    }
+
+    /// The gain read alone, under the caller's guard: the MV7's line with a
+    /// readback's wait, or the binary GET after a drain. `None` without a
+    /// usable answer.
+    fn read_gain_again(&self) -> Result<Option<u16>> {
+        match self.model {
+            DeviceModel::Mv7 => self.reread_mv7_gain(MV7_REPLY_TIMEOUT),
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => {
+                self.drain_input(&mut [0u8; PACKET_SIZE])?;
+                Ok(self
+                    .read_alone(&cmd_get_gain(self.next_seq()))?
+                    .map(|state| state.gain_tenths)
+                    .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
+            }
+        }
+    }
+
+    /// Whether a gain read back is in the model's range, so usable.
+    fn usable_gain(&self, gain_tenths: u16) -> bool {
+        gain_tenths <= self.model.max_gain_tenths()
     }
 
     fn get_state_mv7(&self, readback: &mut Readback) -> Result<()> {
@@ -1093,7 +1321,8 @@ impl ShureDevice {
 
     /// Read the mute state alone, for `--mute toggle` and `status`, without a
     /// full readback. `Ok(None)` when the device gave no usable answer (a
-    /// timeout, a refusal, another reply); only a HID failure is an error.
+    /// timeout, a refusal, another reply); only a HID failure or [`Busy`] is
+    /// an error.
     pub fn read_mute(&self) -> Result<Option<bool>> {
         Ok(self
             .read_one(mv7_text::get_mute, cmd_get_mute)?
@@ -1104,7 +1333,46 @@ impl ShureDevice {
     pub fn read_gain(&self) -> Result<Option<u16>> {
         Ok(self
             .read_one(mv7_text::get_gain, cmd_get_gain)?
-            .map(|state| state.gain_tenths))
+            .map(|state| state.gain_tenths)
+            .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
+    }
+
+    /// The MV7's gain read alone, waiting up to `wait` for its line: longer
+    /// than the live poll's 200 ms a line, which a slow answer may miss.
+    /// `None` without a usable answer, and on the other models, whose poll
+    /// waited as long as their readback does already.
+    pub fn reread_mv7_gain(&self, wait: Duration) -> Result<Option<u16>> {
+        Ok(self
+            .reread_mv7(&mv7_text::get_gain(), wait)?
+            .map(|state| state.gain_tenths)
+            .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
+    }
+
+    /// The MV7's Monitor Mix, read as [`Self::reread_mv7_gain`] reads the gain.
+    pub fn reread_mv7_monitor_mix(&self, wait: Duration) -> Result<Option<u8>> {
+        Ok(self
+            .reread_mv7(&mv7_text::get_monitor_mix(), wait)?
+            .map(|state| state.monitor_mix))
+    }
+
+    fn reread_mv7(
+        &self,
+        command: &mv7_text::TextCommand,
+        wait: Duration,
+    ) -> Result<Option<DeviceState>> {
+        match self.model {
+            DeviceModel::Mv7 => {
+                let _exclusive = self.exclusive()?;
+                let reply = self.send_text_within(command, wait)?;
+                let mut state = DeviceState::default();
+                Ok(mv7_text::apply_reply(&reply, &mut state).then_some(state))
+            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => Ok(None),
+        }
     }
 
     /// One setting read alone: the MV7's text line, or the binary GET. On the
@@ -1133,10 +1401,11 @@ impl ShureDevice {
     /// levels), each alone, for the TUI's poll, so a change made elsewhere
     /// shows without a full readback: the mic's own button, `shurectl --gain`
     /// from a Stream Deck, or MOTIV. Each is `None` without a usable answer;
-    /// only a HID failure is an error. Binary models discard queued input first.
+    /// only a HID failure or [`Busy`] is an error. Binary models discard
+    /// queued input first.
     pub fn read_live(&self) -> Result<Live> {
         let _exclusive = self.exclusive()?;
-        match self.model {
+        let mut live = match self.model {
             DeviceModel::Mv7 => self.read_live_mv7(),
             // The Gen 1 balance and the Mic Level share an address, not a GET.
             DeviceModel::Mvx2u => self.read_live_binary(cmd_get_mix),
@@ -1144,7 +1413,12 @@ impl ShureDevice {
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => self.read_live_binary(cmd_get_mv6_mix),
-        }
+        }?;
+        // Out of range, the gain is an unusable answer (`get_state()`).
+        live.gain_tenths = live
+            .gain_tenths
+            .filter(|gain_tenths| self.usable_gain(*gain_tenths));
+        Ok(live)
     }
 
     /// The MV7's lines, each waiting at most 200 ms. The first that isn't
@@ -1179,13 +1453,10 @@ impl ShureDevice {
         let mode = read(cmd_get_mode(self.next_seq()))?.map(|s| s.mode);
         let gain_tenths = read(cmd_get_gain(self.next_seq()))?.map(|s| s.gain_tenths);
         let monitor_mix = read(monitor_mix(self.next_seq()))?.map(|s| s.monitor_mix);
-        let playback_mix = match self.model {
-            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => {
-                read(cmd_get_mv7_playback_mix(self.next_seq()))?.map(|s| s.playback_mix)
-            }
-            // The MV6's Playback Level GET is unconfirmed (#99): unanswered it
-            // would cost every poll a timeout. None on models without one.
-            DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mv7 => None,
+        let playback_mix = if self.model.polls_playback_mix() {
+            read(cmd_get_mv7_playback_mix(self.next_seq()))?.map(|s| s.playback_mix)
+        } else {
+            None
         };
         Ok(Live {
             muted,
@@ -1215,58 +1486,70 @@ impl ShureDevice {
         let mut state = DeviceState::default();
         let applied = match self.send_text_within(command, MV7_POLL_TIMEOUT) {
             Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
-            Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+            // Busy sent nothing: a fallback readback would only wait as long
+            // again for the same lock.
+            Err(e)
+                if e.downcast_ref::<Disconnected>().is_some()
+                    || e.downcast_ref::<Busy>().is_some() =>
+            {
+                return Err(e);
+            }
             Err(_) => false,
         };
         Ok(applied.then_some(state))
     }
 
     /// Read just the factory serial number (the serial printed on the device,
-    /// shown in the MOTIV app) from an opened device. Returns `None` if the device
-    /// can't be queried or doesn't report one. Used by `--list` to upgrade the
-    /// displayed serial from the USB descriptor value to the printed serial.
-    pub fn read_factory_serial(&self) -> Option<String> {
+    /// shown in the MOTIV app) from an opened device. `Ok(None)` if the device
+    /// can't be queried or doesn't report one; an error only when another
+    /// shurectl kept it [`Busy`], so `--device <serial>` can say so. Used by
+    /// `--list` and the picker to show the printed serial instead of the USB
+    /// descriptor's.
+    pub fn read_factory_serial(&self) -> Result<Option<String>> {
+        let _exclusive = self.exclusive()?;
         let mut state = DeviceState::default();
         let applied = match self.model {
-            DeviceModel::Mv7 => {
-                let reply = self.send_text(&mv7_text::get_serial()).ok()?;
-                mv7_text::apply_reply(&reply, &mut state)
-            }
+            DeviceModel::Mv7 => match self.send_text(&mv7_text::get_serial()) {
+                Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
+                Err(_) => false,
+            },
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => {
-                let _exclusive = self.exclusive().ok()?;
-                self.drain_input(&mut [0u8; PACKET_SIZE]).ok()?;
                 let reply = self
-                    .send_get_past_strays(&cmd_get_serial(self.next_seq()))
-                    .ok()??;
+                    .drain_input(&mut [0u8; PACKET_SIZE])
+                    .and_then(|()| self.send_get_past_strays(&cmd_get_serial(self.next_seq())));
                 // Another reply (another shurectl's) would apply to its own
                 // field and leave the serial unknown.
-                protocol::is_serial_reply(&reply) && apply_reply(&reply, &mut state)
+                matches!(reply, Ok(Some(reply))
+                    if protocol::is_serial_reply(&reply) && apply_reply(&reply, &mut state))
             }
         };
-        applied.then_some(state.factory_serial)
+        Ok(applied.then_some(state.factory_serial))
     }
 
     /// Read just the user-set device name, as `read_factory_serial()` reads
-    /// the serial, for the device picker. `None` on the MV7, which has no
-    /// name, when none is set, or when the device doesn't answer.
-    pub fn read_device_name(&self) -> Option<String> {
+    /// the serial, for the device picker. `Ok(None)` on the MV7, which has no
+    /// name, when none is set, or when the device doesn't answer; an error
+    /// only when another shurectl kept it [`Busy`], so the picker can say so.
+    pub fn read_device_name(&self) -> Result<Option<String>> {
         // Also keeps the MV7's text shell away from the binary GET.
         if !self.model.has_device_rename() {
-            return None;
+            return Ok(None);
         }
-        let _exclusive = self.exclusive().ok()?;
-        self.drain_input(&mut [0u8; PACKET_SIZE]).ok()?;
+        let _exclusive = self.exclusive()?;
         let reply = self
-            .send_get_past_strays(&cmd_get_device_name(self.next_seq()))
-            .ok()??;
+            .drain_input(&mut [0u8; PACKET_SIZE])
+            .and_then(|()| self.send_get_past_strays(&cmd_get_device_name(self.next_seq())));
+        let Ok(Some(reply)) = reply else {
+            return Ok(None);
+        };
         let mut state = DeviceState::default();
         let applied = protocol::is_device_name_reply(&reply) && apply_reply(&reply, &mut state);
         let unset = state.device_name.is_empty() || state.device_name == "Unknown";
-        (applied && !unset).then_some(state.device_name)
+        Ok((applied && !unset).then_some(state.device_name))
     }
 
     // ── Shared SET commands ───────────────────────────────────────────────────
@@ -2029,28 +2312,87 @@ mod tests {
         assert_eq!(readback.skipped.len(), 1);
     }
 
+    /// A lock file at `path` for the lock tests: each handle stands in for one
+    /// process, as the lock belongs to the open file.
+    fn lock_test_file(path: &std::path::Path) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .expect("lock file")
+    }
+
     /// A second shurectl waits while the lock file is held, gives up with the
     /// busy error after the wait, and gets it once it is released. Two handles
     /// on one file stand in for two processes: the lock belongs to the open file.
     #[test]
     fn a_held_lock_file_keeps_another_handle_waiting() {
         let path = std::env::temp_dir().join(format!("shurectl-lock-test-{}", std::process::id()));
-        let open = || {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&path)
-                .expect("lock file")
-        };
+        let open = || lock_test_file(&path);
         let (first, second) = (open(), open());
         assert!(wait_for_lock(&first, Duration::ZERO).expect("free lock"));
         let busy = wait_for_lock(&second, Duration::from_millis(20)).expect_err("held lock");
-        assert_eq!(busy.to_string(), DEVICE_BUSY);
+        assert!(busy.downcast_ref::<Busy>().is_some(), "{busy}");
         first.unlock().expect("unlock");
         assert!(wait_for_lock(&second, Duration::ZERO).expect("released lock"));
         drop((first, second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The live poll's guard gives up at once on a held lock instead of
+    /// waiting, and takes it once it is free.
+    #[test]
+    fn the_live_polls_guard_doesnt_wait_for_a_held_lock() {
+        use crate::fake_hid::FakeDevice;
+
+        let path =
+            std::env::temp_dir().join(format!("shurectl-poll-lock-test-{}", std::process::id()));
+        let open = || lock_test_file(&path);
+        let mut device = FakeDevice::new(DeviceModel::Mvx2uGen2).open();
+        device.lock = DeviceLock::new(Some(open()));
+        let other = open();
+        other.lock().expect("other shurectl's lock");
+        let start = Instant::now();
+        let busy = device.exclusive_now().err().expect("held lock");
+        assert!(busy.downcast_ref::<Busy>().is_some(), "{busy}");
+        assert!(start.elapsed() < Duration::from_millis(100), "waited");
+        other.unlock().expect("unlock");
+        let turn = device.exclusive_now().expect("free lock");
+        drop(turn);
+        drop((device, other));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A guard stays held when the device moves, as the CLI's toggle moves it
+    /// into the write path between its read and its write: another process
+    /// can't take the lock in between, and the writes inside don't wait.
+    #[test]
+    fn a_guard_holds_the_lock_while_the_device_moves() {
+        use crate::fake_hid::FakeDevice;
+
+        let path =
+            std::env::temp_dir().join(format!("shurectl-move-lock-test-{}", std::process::id()));
+        let mut device = FakeDevice::new(DeviceModel::Mvx2uGen2).open();
+        device.lock = DeviceLock::new(Some(lock_test_file(&path)));
+        let other = lock_test_file(&path);
+        let turn = device.exclusive().expect("free lock");
+        let moved = Some(device);
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        let start = Instant::now();
+        moved
+            .as_ref()
+            .expect("device")
+            .set_mute(true)
+            .expect("mute");
+        assert!(start.elapsed() < Duration::from_millis(100), "waited");
+        drop(turn);
+        other.try_lock().expect("released with the guard");
+        drop((moved, other));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2064,12 +2406,12 @@ mod tests {
         let device = fake.open();
         device.get_state().expect("readback");
         device.set_mute(true).expect("mute");
-        assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 0);
+        assert_eq!(device.lock.depth.load(Ordering::Relaxed), 0);
         let outer = device.exclusive().expect("outer");
         let inner = device.exclusive().expect("inner");
-        assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 2);
+        assert_eq!(device.lock.depth.load(Ordering::Relaxed), 2);
         drop((inner, outer));
-        assert_eq!(device.exclusive_depth.load(Ordering::Relaxed), 0);
+        assert_eq!(device.lock.depth.load(Ordering::Relaxed), 0);
     }
 
     /// A readback that fails names the setting, so a user's report says which.

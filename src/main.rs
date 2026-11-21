@@ -64,7 +64,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Position};
 
-use app::{App, DeviceAction, STATE_UNREAD_HINT};
+use app::{App, DeviceAction, STATE_UNREAD_HINT, WAITING_FOR_DEVICE};
 use cli::{Amount, ModeChoice, MuteAction};
 use device::{Live, ShureDevice};
 use meter::{InputTarget, MeterStatus, start_meter};
@@ -93,11 +93,12 @@ struct Cli {
     /// several, the TUI asks which, and the other commands need this flag;
     /// with none, the TUI waits for one to be plugged in.
     /// A path can change when the device is replugged; a serial doesn't.
-    #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL")]
+    #[arg(long, short = 'D', value_name = "PATH_OR_SERIAL", conflicts_with_all = ["list", "demo"])]
     device: Option<String>,
 
     /// Set or read the mute state without launching the TUI; toggle when no
-    /// action is given.
+    /// action is given. With other options, the mute is sent first, even when
+    /// one of them is then refused.
     #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION",
           value_enum, ignore_case = true,
           conflicts_with_all = ["list", "demo"])]
@@ -188,30 +189,39 @@ fn main() -> Result<()> {
     if cli.list {
         let devs = list_devices_or_exit();
         if devs.is_empty() {
-            println!("No supported Shure devices found.");
+            cli::outln!("No supported Shure devices found.");
             #[cfg(target_os = "linux")]
-            println!("Check that the device is plugged in and the udev rule is installed.");
+            cli::outln!("Check that the device is plugged in and the udev rule is installed.");
             #[cfg(not(target_os = "linux"))]
-            println!("Check that the device is plugged in and accessible.");
+            cli::outln!("Check that the device is plugged in and accessible.");
         } else {
-            println!("Found {} Shure device(s):", devs.len());
+            cli::outln!("Found {} Shure device(s):", devs.len());
             for d in devs {
                 // Show the factory serial (printed on the device) when we can read
                 // it; fall back to the USB descriptor serial if the device can't be
                 // opened or doesn't report one. This briefly opens each device.
-                let serial = device::ShureDevice::open_path(&d.path)
-                    .ok()
-                    .and_then(|dev| dev.read_factory_serial())
-                    .unwrap_or(d.serial);
-                println!(
+                // A busy device waits a second, not 5 (`exclusive_for_labels()`).
+                let printed = device::ShureDevice::open_path(&d.path)
+                    .map(|dev| {
+                        dev.exclusive_for_labels()
+                            .and_then(|_turn| dev.read_factory_serial())
+                    })
+                    .unwrap_or(Ok(None));
+                let busy = printed.is_err();
+                let serial = printed.ok().flatten().unwrap_or(d.serial);
+                cli::outln!(
                     "  {} | {} | S/N: {}",
                     d.path,
                     d.model.display_name(),
                     serial
                 );
+                // Only Busy is an error: say why the serial is the USB one.
+                if busy {
+                    cli::outln!("    {}, so this is its USB serial.", device::Busy);
+                }
                 if d.not_genuine {
-                    println!("    {}.", device::NOT_GENUINE);
-                    println!("    {}", device::NOT_GENUINE_WHY.join(" "));
+                    cli::outln!("    {}.", device::NOT_GENUINE);
+                    cli::outln!("    {}", device::NOT_GENUINE_WHY.join(" "));
                 }
             }
         }
@@ -220,7 +230,7 @@ fn main() -> Result<()> {
 
     // Read before the device picker can enter the TUI, since a bad preset file
     // is reported on stderr.
-    let presets = presets::load_all_presets();
+    let (presets, preset_unreadable) = presets::load_all_presets();
     // Entered early only for the device picker; startup warnings print first otherwise.
     let mut tui = None;
     let (mut device, device_model) = if let Some(ref model_str) = cli.demo {
@@ -279,6 +289,7 @@ fn main() -> Result<()> {
     load_initial_state(&mut app, device.as_ref());
 
     app.presets = presets;
+    app.preset_unreadable = preset_unreadable;
 
     // Not on a device whose first readback found it gone: its input is gone
     // too, and the default input may be another mic. A reconnect starts it.
@@ -553,19 +564,34 @@ fn picker_rows(found: Vec<device::DeviceInfo>) -> Vec<picker::PickerRow> {
                 ShureDevice::open_path(&found.path).map_err(|e| one_line(&e))
             };
             match opened {
-                Ok(dev) => picker::PickerRow {
-                    serial: dev.read_factory_serial().or(usb_serial),
-                    name: dev.read_device_name(),
-                    problem: None,
-                    not_genuine: false,
-                    path: found.path,
-                    model: found.model,
-                },
+                Ok(dev) => {
+                    // One short turn for both labels (`exclusive_for_labels()`),
+                    // so a busy device holds the scan up for a second, not 10;
+                    // inside it neither read waits, nor fails as busy.
+                    let (busy, serial, name) = match dev.exclusive_for_labels() {
+                        Ok(_turn) => (
+                            false,
+                            dev.read_factory_serial().ok().flatten(),
+                            dev.read_device_name().ok().flatten(),
+                        ),
+                        Err(_) => (true, None, None),
+                    };
+                    picker::PickerRow {
+                        busy,
+                        serial: serial.or(usb_serial),
+                        name,
+                        problem: None,
+                        not_genuine: false,
+                        path: found.path,
+                        model: found.model,
+                    }
+                }
                 Err(problem) => picker::PickerRow {
                     serial: usb_serial,
                     name: None,
                     problem: Some(problem),
                     not_genuine: found.not_genuine,
+                    busy: false,
                     path: found.path,
                     model: found.model,
                 },
@@ -584,6 +610,7 @@ fn one_line(e: &anyhow::Error) -> String {
 }
 
 /// Read the device's state into `app` at startup, or say it is demo mode.
+/// Also the live poll's read once a device that was busy at startup is free.
 fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
     if let Some(dev) = device {
         match reload_state(app, dev) {
@@ -595,18 +622,20 @@ fn load_initial_state(app: &mut App, device: Option<&ShureDevice>) {
                 ));
             }
             Err(e) => {
-                app.device_connected = !is_disconnect(&e);
-                app.state_unread = true;
-                app.set_err(format!(
-                    "Connected but failed to read state: {e}. Press r to retry."
-                ));
+                mark_never_read(app, &dev.serial_number, &e);
+                if app.waiting_for_device {
+                    app.set_ok(WAITING_FOR_DEVICE);
+                } else if is_disconnect(&e) {
+                    // Gone, `r` can't help: it reconnects once plugged back in.
+                    mark_disconnected(app, dev.model);
+                } else {
+                    app.set_err(never_read_status(&e));
+                }
             }
         }
     } else {
-        app.set_ok(format!(
-            "Demo mode ({}) — changes will not be sent to a device.",
-            app.device_model.display_name()
-        ));
+        // The header names the model; this fits 80 columns with the hint.
+        app.set_ok("Demo mode — nothing is sent to a device.");
     }
 }
 
@@ -761,6 +790,11 @@ fn run_event_loop(
         if was_connected && !app.device_connected {
             *meter_stream = None;
             app.meter_input = None;
+            // Without this the bar and "pk" would show the old input's last
+            // readings for up to 3 s.
+            if let Ok(mut window) = app.peak_window.lock() {
+                window.clear();
+            }
         }
         // A device back from lost has its input back too, however it came back.
         if !was_connected && app.device_connected {
@@ -831,6 +865,160 @@ fn flush_scroll(
     }
 }
 
+/// A level the TUI stepped from the value shown, by arrow, wheel or click.
+#[derive(Clone, Copy)]
+enum Step {
+    Gain(u16),
+    /// Monitor Mix, or the Mic Level.
+    MonitorMix(u8),
+    PlaybackMix(u8),
+}
+
+impl Step {
+    fn of(action: &DeviceAction) -> Option<Step> {
+        if let DeviceAction::SetGain(gain_tenths) = action {
+            return Some(Step::Gain(*gain_tenths));
+        }
+        if let DeviceAction::SetMonitorMix(mix) = action {
+            return Some(Step::MonitorMix(*mix));
+        }
+        if let DeviceAction::SetMv7PlaybackMix(mix) = action {
+            return Some(Step::PlaybackMix(*mix));
+        }
+        None
+    }
+}
+
+/// Run the live poll against `base`, the state shown before `step`, and say
+/// whether the step may go out: not when the device changed what the poll
+/// shows since (the status names it), is gone, or gave the value stepped no
+/// answer, so a step from the shown one could jump it. When it may, the step
+/// is put on top of what the poll read, such as a gain moving in Auto Level,
+/// and the state as read is returned, for a failed write to put back.
+fn read_before_step(
+    app: &mut App,
+    device: &Option<ShureDevice>,
+    base: &protocol::DeviceState,
+    step: Step,
+) -> Option<protocol::DeviceState> {
+    app.device_state = base.clone();
+    let live = poll_live(app, device);
+    let model = app.device_model;
+    if !app.device_connected || shown_live(model, &app.device_state) != shown_live(model, base) {
+        return None;
+    }
+    let read = live.is_some_and(|live| match step {
+        Step::Gain(_) => live.gain_tenths.is_some(),
+        Step::MonitorMix(_) => live.monitor_mix.is_some(),
+        // The MV6's Playback Level isn't polled (#99): there is nothing to check.
+        Step::PlaybackMix(_) => live.playback_mix.is_some() || !model.polls_playback_mix(),
+    });
+    if !read {
+        match reread_stepped(app, device, base, step) {
+            Some(changed) if changed => return None,
+            Some(_) => {}
+            // Gone, the status already says it reconnects.
+            None if !app.device_connected => return None,
+            None => {
+                app.set_err(
+                    "Couldn't read the device before this step, so it wasn't sent. Press again.",
+                );
+                return None;
+            }
+        }
+    }
+    // What a failed write puts back: the device's values as just read.
+    let polled = app.device_state.clone();
+    let state = &mut app.device_state;
+    match step {
+        Step::Gain(gain_tenths) => state.gain_tenths = gain_tenths,
+        Step::MonitorMix(mix) => state.monitor_mix = mix,
+        Step::PlaybackMix(mix) => state.playback_mix = mix,
+    }
+    Some(polled)
+}
+
+/// On the MV7, read the value `step` changes again, waiting up to
+/// `MV7_STEP_REREAD` (500 ms), before a step the live poll couldn't check is
+/// refused: the poll gives each line only 200 ms. `Some(true)` when the device has another
+/// value (shown, and named in the status), `Some(false)` when it has the one
+/// shown, `None` without an answer, and always on the other models.
+fn reread_stepped(
+    app: &mut App,
+    device: &Option<ShureDevice>,
+    base: &protocol::DeviceState,
+    step: Step,
+) -> Option<bool> {
+    let dev = device.as_ref()?;
+    let model = app.device_model;
+    match step {
+        Step::Gain(_) => {
+            let gain_tenths = answered(app, dev.reread_mv7_gain(device::MV7_STEP_REREAD))?;
+            if gain_tenths == base.gain_tenths {
+                return Some(false);
+            }
+            app.device_state.gain_tenths = gain_tenths;
+            app.set_ok(format!(
+                "{} (changed on the device)",
+                gain_line(gain_tenths)
+            ));
+            Some(true)
+        }
+        Step::MonitorMix(_) => {
+            let mix = answered(app, dev.reread_mv7_monitor_mix(device::MV7_STEP_REREAD))?;
+            if shown_monitor_mix(model, mix) == shown_monitor_mix(model, base.monitor_mix) {
+                return Some(false);
+            }
+            app.device_state.monitor_mix = mix;
+            app.set_ok(format!(
+                "{} (changed on the device)",
+                monitor_mix_line(model, mix)
+            ));
+            Some(true)
+        }
+        Step::PlaybackMix(_) => None,
+    }
+}
+
+/// The value a re-read before a step got, if any. A lost device is marked
+/// disconnected, so the status says it reconnects, not to press again.
+fn answered<T>(app: &mut App, read: Result<Option<T>>) -> Option<T> {
+    match read {
+        Ok(value) => value,
+        Err(e) => {
+            if is_disconnect(&e) {
+                mark_disconnected(app, app.device_model);
+            }
+            None
+        }
+    }
+}
+
+/// What the live poll announces when it changes (`poll_live()`): mute, mode,
+/// the gain in Manual, the monitor levels, and Auto Level's rows in Auto.
+/// A gain the device moves in Auto Level is read but not shown.
+#[derive(PartialEq)]
+struct ShownLive {
+    muted: bool,
+    mode: InputMode,
+    manual_gain_tenths: Option<u16>,
+    monitor_mix: u8,
+    playback_mix: u8,
+    auto_level: Option<(protocol::MicPosition, protocol::AutoTone)>,
+}
+
+fn shown_live(model: DeviceModel, state: &protocol::DeviceState) -> ShownLive {
+    let manual = state.mode == InputMode::Manual;
+    ShownLive {
+        muted: state.muted,
+        mode: state.mode,
+        manual_gain_tenths: manual.then_some(state.gain_tenths),
+        monitor_mix: shown_monitor_mix(model, state.monitor_mix),
+        playback_mix: state.playback_mix,
+        auto_level: (!manual).then_some((state.auto_position, state.auto_tone)),
+    }
+}
+
 /// A TUI write that takes at least this long pushes the next live poll back
 /// from when it ended rather than when it started (`send_from_tui()`).
 const SLOW_WRITE: Duration = Duration::from_millis(100);
@@ -857,7 +1045,37 @@ fn send_from_tui(
     // time is added to it. One under `SLOW_WRITE` moves the poll too little to
     // matter and isn't counted, which keeps the harness's ticks exact.
     let started = Instant::now();
-    apply_action(app, device, action, before);
+    // A step counts from the value shown, and the live poll waits a second
+    // after each write, so another shurectl may have changed that value
+    // meanwhile (a Stream Deck `--gain`): a step from the stale one would jump
+    // the level. Read the device first, in the same turn as the write, and
+    // step only if nothing changed there; the status names what did.
+    let mut turn = None;
+    let mut read_before = None;
+    if let (Some(base), Some(dev), Some(step)) = (&before, device.as_ref(), Step::of(&action))
+        && app.device_connected
+        && !app.state_unread
+    {
+        match dev.exclusive() {
+            Ok(exclusive) => match read_before_step(app, device, base, step) {
+                Some(polled) => {
+                    turn = Some(exclusive);
+                    read_before = Some(polled);
+                }
+                None => {
+                    drop(exclusive);
+                    loop_state.last_live_poll = now;
+                    return;
+                }
+            },
+            Err(e) => {
+                recover_from_failure(app, device, &action, before.clone(), &e);
+                return;
+            }
+        }
+    }
+    apply_action(app, device, action, read_before.or(before));
+    drop(turn);
     let took = started.elapsed();
     loop_state.last_live_poll = now
         + if took >= SLOW_WRITE {
@@ -961,12 +1179,20 @@ fn step(
             }
             // Nothing on the notice is clickable, and a click would still
             // cancel a name edit or a Factory Reset confirmation.
-            Event::Mouse(_) if !fits || frame_stale => None,
+            Event::Mouse(_) if !fits => None,
+            Event::Mouse(event) if frame_stale => {
+                note_stale_mouse(app, event.kind);
+                None
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 app.armed_preset_action = None;
                 handle_key(app, key.code, key.modifiers)
             }
             Event::Mouse(event) => {
+                // A click is no more typing for a name edit cut short.
+                if !matches!(event.kind, MouseEventKind::Moved) {
+                    app.input_cut_short = false;
+                }
                 let action = mouse::handle_mouse(app, event, hits)
                     .and_then(|key| handle_key(app, key, KeyModifiers::NONE));
                 // Left over when the click's Enter didn't reach a strip.
@@ -1066,11 +1292,30 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     // ── Preset or device name editing mode ────────────────────────────────────
     // Handled before the quit keys so `q` can be typed in a name, and Ctrl+C
     // doesn't quit while editing.
+    // Keys still meant for a prompt or name edit a failed reconnect closed
+    // (`App::input_cut_short`): the Enter that would have confirmed or saved
+    // it must not toggle Mute instead.
+    if app.input_cut_short {
+        match code {
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Esc => {
+                app.input_cut_short = false;
+                app.set_ok("The reconnect closed it, so nothing was sent. Keys work again.");
+                return None;
+            }
+            KeyCode::Char(_) | KeyCode::Backspace if !mods.contains(KeyModifiers::CONTROL) => {
+                app.set_err(INPUT_CUT_SHORT_NOTE);
+                return None;
+            }
+            _ => app.input_cut_short = false,
+        }
+    }
     if app.editing_name() {
+        // Characters, not bytes: a preset name may hold any, and a device
+        // name only ASCII (`is_device_name_char()`), one byte each.
         let (max_len, device_name) = if app.editing_device_name {
             (protocol::DEVICE_NAME_MAX_LEN, true)
         } else {
-            (40, false)
+            (PRESET_NAME_MAX_CHARS, false)
         };
         match code {
             KeyCode::Enter if device_name => {
@@ -1086,8 +1331,10 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 app.editing_preset_name = false;
                 let name = std::mem::take(&mut app.name_draft);
                 let i = app.editing_preset_index;
-                if let Some(slot) = &mut app.presets[i] {
-                    slot.name = name;
+                if name.trim().is_empty() {
+                    app.set_err("The preset name can't be empty.");
+                } else if let Some(slot) = &mut app.presets[i] {
+                    app.preset_name_before = Some(std::mem::replace(&mut slot.name, name));
                     return Some(DeviceAction::PersistPresetName(i));
                 }
             }
@@ -1101,7 +1348,7 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
             }
             KeyCode::Char(c)
                 if !mods.contains(KeyModifiers::CONTROL)
-                    && app.name_draft.len() < max_len
+                    && app.name_draft.chars().count() < max_len
                     && (!device_name || protocol::is_device_name_char(c)) =>
             {
                 app.name_draft.push(c);
@@ -1180,6 +1427,14 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 app.editing_preset_index = i;
                 return None;
             }
+            // Neither can go until the settings are read (`reads_no_state()`),
+            // so don't start one only to refuse it at the end.
+            if matches!(app.focus, app::Focus::DeviceName | app::Focus::FactoryReset)
+                && app.state_unread
+            {
+                app.set_err(STATE_UNREAD_HINT);
+                return None;
+            }
             if app.focus == app::Focus::DeviceName {
                 // Only focusable on models that support renaming.
                 if app.device_model.has_device_rename() {
@@ -1198,7 +1453,7 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
                 if app.supports_factory_reset() {
                     app.confirming_factory_reset = true;
                     app.set_err(
-                        "! This will erase all device settings. Press Enter to confirm, any other key to cancel.",
+                        "! Erase all device settings? Enter confirms, any other key cancels.",
                     );
                 }
                 return None;
@@ -1207,6 +1462,10 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         }
         KeyCode::Char('s') if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetName(i) | app::Focus::PresetActions(i) = app.focus {
+                if app.preset_unreadable[i] {
+                    app.set_err(unreadable_preset_note(i));
+                    return None;
+                }
                 Some(DeviceAction::SavePreset(i))
             } else {
                 None
@@ -1223,7 +1482,7 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
         }
         KeyCode::Char('d') | KeyCode::Delete if app.active_tab == app::Tab::Presets => {
             if let app::Focus::PresetActions(i) = app.focus {
-                if app.presets[i].is_some() {
+                if app.presets[i].is_some() || app.preset_unreadable[i] {
                     Some(DeviceAction::DeletePreset(i))
                 } else {
                     None
@@ -1269,7 +1528,7 @@ fn apply_action(
     let mode_before = app.device_state.mode;
     let result = match &action {
         DeviceAction::Refresh => refresh(app, device),
-        DeviceAction::Reconnect => reconnect(app, device),
+        DeviceAction::Reconnect => reconnect(app, device, false),
         DeviceAction::SetGain(gain_tenths) => {
             app.set_ok(gain_line(*gain_tenths));
             send_if_connected(device, |d| d.set_gain(*gain_tenths))
@@ -1288,22 +1547,33 @@ fn apply_action(
             // a script doesn't take the error as "nothing changed" and switch
             // again (the MV7 re-reads everything; the MVX2U Gen 1 and MV6 the gain).
             .and_then(|()| {
-                resync_after_mode(app, device, *mode).with_context(|| {
-                    format!("The mode was switched to {mode}, but the read after the switch failed")
-                })
+                resync_after_mode(app, device, *mode)
+                    .with_context(|| WriteLanded(mode_switched_note(*mode)))
             })
         }
         DeviceAction::SetAutoPosition(pos) => {
             app.set_ok(position_line(*pos));
             let tone = app.device_state.auto_tone;
-            send_if_connected(device, |d| d.set_auto_position(*pos, tone))
-                .and_then(|()| resync_mv7_state(app, device))
+            send_if_connected(device, |d| d.set_auto_position(*pos, tone)).and_then(|()| {
+                resync_mv7_state(app, device).with_context(|| {
+                    WriteLanded(format!(
+                        "{}, but the read after it failed",
+                        position_line(*pos)
+                    ))
+                })
+            })
         }
         DeviceAction::SetAutoTone(tone) => {
             app.set_ok(tone_line(*tone));
             let position = app.device_state.auto_position;
-            send_if_connected(device, |d| d.set_auto_tone(position, *tone))
-                .and_then(|()| resync_mv7_state(app, device))
+            send_if_connected(device, |d| d.set_auto_tone(position, *tone)).and_then(|()| {
+                resync_mv7_state(app, device).with_context(|| {
+                    WriteLanded(format!(
+                        "{}, but the read after it failed",
+                        tone_line(*tone)
+                    ))
+                })
+            })
         }
         DeviceAction::SetAutoGain(gain) => {
             app.set_ok(match app.device_model {
@@ -1367,6 +1637,9 @@ fn apply_action(
             }
             app.set_ok("EQ flattened.");
             send_if_connected(device, |d| {
+                // One exchange, as a preset load is: a busy device stops it
+                // before the first band, so the old gains can be put back.
+                let _exclusive = d.exclusive()?;
                 for band in 0..5 {
                     d.set_eq_band_gain(band, 0)?;
                 }
@@ -1580,7 +1853,15 @@ fn apply_action(
                     } else {
                         app.set_err(message);
                     }
-                    resync_mv7_state(app, device)
+                    // The load landed, under its own lock: the re-read after
+                    // it is a second exchange, whose failure (Busy included)
+                    // must not put back the values from before the load.
+                    resync_mv7_state(app, device).with_context(|| {
+                        WriteLanded(format!(
+                            "Loaded \"{}\", but the read after it failed",
+                            slot.name
+                        ))
+                    })
                 })
             } else {
                 app.set_err(format!("Preset slot {} is empty.", i + 1));
@@ -1589,24 +1870,31 @@ fn apply_action(
         }
         DeviceAction::DeletePreset(i) => match presets::delete_preset(*i) {
             Ok(()) => {
-                let name = app.presets[*i]
-                    .as_ref()
-                    .map(|s| s.name.as_str())
-                    .unwrap_or("preset");
-                app.set_ok(format!("Deleted \"{}\".", name));
+                app.set_ok(match &app.presets[*i] {
+                    Some(slot) => format!("Deleted \"{}\".", slot.name),
+                    None => format!("Deleted Preset {}'s unreadable file.", i + 1),
+                });
                 app.presets[*i] = None;
+                app.preset_unreadable[*i] = false;
                 Ok(())
             }
             Err(e) => Err(e),
         },
         DeviceAction::PersistPresetName(i) => {
+            let before = app.preset_name_before.take();
             if let Some(slot) = &app.presets[*i] {
                 match presets::save_preset(*i, slot) {
                     Ok(()) => {
                         app.set_ok(format!("Renamed to \"{}\".", slot.name));
                         Ok(())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => {
+                        // Show the name the file still has, not the one typed.
+                        if let (Some(before), Some(slot)) = (before, &mut app.presets[*i]) {
+                            slot.name = before;
+                        }
+                        Err(e)
+                    }
                 }
             } else {
                 Ok(())
@@ -1625,6 +1913,13 @@ fn apply_action(
 
     if let Err(e) = result {
         recover_from_failure(app, device, &action, before, &e);
+        // A mode switch that didn't happen leaves focus on Mode, so the next
+        // Enter retries it instead of acting on the control it moved focus to.
+        if let DeviceAction::SetMode(mode) = &action
+            && app.device_state.mode != *mode
+        {
+            app.focus = app::Focus::Mode;
+        }
     }
 
     // A readback, a preset or an undone write may have changed the mode under
@@ -1707,21 +2002,26 @@ fn action_kind(action: &DeviceAction) -> ActionKind {
     }
 }
 
-/// Whether `action` is safe before the device's settings have been read: it
-/// reads them, or it doesn't depend on them.
+/// Whether `action` may go before the device's settings have been read: it
+/// reads them, it touches only the preset files, or it is mute, which
+/// refusing would leave live. A rename and Factory Reset, fixed writes too,
+/// wait for a read like any other change, so they never come from a screen
+/// showing stale values or none.
 fn reads_no_state(action: &DeviceAction) -> bool {
     match action_kind(action) {
-        ActionKind::Connection | ActionKind::PresetFile | ActionKind::FixedWrite => true,
+        ActionKind::Connection | ActionKind::PresetFile => true,
+        ActionKind::FixedWrite => matches!(action, DeviceAction::SetMute(_)),
         ActionKind::SavePreset | ActionKind::Write | ActionKind::Writes => false,
     }
 }
 
-/// After `action` failed, make the screen show what the device has. A single
-/// write the device clearly didn't take (it is gone, or the MV7 rejected it) is
-/// undone; the device being gone also covers a re-read after the write, which a
-/// reconnect repeats anyway. Anything else (a timeout, a re-read that failed
-/// after the write landed, several writes that stopped partway) leaves the
-/// device's settings unknown: they are read again, or marked unread until `r`.
+/// After `action` failed, make the screen show what the device has. A write
+/// the device clearly didn't take is undone: a single write to a device that
+/// is gone or (the MV7) rejected it, or any write another shurectl kept
+/// `Busy`, which sent nothing (a preset load and `f` hold one lock for all
+/// their writes). Anything else (a timeout, a re-read that failed after the
+/// write landed, several writes that stopped partway) leaves the device's
+/// settings unknown: they are read again, or marked unread until `r`.
 fn recover_from_failure(
     app: &mut App,
     device: &Option<ShureDevice>,
@@ -1730,17 +2030,39 @@ fn recover_from_failure(
     e: &anyhow::Error,
 ) {
     let mut gone = is_disconnect(e);
-    let read_back = match action_kind(action) {
+    // A re-read now would wait as long for the same lock.
+    let busy = is_busy(e);
+    // The write landed and only the read after it failed: the old values are
+    // no longer the device's, so they aren't put back.
+    let landed = e.downcast_ref::<WriteLanded>().is_some();
+    let kind = action_kind(action);
+    // Several writes that stopped partway undo nothing; Busy stops them
+    // before the first (they hold one lock), so it undoes them too.
+    let single = match kind {
+        ActionKind::FixedWrite | ActionKind::Write => true,
+        ActionKind::Writes
+        | ActionKind::Connection
+        | ActionKind::PresetFile
+        | ActionKind::SavePreset => false,
+    };
+    let read_back = match kind {
         ActionKind::Connection | ActionKind::PresetFile | ActionKind::SavePreset => None,
-        ActionKind::FixedWrite | ActionKind::Write if gone || is_rejected(e) => {
+        ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes
+            if !landed && (busy || (single && (gone || is_rejected(e)))) =>
+        {
             if let Some(state) = before {
                 app.device_state = state;
             }
+            // Busy means another shurectl was at the device, maybe writing
+            // (a Stream Deck --gain), and the live poll waited too: the values
+            // put back may be stale. A key queued during the wait must not
+            // step from them, so they count as unread until `r`; mute still goes.
+            app.state_unread |= busy;
             None
         }
         ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes => {
             let read = match device {
-                Some(dev) if !gone => match reload_state(app, dev) {
+                Some(dev) if !gone && !busy => match reload_state(app, dev) {
                     Ok(_) => true,
                     Err(read_err) => {
                         gone = is_disconnect(&read_err);
@@ -1756,13 +2078,36 @@ fn recover_from_failure(
     // A mute nothing could read back may or may not have landed. Show it as
     // off: Muted over a live mic is the worse mistake, and the live poll
     // shows the real state once the device answers.
-    let mute_unknown = matches!(action, DeviceAction::SetMute(_)) && read_back == Some(false);
+    // Busy sent nothing, but the Muted put back may be stale: another
+    // shurectl may have unmuted the mic, and the live poll waits on it too.
+    let mute_unknown = matches!(action, DeviceAction::SetMute(_))
+        && (read_back == Some(false) || (busy && read_back.is_none() && app.device_state.muted));
     if mute_unknown {
         app.device_state.muted = false;
     }
     if gone {
         app.device_connected = false;
     }
+    // A landed write's note says what happened; the cause under it (Busy, a
+    // lost device, a timeout) says why the read after it failed. Unread,
+    // the hint goes before the cause, so it fits an 80-column status bar.
+    let landed_unread = e
+        .downcast_ref::<WriteLanded>()
+        .filter(|_| read_back == Some(false) && !gone && !mute_unknown)
+        .map(|note| {
+            let full = format!("{e:#}");
+            let cause = full
+                .strip_prefix(&format!("{}: ", note.0))
+                .unwrap_or(&full)
+                .trim_end_matches('.')
+                .to_string();
+            format!("{}{LANDED_HINT} {cause}.", note.0)
+        });
+    let e = if landed {
+        format!("{e:#}")
+    } else {
+        e.to_string()
+    };
     app.set_err(if gone {
         format!("Device error: {e} — {RECONNECT_HINT}")
     } else {
@@ -1771,10 +2116,60 @@ fn recover_from_failure(
             Some(false) if mute_unknown => {
                 format!("Device error: {e}. {MUTE_UNKNOWN_NOTE} {STATE_UNREAD_HINT}")
             }
-            Some(false) => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
-            None => format!("Device error: {e}"),
+            Some(false) => match landed_unread {
+                Some(message) => message,
+                None => format!("Device error: {e}. {STATE_UNREAD_HINT}"),
+            },
+            // Said without `e`'s context, so that it fits and names Busy.
+            None if busy => match kind {
+                ActionKind::FixedWrite | ActionKind::Write | ActionKind::Writes => {
+                    if mute_unknown {
+                        busy_status(&format!("not sent, {BUSY_MUTE_OFF}"))
+                    } else {
+                        busy_status("not sent")
+                    }
+                }
+                // `r`, or a reconnect after a replug: nothing was sent.
+                ActionKind::Connection | ActionKind::PresetFile | ActionKind::SavePreset => {
+                    busy_status("nothing read")
+                }
+            },
+            // `r` or a reconnect whose readback failed shows Mute alone.
+            None if app.settings_never_read && !gone && matches!(kind, ActionKind::Connection) => {
+                never_read_status(&e)
+            }
+            None => match kind {
+                ActionKind::PresetFile | ActionKind::SavePreset => {
+                    format!("Preset file error: {e}")
+                }
+                ActionKind::Connection
+                | ActionKind::FixedWrite
+                | ActionKind::Write
+                | ActionKind::Writes => format!("Device error: {e}"),
+            },
         }
     });
+}
+
+/// Context on the error from the read after a write that landed (the re-read
+/// after a mode switch, or after an MV7 Auto Level row), so that
+/// `recover_from_failure()` marks the state unread instead of undoing a
+/// write the device has. `anyhow` still finds a `Disconnected` or `Busy`
+/// under it.
+#[derive(Debug)]
+struct WriteLanded(String);
+
+impl std::fmt::Display for WriteLanded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Says a mode switch landed when the read after it failed, so a script or
+/// user doesn't take the error as "nothing changed" and switch again. The TUI
+/// and `--mode` both use it.
+fn mode_switched_note(mode: InputMode) -> String {
+    format!("{}, but the read after it failed", mode_line(mode))
 }
 
 /// Whether `e` means the device is gone (a HID read or write failed), as
@@ -1785,6 +2180,54 @@ fn is_disconnect(e: &anyhow::Error) -> bool {
 
 fn is_rejected(e: &anyhow::Error) -> bool {
     e.downcast_ref::<device::Rejected>().is_some()
+}
+
+/// Say why a click or wheel step aimed at the previous frame did nothing,
+/// after what the pending wheel write said (an error, or a re-read's new
+/// values), which matters more.
+fn note_stale_mouse(app: &mut App, kind: MouseEventKind) {
+    match kind {
+        MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
+        MouseEventKind::Up(_)
+        | MouseEventKind::Drag(_)
+        | MouseEventKind::Moved
+        | MouseEventKind::ScrollLeft
+        | MouseEventKind::ScrollRight => return,
+    }
+    // Added once however many clicks are dropped, and never so that it
+    // pushes "press r" off an 80-column status bar: that hint shows while
+    // the state is unread, and the failure in front of it is what changed
+    // the screen, so it explains the dropped click itself.
+    let status = app.status_message.trim();
+    let after = format!("{status} {STALE_MOUSE_NOTE}");
+    let message = if status.is_empty() {
+        STALE_MOUSE_NOTE.to_string()
+    } else if status.contains(STALE_MOUSE_NOTE) {
+        status.to_string()
+    } else if ratatui::text::Span::raw(after.as_str()).width() <= STATUS_FIT {
+        after
+    } else if app.state_unread {
+        status.to_string()
+    } else {
+        format!("{STALE_MOUSE_NOTE} {status}")
+    };
+    if app.status_is_error {
+        app.set_err(message);
+    } else {
+        app.set_ok(message);
+    }
+}
+
+/// Status for a click or wheel step dropped because the screen changed under it.
+const STALE_MOUSE_NOTE: &str = "The screen changed under the mouse, so that was ignored.";
+
+/// The longest status an 80-column status bar shows whole, after its "✗ ".
+const STATUS_FIT: usize = ui::MIN_SIZE.0 as usize - 2;
+
+/// Whether another shurectl kept the device for the whole wait: nothing was
+/// sent or read, and the handle is fine.
+fn is_busy(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<device::Busy>().is_some()
 }
 
 /// Re-read the device state. If that fails, the handle has usually gone stale
@@ -1799,7 +2242,21 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         app.set_ok("Demo mode — no device to refresh.");
         return Ok(());
     };
-    let read_err = match reload_state(app, dev) {
+    // Waiting for another shurectl, `r` tries for a second, not 5: the
+    // live poll also reads it once the lock is free, but only tries without
+    // waiting, which a shurectl holding it most of each second can starve.
+    let read = if app.is_waiting_for_device() {
+        match dev.exclusive_for_labels() {
+            Ok(_turn) => reload_state(app, dev),
+            Err(_) => {
+                app.set_ok(WAITING_FOR_DEVICE);
+                return Ok(());
+            }
+        }
+    } else {
+        reload_state(app, dev)
+    };
+    let read_err = match read {
         Ok(skipped) => {
             app.device_connected = true;
             app.set_ok(format!(
@@ -1814,13 +2271,32 @@ fn refresh(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
         }
         Err(e) => e,
     };
+    // Nothing was read, and reopening the handle wouldn't get the lock sooner.
+    if is_busy(&read_err) {
+        return wait_if_never_read(app, read_err);
+    }
     app.device_connected = !is_disconnect(&read_err);
-    reconnect(app, device).map_err(|e| anyhow::anyhow!("{read_err}. Reconnect failed: {e}"))
+    // The lock was free, so the screen no longer waits for another shurectl;
+    // a reconnect that finds it busy again says so itself.
+    app.waiting_for_device = false;
+    // A busy reopened handle keeps its type, so `recover_from_failure()`
+    // neither re-reads nor loses "press r".
+    reconnect(app, device, true).map_err(|e| {
+        // The same failure twice (a GET the device doesn't answer) says it once.
+        if is_busy(&e) || e.to_string() == read_err.to_string() {
+            e
+        } else {
+            anyhow::anyhow!("{read_err}. Reconnect failed: {e}")
+        }
+    })
 }
 
 /// Open the same device again and load its state from the new handle. Used by
 /// `refresh()` and by the presence poll once an unplugged device is back.
-fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
+/// Only `r` waits for another shurectl's turn (`wait_for_turn`): the presence
+/// poll would freeze the screen meanwhile, so it shows the waiting screen,
+/// and the live poll reads the device once it is free.
+fn reconnect(app: &mut App, device: &mut Option<ShureDevice>, wait_for_turn: bool) -> Result<()> {
     let Some(dev) = device.as_ref() else {
         return Ok(());
     };
@@ -1833,8 +2309,16 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
             return Err(e);
         }
     };
-    let loaded = reload_state(app, &reopened);
+    let loaded = if wait_for_turn {
+        reload_state(app, &reopened)
+    } else {
+        // The readback nests inside this guard, so it doesn't wait either.
+        reopened
+            .exclusive_now()
+            .and_then(|_turn| reload_state(app, &reopened))
+    };
     let name = reopened.model.display_name();
+    let serial_number = reopened.serial_number.clone();
     // Keep the new handle even if its readback failed: the old one may be dead.
     *device = Some(reopened);
     app.meter_restart_pending = true;
@@ -1848,13 +2332,82 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            app.device_connected = !is_disconnect(&e);
             // The shown state came from the old handle and may be out of date
-            // (a factory reset, or another app changing settings while unplugged).
-            app.state_unread = true;
+            // (the mic unmuted by its replug: muted, replugged, read back
+            // unmuted in 3 of 3 tries on the MVX2U Gen 2, 2026-11-20,
+            // unconfirmed on other models; a factory reset; or another app
+            // changing settings while unplugged): show what a first readback
+            // that failed shows.
+            mark_never_read(app, &serial_number, &e);
+            if app.waiting_for_device {
+                app.set_ok(WAITING_FOR_DEVICE);
+                return Ok(());
+            }
             Err(e)
         }
     }
+}
+
+/// Status for a key typed into a prompt or name edit a failed reconnect closed.
+const INPUT_CUT_SHORT_NOTE: &str =
+    "The reconnect closed what you were typing in; keys are ignored. Press Esc.";
+
+/// Longest preset name, in characters.
+const PRESET_NAME_MAX_CHARS: usize = 40;
+
+/// Why `s` won't save over a preset slot whose file couldn't be read.
+fn unreadable_preset_note(index: usize) -> String {
+    format!(
+        "Preset {}'s file couldn't be read. Press d to delete it, then s to save.",
+        index + 1
+    )
+}
+
+/// A readback on a new connection (startup, or a reconnect) failed, so
+/// nothing shown came from it: show the Mute control alone
+/// (`App::settings_never_read`), as OFF until the live poll reads it, since
+/// Muted over a live mic is the worse mistake. Busy waits for the other
+/// shurectl instead, showing no control (`App::waiting_for_device`).
+fn mark_never_read(app: &mut App, serial_number: &str, e: &anyhow::Error) {
+    app.device_connected = !is_disconnect(e);
+    app.state_unread = true;
+    app.settings_never_read = true;
+    app.waiting_for_device = is_busy(e);
+    app.active_tab = app::Tab::Main;
+    app.focus = app::Focus::Mute;
+    app.device_state.muted = false;
+    app.device_state.serial_number = serial_number.to_string();
+    // Nothing pending may survive onto a screen that doesn't show it: the
+    // Enter meant for it would confirm a Factory Reset or save a rename. The
+    // keys still meant for it are held back too (`App::input_cut_short`), or
+    // that Enter would toggle Mute instead.
+    app.input_cut_short =
+        app.editing_name() || app.confirming_factory_reset || app.confirming_preset_load.is_some();
+    app.confirming_factory_reset = false;
+    app.confirming_preset_load = None;
+    app.armed_preset_action = None;
+    app.editing_preset_name = false;
+    app.editing_device_name = false;
+    app.name_draft.clear();
+}
+
+/// The status for a readback on a new connection that failed, not busy. The
+/// hint comes first so that it shows on an 80-column status bar.
+fn never_read_status(e: &dyn std::fmt::Display) -> String {
+    format!("Couldn't read the settings. Press r to retry. {e}.")
+}
+
+/// A readback (`r`, or a reconnect) found another shurectl holding the
+/// device. Never read, it waits as the startup readback does
+/// (`App::waiting_for_device`): no controls, and the live poll reads the
+/// device once it is free. Otherwise `busy` goes to `recover_from_failure()`.
+fn wait_if_never_read(app: &mut App, busy: anyhow::Error) -> Result<()> {
+    if !app.settings_never_read {
+        return Err(busy);
+    }
+    app.waiting_for_device = true;
+    app.set_ok(WAITING_FOR_DEVICE);
+    Ok(())
 }
 
 /// How often the event loop checks that the device is still plugged in.
@@ -1865,6 +2418,23 @@ const RECONNECT_HINT: &str = "it reconnects automatically when plugged back in."
 
 /// Status-bar note after a failed write whose device was then read again.
 const READ_BACK_NOTE: &str = "Settings read back from the device.";
+
+/// The end of every busy status (`busy_status()`): the values shown count as
+/// unread until `r`. A one-shot run says to try again instead.
+const BUSY_HINT: &str = "Press r to retry.";
+
+/// After a write that landed and a read after it that failed, before the
+/// cause: the values shown count as unread until `r`.
+const LANDED_HINT: &str = " — press r to retry.";
+
+/// A busy mute's part of its status: it shows OFF over a restored Muted.
+const BUSY_MUTE_OFF: &str = "mute shown OFF";
+
+/// The status after another shurectl kept the device for the whole wait. It
+/// fits one 80-column status bar, so `BUSY_HINT` always shows.
+fn busy_status(what: &str) -> String {
+    format!("{}: {what}. {BUSY_HINT}", device::Busy)
+}
 
 /// Status-bar note for a mute nothing could read back (`recover_from_failure()`).
 const MUTE_UNKNOWN_NOTE: &str = "Mute state unknown, shown as OFF.";
@@ -1931,15 +2501,31 @@ const LIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// device gives no usable answer for stays as shown; the next poll asks again.
 /// A mode change re-reads everything, since it changes which controls apply
 /// (and on the MV7 resets EQ and compressor). A HID failure marks the device
-/// disconnected, as the presence poll does. Skipped in demo mode and while
-/// disconnected; it runs while the settings are unread too, since mute can be
-/// written then and the screen should show the mic's real state.
-fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
+/// disconnected, as the presence poll does. Skipped in demo mode, while
+/// disconnected, and while another shurectl holds the device (it never waits
+/// for the lock); it runs while the settings are unread too, since mute can be
+/// written then and the screen should show the mic's real state. When the
+/// first readback found the device busy (`App::waiting_for_device`), it reads
+/// everything instead, once the device is free. Returns what it read, `None`
+/// when it read nothing (skipped, or the read failed).
+fn poll_live(app: &mut App, device: &Option<ShureDevice>) -> Option<Live> {
     let Some(dev) = device.as_ref() else {
-        return; // demo mode
+        return None; // demo mode
     };
     if !app.device_connected {
-        return;
+        return None;
+    }
+    // Another shurectl holds the device: skip this turn rather than wait for
+    // it, which would stall keys and the screen for every poll it holds on
+    // through. The reads below nest inside this guard and don't wait.
+    let Ok(_turn) = dev.exclusive_now() else {
+        return None;
+    };
+    // The first readback found the device busy, and now it is free: read
+    // everything, as at startup. The readback nests inside this guard.
+    if app.is_waiting_for_device() {
+        load_initial_state(app, Some(dev));
+        return None;
     }
     // While the settings are unread only mute is read: the rest would read as
     // changes from defaults, and a GET the readback found unanswered would
@@ -1955,9 +2541,12 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
     };
     let live = match read {
         Ok(live) => live,
-        Err(e) if is_disconnect(&e) => return mark_disconnected(app, dev.model),
+        Err(e) if is_disconnect(&e) => {
+            mark_disconnected(app, dev.model);
+            return None;
+        }
         // Anything else leaves the values unknown for now, not changed.
-        Err(_) => return,
+        Err(_) => return None,
     };
     let model = app.device_model;
     let state = &mut app.device_state;
@@ -2001,7 +2590,8 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
         // then names the re-read's values, which are what the screen shows.
         if let Err(e) = reload_state(app, dev) {
             if is_disconnect(&e) {
-                return mark_disconnected(app, dev.model);
+                mark_disconnected(app, dev.model);
+                return None;
             }
             // The other values came from before the failed readback, so only
             // the mode, which caused it, is announced.
@@ -2011,7 +2601,7 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
                 "{} (changed on the device). {e}. {STATE_UNREAD_HINT}",
                 mode_line(app.device_state.mode)
             ));
-            return;
+            return Some(live);
         }
     }
     let state = &app.device_state;
@@ -2044,11 +2634,11 @@ fn poll_live(app: &mut App, device: &Option<ShureDevice>) {
         }
     }
     app.settle_focus(mode_before);
-    if changed.is_empty() {
-        return;
+    if !changed.is_empty() {
+        app.set_ok(format!("{} (changed on the device)", changed.join(", ")));
+        note_unread(app);
     }
-    app.set_ok(format!("{} (changed on the device)", changed.join(", ")));
-    note_unread(app);
+    Some(live)
 }
 
 /// The Monitor Mix as the device stores it: the MV7 stores 1% and 2% as 0%,
@@ -2128,6 +2718,10 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     app.device_state = readback.state;
     app.unread_gets = readback.skipped_gets;
     app.state_unread = false;
+    app.settings_never_read = false;
+    app.waiting_for_device = false;
+    // The full screen is back, so typing goes to its controls again.
+    app.input_cut_short = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
 }
@@ -2300,6 +2894,10 @@ fn apply_binary_preset(
     model: DeviceModel,
     write_monitor_mix: bool,
 ) -> Result<()> {
+    // One exchange for the whole load: another shurectl waiting can't come
+    // between the Gain Lock unlock and re-lock, and a busy device stops the
+    // load before its first write, not after the unlock.
+    let _exclusive = d.exclusive()?;
     d.set_mode(
         state.mode == InputMode::Auto,
         state.auto_position,
@@ -2474,6 +3072,15 @@ mod tests {
     use super::*;
     use fake_hid::FakeDevice;
     use protocol::{DeviceState, EqBand, EqPreset};
+
+    const MODELS: [DeviceModel; 6] = [
+        DeviceModel::Mvx2u,
+        DeviceModel::Mvx2uGen2,
+        DeviceModel::Mv6,
+        DeviceModel::Mv6Gen2,
+        DeviceModel::Mv7,
+        DeviceModel::Mv7Plus,
+    ];
 
     #[test]
     fn a_failed_write_is_undone_only_when_it_clearly_did_not_land() {
@@ -2711,6 +3318,122 @@ mod tests {
         assert_eq!(app.status_message, "Tone → Bright (changed on the device)");
     }
 
+    /// A first readback that fails leaves only defaults, which were never
+    /// the mic's: until a readback works, only Mute shows and takes focus,
+    /// and the other tabs are locked. `r` that reads the device brings back
+    /// the rest. On every model.
+    #[test]
+    fn settings_never_read_show_only_mute_until_r_reads_them() {
+        for model in MODELS {
+            let fake = FakeDevice::new(model);
+            let mut device = Some(fake.open());
+            let mut app = App {
+                device_model: model,
+                ..App::default()
+            };
+            let feature = match model {
+                DeviceModel::Mv7 => {
+                    fake.faults_mut(|faults| faults.unanswered_line = Some("inputGain".into()));
+                    None
+                }
+                DeviceModel::Mvx2u
+                | DeviceModel::Mvx2uGen2
+                | DeviceModel::Mv6
+                | DeviceModel::Mv6Gen2
+                | DeviceModel::Mv7Plus => Some("GAIN"),
+            };
+            fake.faults_mut(|faults| faults.refused_get = feature.map(Into::into));
+            load_initial_state(&mut app, device.as_ref());
+            assert!(app.settings_never_read && app.state_unread, "{model:?}");
+            assert_eq!(app.focus, app::Focus::Mute, "{model:?}");
+            app.focus_next();
+            assert_eq!(app.focus, app::Focus::Mute, "{model:?}");
+            app.focus_prev();
+            assert_eq!(app.focus, app::Focus::Mute, "{model:?}");
+            assert!(app.is_tab_locked(app::Tab::Eq) && app.is_tab_locked(app::Tab::Info));
+            assert!(app.offers(&DeviceAction::SetMute(true)), "{model:?}");
+            fake.faults_mut(|faults| {
+                faults.refused_get = None;
+                faults.unanswered_line = None;
+            });
+            apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
+            assert!(!app.settings_never_read && !app.state_unread, "{model:?}");
+            assert!(!app.is_tab_locked(app::Tab::Info), "{model:?}");
+            app.focus_next();
+            assert_ne!(app.focus, app::Focus::Mute, "{model:?}: focus moves again");
+        }
+    }
+
+    /// A first readback that found another shurectl holding the device shows
+    /// no control: Enter and arrows send nothing. Once the device is free the
+    /// live poll reads everything, and so does `r` (which tries for a second,
+    /// not 5); the fake isn't held here, so both read at once. Unplugged, the
+    /// screen no longer blames another shurectl.
+    #[test]
+    fn waiting_for_the_device_reads_it_once_free_and_offers_nothing_before() {
+        let waiting = |model| App {
+            device_model: model,
+            settings_never_read: true,
+            waiting_for_device: true,
+            state_unread: true,
+            focus: app::Focus::Mute,
+            device_connected: true,
+            ..App::default()
+        };
+        for model in MODELS {
+            let fake = FakeDevice::new(model);
+            let mut device = Some(fake.open());
+            let mut app = waiting(model);
+            assert!(app.toggle_focused().is_none(), "{model:?}");
+            assert!(app.adjust_focused(1).is_none(), "{model:?}");
+            poll_live(&mut app, &device);
+            assert!(
+                !app.waiting_for_device && !app.settings_never_read && !app.state_unread,
+                "{model:?}: {}",
+                app.status_message
+            );
+            assert!(!app.is_tab_locked(app::Tab::Info), "{model:?}");
+            let mut app = waiting(model);
+            apply_action(&mut app, &mut device, DeviceAction::Refresh, None);
+            assert!(
+                !app.waiting_for_device && !app.settings_never_read,
+                "{model:?}: r: {}",
+                app.status_message
+            );
+            let mut app = waiting(model);
+            app.device_connected = false;
+            assert!(!app.is_waiting_for_device(), "{model:?}");
+            assert!(
+                app.toggle_focused().is_some(),
+                "{model:?}: Mute shows unplugged"
+            );
+        }
+    }
+
+    /// `r` or a reconnect that finds the device busy before its settings
+    /// were ever read waits as the startup readback does; once they were
+    /// read, Busy goes on to `recover_from_failure()`. `r` on a waiting
+    /// device that has since been unplugged doesn't say it is waiting.
+    #[test]
+    fn a_busy_read_before_any_read_waits_for_the_device() {
+        let mut app = App {
+            settings_never_read: true,
+            device_connected: true,
+            ..App::default()
+        };
+        let busy = || anyhow::Error::new(device::Busy);
+        wait_if_never_read(&mut app, busy()).expect("waits");
+        assert!(app.waiting_for_device && !app.status_is_error);
+        assert_eq!(app.status_message, WAITING_FOR_DEVICE);
+        let mut read = App::default();
+        let err = wait_if_never_read(&mut read, busy()).expect_err("passed on");
+        assert!(is_busy(&err) && !read.waiting_for_device);
+        app.device_connected = false;
+        app.set_err("gone");
+        apply_action(&mut app, &mut None, DeviceAction::Refresh, None);
+        assert_ne!(app.status_message, WAITING_FOR_DEVICE);
+    }
+
     /// A mode switch whose re-read fails says the switch landed, so a
     /// script or user doesn't switch again: the MV7 re-reads everything after
     /// one, and here its first line goes unanswered.
@@ -2733,9 +3456,9 @@ mod tests {
         );
         assert!(app.status_is_error);
         assert!(
-            app.status_message.starts_with(
-                "Device error: The mode was switched to Auto Level, but the read after the switch failed."
-            ),
+            app.status_message
+                == "Mode → Auto Level, but the read after it failed — press r to retry. \
+                    No reply from the MV7 to \"micMute\".",
             "{}",
             app.status_message
         );
@@ -2897,14 +3620,49 @@ mod tests {
         assert_eq!(mic.gain_tenths, 255);
     }
 
-    /// Writing a pending wheel adjustment can change what the frame showed
-    /// before a click aimed at it is handled; here the write fails and the
-    /// device is read back. The click is dropped: it was on Auto Level,
-    /// counted as one step from the Manual shown, and the re-read found Auto
-    /// and moved focus to Mode, so it would have sent Manual to a mic just
-    /// switched to Auto elsewhere.
+    /// An MV7 slower than the live poll's 200 ms a line still gets its step:
+    /// before refusing one the poll couldn't check, the value is read again
+    /// with a longer wait (`reread_stepped()`).
     #[test]
-    fn a_click_after_a_failed_wheel_write_changed_the_screen_is_dropped() {
+    fn an_mv7_step_the_poll_couldnt_check_reads_the_value_again() {
+        let model = DeviceModel::Mv7;
+        let fake = FakeDevice::new(model);
+        let mut device = Some(fake.open());
+        let mut app = App {
+            device_model: model,
+            ..App::default()
+        };
+        load_initial_state(&mut app, device.as_ref());
+        let before = app.device_state.clone();
+        // The poll's first line goes unanswered, so it reads nothing else.
+        fake.faults_mut(|faults| faults.unanswered_line = Some("micMute".into()));
+        let now = Instant::now();
+        let mut loop_state = LoopState::new(now);
+        let gain_tenths = before.gain_tenths + model.gain_step_tenths();
+        app.device_state.gain_tenths = gain_tenths;
+        send_from_tui(
+            &mut app,
+            &mut device,
+            DeviceAction::SetGain(gain_tenths),
+            Some(before),
+            now,
+            &mut loop_state,
+        );
+        assert!(!app.status_is_error, "{}", app.status_message);
+        fake.faults_mut(|faults| faults.unanswered_line = None);
+        let mic = device
+            .as_ref()
+            .expect("device")
+            .get_state()
+            .expect("readback")
+            .state;
+        assert_eq!(mic.gain_tenths, gain_tenths);
+    }
+
+    /// Scroll the MV7's gain, let `between` change the fake, then click the
+    /// Auto Level pill: the pending wheel step is written first. Returns the
+    /// app and what the mic has afterwards.
+    fn wheel_then_click_auto_level(between: impl FnOnce(&FakeDevice, &App)) -> (App, DeviceState) {
         let model = DeviceModel::Mv7;
         let fake = FakeDevice::new(model);
         let mut device = Some(fake.open());
@@ -2952,15 +3710,7 @@ mod tests {
             &mut loop_state,
         );
         assert!(loop_state.pending_scroll.is_some());
-        // Switched to Auto elsewhere, and the pending gain write gets no reply.
-        let auto = DeviceState {
-            mode: InputMode::Auto,
-            ..DeviceState::default()
-        };
-        fake.set_on_device(fake_hid::LiveField::Mode, &auto);
-        // The line the pending write sends, whatever the gain step is.
-        let pending_gain = protocol::mv7_text::set_gain(app.device_state.gain_tenths).line;
-        fake.faults_mut(|faults| faults.unanswered_line = Some(pending_gain));
+        between(&fake, &app);
         let hits = draw(&app);
         let auto_level = at(&hits, mouse::Target::Pill(app::Focus::Mode, 1));
         step(
@@ -2972,21 +3722,334 @@ mod tests {
             now,
             &mut loop_state,
         );
-        // Without the failed write and its re-read, this tests nothing.
-        assert!(
-            app.status_is_error && app.status_message.contains(READ_BACK_NOTE),
-            "the gain write must fail and be read back: {}",
-            app.status_message
-        );
-        assert_eq!(app.device_state.mode, InputMode::Auto);
-        assert_eq!(app.focus, app::Focus::Mode);
         let mic = device
             .as_ref()
             .expect("device")
             .get_state()
             .expect("readback")
             .state;
+        (app, mic)
+    }
+
+    /// Writing a pending wheel adjustment can change what the frame showed
+    /// before a click aimed at it is handled; here the read before the step
+    /// (`read_before_step()`) finds the mic switched to Auto elsewhere, so
+    /// the gain isn't written. The click is dropped: it was on Auto Level,
+    /// counted as one step from the Manual shown, and the read moved focus to
+    /// Mode, so it would have sent Manual to a mic just switched to Auto.
+    #[test]
+    fn a_click_after_a_failed_wheel_write_changed_the_screen_is_dropped() {
+        let (app, mic) = wheel_then_click_auto_level(|fake, _| {
+            let auto = DeviceState {
+                mode: InputMode::Auto,
+                ..DeviceState::default()
+            };
+            fake.set_on_device(fake_hid::LiveField::Mode, &auto);
+        });
+        // Without the read finding the change, this tests nothing.
+        assert!(
+            app.status_message.contains("(changed on the device)"),
+            "the read before the gain step must find Auto: {}",
+            app.status_message
+        );
+        // The status says why the click did nothing.
+        assert!(
+            app.status_message.contains(STALE_MOUSE_NOTE),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        assert_eq!(app.focus, app::Focus::Mode);
         assert_eq!(mic.mode, InputMode::Auto);
+    }
+
+    /// The same with nothing changed elsewhere, but the pending gain write
+    /// unanswered: it fails and is read back, which puts the old gain on
+    /// screen, so the click aimed at the frame before is dropped too.
+    #[test]
+    fn a_click_after_a_failed_wheel_write_read_back_is_dropped() {
+        let (app, mic) = wheel_then_click_auto_level(|fake, app| {
+            // The line the pending write sends, whatever the gain step is.
+            let pending_gain = protocol::mv7_text::set_gain(app.device_state.gain_tenths).line;
+            fake.faults_mut(|faults| faults.unanswered_line = Some(pending_gain));
+        });
+        assert!(
+            app.status_is_error && app.status_message.contains(READ_BACK_NOTE),
+            "the gain write must fail and be read back: {}",
+            app.status_message
+        );
+        assert!(
+            app.status_message.contains(STALE_MOUSE_NOTE),
+            "{}",
+            app.status_message
+        );
+        assert_eq!(mic.mode, InputMode::Manual);
+        assert_eq!(app.device_state.mode, InputMode::Manual);
+    }
+
+    /// A device lost during the read after a mode switch that landed keeps
+    /// the new mode on screen, as the status says it switched, and marks the
+    /// rest unread rather than putting back the old values.
+    #[test]
+    fn a_mode_switch_that_landed_is_kept_when_its_re_read_loses_the_device() {
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            device_connected: true,
+            device_state: DeviceState {
+                mode: InputMode::Auto,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        let before = DeviceState {
+            mode: InputMode::Manual,
+            ..DeviceState::default()
+        };
+        let lost = anyhow::Error::new(device::Disconnected("read failed".into()))
+            .context(WriteLanded(mode_switched_note(InputMode::Auto)));
+        recover_from_failure(
+            &mut app,
+            &None,
+            &DeviceAction::SetMode(InputMode::Auto),
+            Some(before.clone()),
+            &lost,
+        );
+        assert_eq!(app.device_state.mode, InputMode::Auto);
+        assert!(app.state_unread);
+        assert!(!app.device_connected);
+        assert!(
+            app.status_message
+                .starts_with("Device error: Mode → Auto Level, but the read after it failed"),
+            "{}",
+            app.status_message
+        );
+
+        // The same loss on a write that didn't land puts the old value back.
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            device_connected: true,
+            device_state: DeviceState {
+                mode: InputMode::Auto,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        let lost = anyhow::Error::new(device::Disconnected("write failed".into()));
+        recover_from_failure(
+            &mut app,
+            &None,
+            &DeviceAction::SetMode(InputMode::Auto),
+            Some(before),
+            &lost,
+        );
+        assert_eq!(app.device_state.mode, InputMode::Manual);
+    }
+
+    /// A write another shurectl kept off the device sent nothing: the old
+    /// values come back and nothing is re-read (that would wait as long
+    /// again). That holds for a preset load too, which holds one lock for all
+    /// its writes. The other shurectl may have changed them meanwhile, so they
+    /// count as unread, and a Muted put back shows OFF: the poll waited too.
+    #[test]
+    fn a_busy_write_puts_the_old_value_back_without_a_re_read() {
+        let shown = DeviceState {
+            gain_tenths: 300,
+            muted: false,
+            ..DeviceState::default()
+        };
+        for (action, before, after) in [
+            (
+                DeviceAction::SetGain(300),
+                DeviceState {
+                    gain_tenths: 240,
+                    ..DeviceState::default()
+                },
+                None,
+            ),
+            (
+                DeviceAction::LoadPreset(0),
+                DeviceState {
+                    gain_tenths: 180,
+                    ..DeviceState::default()
+                },
+                None,
+            ),
+            (
+                DeviceAction::SetMute(true),
+                DeviceState {
+                    muted: false,
+                    ..DeviceState::default()
+                },
+                None,
+            ),
+            (
+                DeviceAction::SetMute(false),
+                DeviceState {
+                    muted: true,
+                    ..DeviceState::default()
+                },
+                Some(DeviceState {
+                    muted: false,
+                    ..DeviceState::default()
+                }),
+            ),
+        ] {
+            let fake = FakeDevice::new(DeviceModel::Mvx2uGen2);
+            let device = Some(fake.open());
+            let mut app = App {
+                device_model: DeviceModel::Mvx2uGen2,
+                device_connected: true,
+                device_state: shown.clone(),
+                ..App::default()
+            };
+            let start = fake.log_len();
+            let busy = anyhow::Error::new(device::Busy);
+            recover_from_failure(&mut app, &device, &action, Some(before.clone()), &busy);
+            let shows_off = after.is_some();
+            assert_eq!(app.device_state, after.unwrap_or(before), "{action:?}");
+            assert!(fake.log_since(start).is_empty(), "{action:?}: re-read");
+            assert!(app.device_connected && app.state_unread, "{action:?}");
+            let expected = if shows_off {
+                "not sent, mute shown OFF"
+            } else {
+                "not sent"
+            };
+            assert_eq!(
+                app.status_message,
+                format!("{}: {expected}. Press r to retry.", device::Busy),
+                "{action:?}"
+            );
+            // With the error's cross, it fits an 80-column status bar.
+            assert!(app.status_message.chars().count() <= 78, "{action:?}");
+            // Gain steps wait for `r`; mute still goes.
+            assert!(!app.offers(&DeviceAction::SetGain(250)), "{action:?}");
+            assert!(app.offers(&DeviceAction::SetMute(true)), "{action:?}");
+        }
+    }
+
+    /// A dropped click never pushes "press r" off an 80-column status bar,
+    /// and is noted once however many clicks are dropped.
+    #[test]
+    fn a_dropped_click_keeps_the_press_r_hint_in_view() {
+        let mut app = App::default();
+        app.set_err(busy_status(&format!("not sent, {BUSY_MUTE_OFF}")));
+        app.state_unread = true;
+        let busy = app.status_message.clone();
+        note_stale_mouse(&mut app, MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(app.status_message, busy);
+        assert!(app.status_is_error);
+        // Read, a long status gets the note first; a short one after it.
+        app.state_unread = false;
+        note_stale_mouse(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.status_message, format!("{STALE_MOUSE_NOTE} {busy}"));
+        note_stale_mouse(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.status_message, format!("{STALE_MOUSE_NOTE} {busy}"));
+        app.set_ok("Gain → 30.0 dB");
+        note_stale_mouse(&mut app, MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(
+            app.status_message,
+            format!("Gain → 30.0 dB {STALE_MOUSE_NOTE}")
+        );
+        assert!(!app.status_is_error);
+    }
+
+    /// An MV7 preset load lands under its own lock, and the full re-read
+    /// after it is a second exchange. Busy there must not put back the
+    /// values from before the load, which the mic no longer has: the screen
+    /// keeps the preset, marked unread, and the status says why.
+    #[test]
+    fn a_busy_re_read_after_an_mv7_preset_load_keeps_the_preset() {
+        let fake = FakeDevice::new(DeviceModel::Mv7);
+        let device = Some(fake.open());
+        let loaded = DeviceState {
+            gain_tenths: 100,
+            ..DeviceState::default()
+        };
+        let mut app = App {
+            device_model: DeviceModel::Mv7,
+            device_connected: true,
+            device_state: loaded.clone(),
+            ..App::default()
+        };
+        let before = DeviceState {
+            gain_tenths: 300,
+            ..DeviceState::default()
+        };
+        let start = fake.log_len();
+        let busy = anyhow::Error::new(device::Busy).context(WriteLanded(
+            "Loaded \"Talk\", but the read after it failed".into(),
+        ));
+        recover_from_failure(
+            &mut app,
+            &device,
+            &DeviceAction::LoadPreset(0),
+            Some(before),
+            &busy,
+        );
+        assert_eq!(app.device_state, loaded);
+        assert!(app.state_unread && app.device_connected);
+        assert!(fake.log_since(start).is_empty(), "re-read");
+        assert!(
+            app.status_message
+                == format!(
+                    "Loaded \"Talk\", but the read after it failed — press r to retry. {}.",
+                    device::Busy
+                ),
+            "{}",
+            app.status_message
+        );
+    }
+
+    /// `r` on a busy device sent nothing, so it doesn't say "try again" about
+    /// a write; the settings shown are still the ones read.
+    #[test]
+    fn a_busy_refresh_says_to_press_r_again() {
+        let mut app = App {
+            device_model: DeviceModel::Mvx2uGen2,
+            device_connected: true,
+            ..App::default()
+        };
+        let busy = anyhow::Error::new(device::Busy);
+        recover_from_failure(&mut app, &None, &DeviceAction::Refresh, None, &busy);
+        assert_eq!(
+            app.status_message,
+            format!("{}: nothing read. Press r to retry.", device::Busy)
+        );
+        assert!(app.device_connected);
+    }
+
+    /// A mode switch whose re-read finds the device busy keeps the switch
+    /// and marks the rest unread, without waiting on the lock again.
+    #[test]
+    fn a_busy_re_read_after_a_landed_switch_marks_the_state_unread() {
+        let fake = FakeDevice::new(DeviceModel::Mvx2u);
+        let device = Some(fake.open());
+        let mut app = App {
+            device_model: DeviceModel::Mvx2u,
+            device_connected: true,
+            device_state: DeviceState {
+                mode: InputMode::Manual,
+                ..DeviceState::default()
+            },
+            ..App::default()
+        };
+        let before = DeviceState {
+            mode: InputMode::Auto,
+            ..DeviceState::default()
+        };
+        let start = fake.log_len();
+        let busy = anyhow::Error::new(device::Busy)
+            .context(WriteLanded(mode_switched_note(InputMode::Manual)));
+        recover_from_failure(
+            &mut app,
+            &device,
+            &DeviceAction::SetMode(InputMode::Manual),
+            Some(before),
+            &busy,
+        );
+        assert_eq!(app.device_state.mode, InputMode::Manual);
+        assert!(app.state_unread && app.device_connected);
+        assert!(fake.log_since(start).is_empty(), "re-read");
     }
 
     /// Load `slot` on `fake` the way the Presets tab does, from a shown state
@@ -3289,6 +4352,95 @@ mod tests {
         assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
         assert!(!app.editing_device_name);
         assert!(app.status_is_error);
+    }
+
+    /// A preset name takes 40 characters of any kind, not 40 bytes, and an
+    /// empty or blank one is refused, keeping the name the file has.
+    #[test]
+    fn preset_names_count_characters_and_cannot_be_blank() {
+        let mut app = App {
+            active_tab: app::Tab::Presets,
+            ..App::default()
+        };
+        app.presets[0] = Some(PresetSlot::from_device_state(
+            "Voice",
+            &app.device_state,
+            app.device_model,
+        ));
+        let edit = |app: &mut App| {
+            app.editing_preset_name = true;
+            app.editing_preset_index = 0;
+            app.name_draft.clear();
+        };
+        edit(&mut app);
+        for _ in 0..PRESET_NAME_MAX_CHARS + 5 {
+            handle_key(&mut app, KeyCode::Char('é'), KeyModifiers::NONE);
+        }
+        assert_eq!(app.name_draft.chars().count(), PRESET_NAME_MAX_CHARS);
+
+        edit(&mut app);
+        handle_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+        assert!(app.status_is_error && !app.editing_preset_name);
+        assert_eq!(
+            app.presets[0].as_ref().map(|slot| slot.name.as_str()),
+            Some("Voice")
+        );
+    }
+
+    /// A Factory Reset prompt or a rename open when a reconnect's readback
+    /// fails is cancelled: the Mute-only screen doesn't show it, so the Enter
+    /// meant for Mute must not confirm it. Neither can start again until the
+    /// settings are read.
+    #[test]
+    fn a_failed_reconnect_cancels_what_its_screen_hides() {
+        let read_failed = anyhow::anyhow!("no usable reply");
+        for pending in [0, 1] {
+            let mut app = App {
+                device_model: DeviceModel::Mvx2uGen2,
+                active_tab: app::Tab::Info,
+                focus: app::Focus::FactoryReset,
+                ..App::default()
+            };
+            if pending == 0 {
+                app.confirming_factory_reset = true;
+            } else {
+                app.focus = app::Focus::DeviceName;
+                app.editing_device_name = true;
+                app.name_draft = "Studio".into();
+            }
+            mark_never_read(&mut app, "", &read_failed);
+            assert!(!app.editing_name() && !app.confirming_factory_reset);
+            // The live poll found the mic muted before the user's next keys.
+            app.device_state.muted = true;
+            // Typing still meant for it is ignored, saying so, so a `q`
+            // doesn't quit; the Enter meant to confirm or save sends nothing,
+            // where toggling Mute would unmute the mic.
+            assert!(handle_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE).is_none());
+            assert!(!app.should_quit && app.status_message == INPUT_CUT_SHORT_NOTE);
+            assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+            assert!(app.device_state.muted && !app.input_cut_short, "{pending}");
+            // After it, Enter is the Mute control's again.
+            assert!(matches!(
+                handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
+                Some(DeviceAction::SetMute(false))
+            ));
+        }
+        for focus in [app::Focus::FactoryReset, app::Focus::DeviceName] {
+            let mut app = App {
+                device_model: DeviceModel::Mvx2uGen2,
+                active_tab: app::Tab::Info,
+                focus,
+                state_unread: true,
+                ..App::default()
+            };
+            assert!(handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+            assert!(
+                !app.confirming_factory_reset && !app.editing_device_name,
+                "{focus:?}"
+            );
+            assert!(app.status_message.contains(STATE_UNREAD_HINT), "{focus:?}");
+        }
     }
 
     #[test]

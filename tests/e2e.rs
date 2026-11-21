@@ -105,7 +105,9 @@ fn load_scenarios() -> Vec<Scenario> {
 /// One long-lived `shurectl --qa` process for a model and device mode.
 struct Session {
     child: Child,
-    stdin: ChildStdin,
+    /// Closed first on drop, so `--qa` sees the end of its input and exits
+    /// cleanly, dropping its fake device (and with it the fake's lock file).
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
 
@@ -124,7 +126,7 @@ impl Session {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("start shurectl --qa");
-        let stdin = child.stdin.take().expect("stdin");
+        let stdin = Some(child.stdin.take().expect("stdin"));
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         Self {
             child,
@@ -134,8 +136,9 @@ impl Session {
     }
 
     fn send(&mut self, line: &str) -> Value {
-        writeln!(self.stdin, "{line}").expect("write to shurectl --qa");
-        self.stdin.flush().expect("flush");
+        let stdin = self.stdin.as_mut().expect("stdin open until drop");
+        writeln!(stdin, "{line}").expect("write to shurectl --qa");
+        stdin.flush().expect("flush");
         let mut reply = String::new();
         self.stdout
             .read_line(&mut reply)
@@ -146,6 +149,15 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        // Killed only if it doesn't exit by itself: a kill skips its cleanup.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -292,4 +304,26 @@ fn pty_smoke() {
 
     let status = child.wait().expect("wait for shurectl");
     assert!(status.success(), "exit status {status:?}");
+}
+
+/// A one-shot command whose reader closed stdout early (`--list | head -1`)
+/// exits cleanly instead of panicking on the broken pipe.
+#[test]
+fn closed_stdout_is_not_a_panic() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_shurectl"))
+        .arg("--list")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn shurectl");
+    // Closed before it lists anything: it opens the HID device list first.
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("wait for shurectl");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        output.status.success(),
+        "exit status {:?}: {stderr}",
+        output.status
+    );
 }

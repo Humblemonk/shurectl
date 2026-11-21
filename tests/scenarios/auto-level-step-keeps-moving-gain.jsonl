@@ -1,0 +1,8 @@
+{"scenario": "auto-level-step-keeps-moving-gain", "models": ["mvx2u", "mv7"], "modes": ["fake"]}
+{"device": {"mode": "Auto"}}
+{"tick": 1100}
+{"expect": {"state": {"mode": "Auto"}}}
+{"click_on": "Monitor Mix"}
+{"device": {"gain_tenths": 120}}
+{"key": "Right"}
+{"expect": {"focus": "MonitorMix", "status": "Monitor Mix → ", "status_is_error": false}}
