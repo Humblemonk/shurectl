@@ -8,8 +8,9 @@ Releases that need you to do something after upgrading have an **Upgrading** not
 
 ## 2.18.2 — 2026-11-20
 
-A Stream Deck mute button now mutes even when the rest of its command fails, and shurectl
-copes better when another shurectl is using the device.
+A Stream Deck mute button now mutes even when the rest of its command fails, shurectl copes
+better when another shurectl is using the device, and a gain step or replug can no longer
+leave the screen showing the wrong gain or mute.
 
 ### Fixed
 
@@ -27,14 +28,18 @@ copes better when another shurectl is using the device.
   mic is muted. `r` no longer reconnects on it.
 - While another shurectl holds the device, the TUI now keeps responding. Before, it stopped
   for as long as the other one held it. Only something you do, such as a change (mute
-  included), `r` or starting shurectl, waits up to 5 seconds for its turn.
+  included), `r` or starting shurectl, waits up to 5 seconds for its turn; on the screen
+  that says another shurectl is using the device, `r` tries for a second. Plugging the mic
+  back in while another shurectl holds it shows that screen instead of freezing.
 - `--device` with a printed serial now says another shurectl was busy, instead of that no
   device has that serial. The device picker and `--list` say a device was busy instead of
   leaving its name blank or showing its USB serial without saying why, and wait a second
   for it, not 5 or 10.
 - Two `--mute toggle` presses close together, such as a double press on a Stream Deck
   button, could both read the same mute state and both unmute, leaving the mic live. Each
-  toggle now finishes before the next one starts. All models; tested on the MVX2U Gen 2.
+  toggle now finishes before the next one starts, on all models; tested fixed on the MVX2U
+  Gen 2, unconfirmed on the others. `--mode toggle`, and steps such as `--gain +1`, now
+  also finish each run before the next one starts.
 - On Linux, two shurectl started differently, such as one with `sudo` or from a cron job or
   hotkey daemon beside the TUI, could still read each other's replies and get settings
   wrong. They now always take turns.
@@ -48,6 +53,39 @@ copes better when another shurectl is using the device.
   It now shows the new mode. The same holds for the MV7's Mic Position and Tone.
 - A click or scroll that shurectl ignores because the screen changed under it, while a
   mouse-wheel change was being written, now says so in the status bar.
+- A gain or level change from the keyboard, wheel or a click within a second of your last
+  one, after a script or Stream Deck had changed that value, stepped from the old value:
+  with the gain at 27 dB on screen and 12 dB on the mic, → set 28 dB. Now shurectl reads
+  the mic first, shows its value with "(changed on the device)", and writes nothing; the
+  next press steps from it. If the mic doesn't answer that read, the step isn't sent and
+  the status asks you to press again. The MV6's Playback Level can't be read this way, so
+  it steps as before. All models.
+- If you plugged the mic back in and shurectl couldn't read its settings, the screen kept
+  showing the ones from before the unplug, including Mute ON while the mic, unmuted by the
+  replug, was live. It now shows only Mute, as OFF until shurectl reads it, and asks you to
+  press `r`, as it does when the first read at startup fails. All models.
+- On the MVX2U Gen 2, MV6 and MV7+, pressing `Enter` on Mode twice, to switch to Auto Level
+  and back, unmuted a muted mic: the first press moved focus to Mute. Focus now stays on
+  Mode. A mode switch that fails also leaves focus on Mode on every model.
+- A gain read from the device above its maximum, such as 100 dB, is no longer shown, so
+  the next step can't jump to the maximum gain. All models.
+- `shurectl --list | head -1`, or any command whose output is cut off early, no longer
+  crashes with a "Broken pipe" message.
+- A preset file that couldn't be read showed as an Empty slot, and `s` saved over it. Its
+  card now says the file couldn't be read, `s` leaves it alone, and `d` deletes it.
+- A preset rename that couldn't be saved kept showing the new name, and preset file errors
+  said "Device error". The old name comes back, and the error says "Preset file error".
+- The gain check's suggestion now warns when it listened to the system default input,
+  which may not be the Shure.
+- On the MV7, `--mute status` waited 10 seconds instead of 5 while another shurectl held
+  the device. `--device` with a printed serial now waits 5 seconds in all, not 5 per busy
+  device.
+- A failed `r` no longer repeats the same error twice, and says to press `r` again. If the
+  mic is unplugged while shurectl reads it, the status says it reconnects when plugged
+  back in.
+- Help lists `f` (Flatten EQ) only on models with the 5-band EQ, and says when it works.
+  The Info tab lists Gain Lock on the MV6 and MV6 Gen 2. The Factory Reset prompt and the
+  demo mode status now fit an 80-column terminal, with the key hints never cut mid-word.
 
 ### Upgrading
 

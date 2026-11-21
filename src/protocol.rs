@@ -286,6 +286,15 @@ impl DeviceModel {
         }
     }
 
+    /// Whether the live poll reads the Playback Level. The MV6's GET is
+    /// unconfirmed (#99): unanswered, it would cost every poll a timeout.
+    pub fn polls_playback_mix(&self) -> bool {
+        match self {
+            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => true,
+            DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mv7 => false,
+        }
+    }
+
     /// Whether the model has a Gain Lock setting (`mv6_gain_locked`). On other
     /// models the flag can still arrive in a preset saved elsewhere, and must
     /// not freeze a gain control that has no lock to undo it.

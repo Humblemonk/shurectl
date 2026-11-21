@@ -141,7 +141,7 @@ impl Harness {
         load_initial_state(&mut app, device.as_ref());
         let preset_dir = TempDir::new()?;
         presets::set_dir_override(Some(preset_dir.0.clone()));
-        app.presets = presets::load_all_presets();
+        (app.presets, app.preset_unreadable) = presets::load_all_presets();
         let mut harness = Self {
             model,
             reply_cursor: fake.as_ref().map_or(0, FakeDevice::log_len),
@@ -440,6 +440,7 @@ impl Harness {
                         "drop_acks" => fake.faults_mut(|f| f.drop_acks = count),
                         "extra_acks" => fake.faults_mut(|f| f.extra_acks = count),
                         "refuse" => fake.faults_mut(|f| f.refuse = count),
+                        "refuse_writes" => fake.faults_mut(|f| f.refuse_writes = count),
                         "refused_get" => {
                             let feature = match amount {
                                 Value::Null => None,
@@ -516,7 +517,7 @@ impl Harness {
                 std::fs::copy(&path, self.preset_dir.0.join(name))?;
             }
         }
-        self.app.presets = presets::load_all_presets();
+        (self.app.presets, self.app.preset_unreadable) = presets::load_all_presets();
         self.draw()
     }
 

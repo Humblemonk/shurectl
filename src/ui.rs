@@ -256,7 +256,7 @@ fn draw_ui(frame: &mut Frame, app: &App) -> HitMap {
     draw_preset_load_box(f, app, chunks[2]);
 
     if app.help_visible {
-        draw_help_overlay(f, size);
+        draw_help_overlay(f, app.device_model, size);
     }
     context.hits
 }
@@ -409,8 +409,12 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
             C_ACCENT,
         )
     } else if app.is_waiting_for_device() {
-        // No control to adjust, and `r` only repeats the waiting status.
-        (" [?] Help  [q] Quit", " [?] Help  [q] Quit", C_DIM)
+        // No control to adjust; `r` tries for the device for a second.
+        (
+            " [r] Retry  [?] Help  [q] Quit",
+            " [?] Help  [q] Quit",
+            C_DIM,
+        )
     } else if app.settings_never_read {
         (
             " [Enter] Mute  [r] Refresh  [?] Help  [q] Quit",
@@ -437,7 +441,8 @@ fn draw_status(f: &mut UiFrame, app: &App, area: Rect) {
 }
 
 /// A status bar `width` wide: `msg` first so errors are never cut, then the
-/// full key hint, or the short one when the full one no longer fits after it.
+/// full key hint, or the short one when the full one no longer fits after it,
+/// or none when neither does, so no key is cut mid-word.
 fn status_bar(
     msg: String,
     color: Color,
@@ -446,11 +451,14 @@ fn status_bar(
 ) -> Paragraph<'static> {
     let msg = Span::styled(msg, Style::default().fg(color));
     let gap = Span::raw("   ");
-    let full_width = msg.width() + gap.width() + Span::raw(hint).width();
-    let hint = if full_width <= usize::from(width) {
+    let fits =
+        |hint: &str| msg.width() + gap.width() + Span::raw(hint).width() <= usize::from(width);
+    let hint = if fits(hint) {
         hint
-    } else {
+    } else if fits(short_hint) {
         short_hint
+    } else {
+        ""
     };
     Paragraph::new(Line::from(vec![
         msg,
@@ -1643,10 +1651,11 @@ fn draw_gain_check_card(f: &mut UiFrame, app: &App, check: &GainCheck, area: Rec
                     if app.gain_locked() {
                         lines.push(note("Turn Gain Lock off first.", C_WARN));
                     }
-                    lines.push(if gain == suggested {
-                        note("Set. Check again to confirm.", C_DIM)
-                    } else {
-                        note("Set it on Gain with ←→, then check again.", C_DIM)
+                    lines.push(match (gain == suggested, outcome.own_input) {
+                        (true, _) => note("Set. Check again to confirm.", C_DIM),
+                        (false, true) => note("Set it on Gain with ←→, then check again.", C_DIM),
+                        // The suggestion may be for another mic altogether.
+                        (false, false) => note("Heard the default input: is it the Shure?", C_WARN),
                     });
                 }
                 Advice::Good => lines.push(note("Gain looks right.", C_SUCCESS)),
@@ -3140,7 +3149,12 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
             } else {
                 Style::default().fg(C_DIM)
             };
-            (String::from("Empty"), color, style)
+            let name = if app.preset_unreadable[index] {
+                "Unreadable file"
+            } else {
+                "Empty"
+            };
+            (String::from(name), color, style)
         }
     };
 
@@ -3159,6 +3173,13 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
         Some(slot) if !editing => Line::from(Span::styled(
             slot.summary(app.device_model),
             Style::default().fg(C_DIM),
+        )),
+        None if app.preset_unreadable[index] => Line::from(Span::styled(
+            format!(
+                "preset_{}.toml couldn't be read, so it isn't saved over",
+                index + 1
+            ),
+            Style::default().fg(C_WARN),
         )),
         _ => Line::from(""),
     };
@@ -3201,8 +3222,20 @@ fn draw_preset_name_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
 fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect) {
     let focused = app.focus == Focus::PresetActions(index);
     let filled = app.presets[index].is_some();
+    let unreadable = app.preset_unreadable[index];
 
-    let actions: Line = if filled {
+    let actions: Line = if unreadable {
+        Line::from(vec![
+            Span::styled(
+                " [d] ",
+                Style::default().fg(if focused { C_ERROR } else { C_DIM }),
+            ),
+            Span::styled(
+                "Delete the file",
+                Style::default().fg(if focused { C_TEXT } else { C_DIM }),
+            ),
+        ])
+    } else if filled {
         Line::from(vec![
             Span::styled(
                 " [Enter] ",
@@ -3260,7 +3293,9 @@ fn draw_preset_actions_row(f: &mut UiFrame, app: &App, index: usize, area: Rect)
         .border_style(Style::default().fg(border_color))
         .padding(Padding::horizontal(1));
     let action_row = text_row(border.inner(area), 0);
-    let keys: &[KeyCode] = if filled {
+    let keys: &[KeyCode] = if unreadable {
+        &[KeyCode::Char('d')]
+    } else if filled {
         &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('d')]
     } else {
         &[KeyCode::Char('s')]
@@ -3502,6 +3537,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ),
             ("  HPF          : ", "Off / 75 Hz / 150 Hz"),
             ("  Auto Level   : ", "On / Off"),
+            ("  Gain Lock    : ", "On / Off (Manual mode)"),
             ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             ("  Mute Button  : ", "Works / Ignored"),
         ],
@@ -3521,6 +3557,7 @@ fn draw_info_tab(f: &mut UiFrame, app: &App, area: Rect) {
             ("  Target Level : ", "Low / Med / High (Auto mode)"),
             ("  Adaptation   : ", "Slow / Fast (Auto mode)"),
             ("  Mic Preset   : ", "Speech / Singing / Instrument"),
+            ("  Gain Lock    : ", "On / Off (Manual mode)"),
             ("  Monitor Mix  : ", "Mic Level, Playback Level 0–100%"),
             ("  Mute Button  : ", "Works / Ignored"),
         ],
@@ -3758,7 +3795,7 @@ fn help_row(key: &str, description: &'static str) -> Line<'static> {
     ])
 }
 
-fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
+fn draw_help_overlay(f: &mut UiFrame, model: DeviceModel, area: Rect) {
     let heading = |text| {
         Line::from(Span::styled(
             text,
@@ -3767,13 +3804,21 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
                 .add_modifier(Modifier::UNDERLINED),
         ))
     };
-    let lines = vec![
+    // `f` only where the 5 bands can show (`App::eq_bands_shown()`).
+    let flatten = match model {
+        DeviceModel::Mvx2u | DeviceModel::Mvx2uGen2 => Some("Flatten 5-band EQ (EQ tab, Manual)"),
+        DeviceModel::Mv6Gen2 => Some("Flatten 5-band EQ (EQ tab, Advanced)"),
+        DeviceModel::Mv6 | DeviceModel::Mv7 | DeviceModel::Mv7Plus => None,
+    };
+    let mut lines = vec![
         heading("  Controls"),
         help_row("Tab / Shift+Tab", "Switch section"),
         help_row("↑ ↓ / k j", "Focus previous / next control"),
         help_row("← → / h l", "Decrease / increase value"),
         help_row("Enter / Space", "Toggle boolean / cycle option"),
-        help_row("f", "Flatten 5-band EQ (EQ tab)"),
+    ];
+    lines.extend(flatten.map(|text| help_row("f", text)));
+    lines.extend([
         help_row("g", "Gain check (Main tab, Manual)"),
         Line::from(""),
         heading("  General"),
@@ -3795,7 +3840,7 @@ fn draw_help_overlay(f: &mut UiFrame, area: Rect) {
             "  Wheel: adjust; click outside name: cancel",
             Style::default().fg(C_DIM),
         )),
-    ];
+    ]);
 
     // Sized to its lines, so it fits the 80x24 `MIN_SIZE`.
     let popup_width = 58u16.min(area.width.saturating_sub(4));
@@ -4580,6 +4625,16 @@ mod tests {
                 app.device_state.gain_tenths = 240;
                 app.device_state.mv6_gain_locked = true;
                 visit(&format!("{model:?} gain check {name}"), &app);
+                // On the system default input the suggestion warns instead.
+                if let Some(GainCheck::Done(outcome)) = &mut app.gain_check
+                    && name == "raise"
+                {
+                    outcome.own_input = false;
+                    visit(
+                        &format!("{model:?} gain check {name} on the default input"),
+                        &app,
+                    );
+                }
             }
             for (name, app) in preset_load_states(model) {
                 visit(&format!("{model:?} preset load {name}"), &app);
@@ -4846,12 +4901,13 @@ mod tests {
     fn gain_check_states() -> Vec<(&'static str, GainCheck)> {
         use crate::gain_check::{Advice, Listening, Outcome};
 
-        let mut listening = Listening::new(240);
+        let mut listening = Listening::new(240, true);
         listening.loudest_x10 = Some(-184);
         let done = |loudest_x10, advice| {
             GainCheck::Done(Outcome {
                 loudest_x10,
                 advice,
+                own_input: true,
             })
         };
         vec![

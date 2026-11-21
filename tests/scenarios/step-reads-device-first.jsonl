@@ -1,0 +1,13 @@
+{"scenario": "step-reads-device-first", "models": "all", "modes": ["fake"]}
+{"key": "Down", "repeat": 2}
+{"expect": {"focus": "Gain", "state": {"gain_tenths": 240}}}
+{"key": "Right"}
+{"expect": {"status": "Gain →"}}
+{"device": {"gain_tenths": 120}}
+{"tick": 500}
+{"key": "Right"}
+{"expect": {"status": "Gain → 12 dB (changed on the device)", "state": {"gain_tenths": 120}}}
+{"tick": 2000}
+{"expect": {"state": {"gain_tenths": 120}}}
+{"key": "Right"}
+{"expect": {"status": "Gain → 13"}}

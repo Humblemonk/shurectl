@@ -148,7 +148,7 @@ shurectl with `--device`.
 
 **"Couldn't read a setting" in the status bar** — the device didn't answer a query, or
 answered with a setting shurectl doesn't know, often after a firmware update. shurectl
-sends no changes until a full read succeeds; press `r` to retry. If it keeps happening,
+sends no changes except mute until a full read succeeds; press `r` to retry. If it keeps happening,
 please open an issue with the message and your firmware version.
 
 **No gain slider in Auto Level mode** — This is correct hardware behaviour; the device
@@ -186,7 +186,8 @@ on the device itself, not the OS capture volume level. Both can be set independe
 | Config Lock | ✓ | — | — | — | ✓ | — |
 | Mic Position (Near / Far) | Auto | — | — | — | Auto | — |
 | Auto Tone (Dark / Natural / Bright) | Auto | — | — | — | Auto | — |
-| Target Level (Low / Med / High) | Auto | — | — | Auto | — | — |
+| Auto Gain (Quiet / Normal / Loud) | Auto | — | — | — | — | — |
+| Target Level (Low / Med / High) | — | — | — | Auto | — | — |
 | Adaptation Rate (Slow / Fast) | — | — | — | Auto | — | — |
 | Mic Preset (Speech / Singing / Instrument) | — | — | — | ✓ | — | — |
 | **EQ tab** | | | | | | |

@@ -112,6 +112,9 @@ pub struct Faults {
     pub fail_io: bool,
     /// Commands to answer with an unknown address (binary) or `[Failed]` (MV7).
     pub refuse: usize,
+    /// MV7 lines that change something to answer `[Failed]`, the reads
+    /// around them answered as usual (a TUI step reads the mic first).
+    pub refuse_writes: usize,
     /// Feature whose GETs are answered with an unknown address, as `refuse`
     /// does, until cleared.
     pub refused_get: Option<String>,
@@ -580,8 +583,12 @@ impl FakeState {
             });
             return;
         }
+        let is_write = line.contains(' ') && !line.starts_with("getBlock ");
         let reply = if self.faults.refuse > 0 {
             self.faults.refuse -= 1;
+            mv7_text::FAILED_REPLY.to_string()
+        } else if is_write && self.faults.refuse_writes > 0 {
+            self.faults.refuse_writes -= 1;
             mv7_text::FAILED_REPLY.to_string()
         } else {
             match &mut self.shell {

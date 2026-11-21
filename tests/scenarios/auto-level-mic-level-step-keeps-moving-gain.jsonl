@@ -1,0 +1,8 @@
+{"scenario": "auto-level-mic-level-step-keeps-moving-gain", "models": ["mvx2u-gen2", "mv6", "mv6-gen2", "mv7plus"], "modes": ["fake"]}
+{"device": {"mode": "Auto"}}
+{"tick": 1100}
+{"expect": {"state": {"mode": "Auto"}}}
+{"click_on": "Mic Level"}
+{"device": {"gain_tenths": 120}}
+{"key": "Right"}
+{"expect": {"focus": "MonitorMix", "status": "Mic Level → 1%", "set": {"feature": "MIC_LEVEL", "value": 1}, "state": {"gain_tenths": 120, "monitor_mix": 1}}}

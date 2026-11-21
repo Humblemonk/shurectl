@@ -7,6 +7,6 @@
 {"key": "Enter"}
 {"expect": {"focus": "Mute", "connected": true, "status": "rejected \"micMute on\"", "state": {"muted": false}, "screen_not_contains": "● ON"}}
 {"key": "Down"}
-{"device": {"refuse": 1}}
+{"device": {"refuse_writes": 1}}
 {"key": "Right"}
 {"expect": {"focus": "Gain", "connected": true, "status": "rejected \"inputGain 25.5\"", "state": {"gain_tenths": 240}, "screen_contains": "24 dB"}}

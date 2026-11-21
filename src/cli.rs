@@ -95,6 +95,15 @@ impl Request<'_> {
         self.json || self.preset.is_some() || self.writes_settings()
     }
 
+    /// Whether a write steps from the value read: `--mode toggle`, or a
+    /// relative `--gain`, `--monitor-mix` or `--playback-mix`.
+    fn steps_from_reading(&self) -> bool {
+        matches!(self.mode, Some(ModeChoice::Toggle))
+            || [&self.gain, &self.monitor_mix, &self.playback_mix]
+                .iter()
+                .any(|amount| matches!(amount, Some(Amount::By(_))))
+    }
+
     fn writes_settings(&self) -> bool {
         self.mode.is_some()
             || self.gain.is_some()
@@ -113,15 +122,15 @@ pub fn run(request: &Request) -> Result<()> {
     };
     if !request.json {
         let (preset, dev) = opened()?;
-        return execute(request, preset, dev, &mut |line| println!("{line}")).map(|_| ());
+        return execute(request, preset, dev, &mut |line| outln!("{line}")).map(|_| ());
     }
     let printed = opened()
         .and_then(|(preset, dev)| execute(request, preset, dev, &mut |_| {}))
         .and_then(|app| state_json(&app));
     match printed {
-        Ok(value) => println!("{value}"),
+        Ok(value) => outln!("{value}"),
         Err(e) => {
-            println!("{}", json!({ "error": format!("{e:#}") }));
+            outln!("{}", json!({ "error": format!("{e:#}") }));
             std::process::exit(1);
         }
     }
@@ -148,6 +157,23 @@ pub fn check(request: &Request) -> Result<()> {
     }
     Ok(())
 }
+
+/// Print one line of a one-shot command's output. A reader that closed
+/// stdout early (`shurectl --list | head -1`, a wrapper that doesn't wait for
+/// the output) isn't this run's failure: the line is dropped, and the writes
+/// and the exit code still say what happened, where `println!` would panic.
+pub fn print_line(line: std::fmt::Arguments) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout().lock(), "{line}");
+}
+
+/// `println!` through [`print_line()`].
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        $crate::cli::print_line(format_args!($($arg)*))
+    };
+}
+pub(crate) use outln;
 
 /// Do what `request` asks, reporting each write's status line. Returns the
 /// app, whose state is what the device has after the writes.
@@ -229,25 +255,79 @@ fn execute(
         // Refused above when combined; alone it returned already.
         Some(MuteAction::Status) | None => None,
     };
+    // Printed once the turns are over, as for mute alone.
+    let mut said = Vec::new();
     if let Some(muted) = mute_to {
-        // Printed once the turn is over, as for mute alone.
-        let mut said = Vec::new();
         write_mute(&mut app, &mut device, muted, &mut |line: &str| {
             said.push(line.to_owned())
         })
         .map_err(|e| progress.fail(&["--mute"], e))?;
-        drop(turn);
-        said.iter().for_each(|line| report(line));
         progress.applied.push("--mute");
-    } else {
-        drop(turn);
     }
-    check_values(request, &app).map_err(|e| progress.fail(&[], e))?;
+    // A --mode toggle or a relative step works from the readback, so it
+    // holds one turn at the device from that read through its last write, as
+    // --mute toggle does: two at once (a double press) can't both step from
+    // the same value. Taken before a toggle's turn ends (nested, it doesn't
+    // wait), so nothing comes between a toggle's read and the steps' readback.
+    let steps_turn = match device.as_ref() {
+        Some(dev) if request.steps_from_reading() => match dev.exclusive() {
+            Ok(steps_turn) => Some(steps_turn),
+            Err(e) => {
+                drop(turn);
+                said.iter().for_each(|line| report(line));
+                return Err(progress.fail(&[], e.context("Could not read device state")));
+            }
+        },
+        Some(_) | None => None,
+    };
+    drop(turn);
+    if steps_turn.is_none() {
+        said.drain(..).for_each(|line| report(&line));
+    }
+    let result = if steps_turn.is_some() {
+        write_settings(
+            request,
+            preset,
+            &mut app,
+            &mut device,
+            &mut progress,
+            mute_to,
+            &mut |line: &str| said.push(line.to_owned()),
+        )
+    } else {
+        write_settings(
+            request,
+            preset,
+            &mut app,
+            &mut device,
+            &mut progress,
+            mute_to,
+            report,
+        )
+    };
+    drop(steps_turn);
+    said.iter().for_each(|line| report(line));
+    result.map(|()| app)
+}
+
+/// Everything a combined run does after the mute: check the values, read
+/// the device, then load the preset and write mode, gain and the monitor
+/// levels in the TUI's focus order.
+fn write_settings(
+    request: &Request,
+    preset: Option<(usize, PresetSlot)>,
+    app: &mut App,
+    device: &mut Option<ShureDevice>,
+    progress: &mut Progress,
+    mute_to: Option<bool>,
+    report: &mut dyn FnMut(&str),
+) -> Result<()> {
+    check_values(request, app).map_err(|e| progress.fail(&[], e))?;
     // A toggle the mute read couldn't answer read everything already.
     if let Some(dev) = device.as_ref()
         && app.state_unread
     {
-        crate::reload_state(&mut app, dev)
+        crate::reload_state(app, dev)
             .context("Could not read device state")
             .map_err(|e| progress.fail(&[], e))?;
     }
@@ -258,11 +338,11 @@ fn execute(
     if let Some(muted) = mute_to {
         app.device_state.muted &= muted;
     }
-    check_writes(request, &app).map_err(|e| progress.fail(&[], e))?;
+    check_writes(request, app).map_err(|e| progress.fail(&[], e))?;
     if let Some((index, slot)) = preset {
         app.presets[index] = Some(slot);
         let action = DeviceAction::LoadPreset(index);
-        write(&mut app, &mut device, "--preset", action, |_| {}, report)
+        write(app, device, "--preset", action, |_| {}, report)
             .map_err(|e| progress.fail(&["--preset"], e))?;
         progress.applied.push("--preset");
     }
@@ -272,8 +352,8 @@ fn execute(
         let mode = mode_after(choice, switched_from);
         let action = DeviceAction::SetMode(mode);
         if let Err(e) = write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--mode",
             action,
             |state| state.mode = mode,
@@ -292,7 +372,7 @@ fn execute(
                 && app.device_state.muted != muted
             {
                 progress.applied.retain(|flag| *flag != "--mute");
-                if let Err(mute_err) = write_mute(&mut app, &mut device, muted, report) {
+                if let Err(mute_err) = write_mute(app, device, muted, report) {
                     let e = format!("{e:#}");
                     let both = anyhow!(
                         "{}. Sending --mute again failed: {mute_err:#}",
@@ -322,7 +402,7 @@ fn execute(
             // Until the re-read shows it, a mute sent before the switch is
             // unchecked after it.
             progress.mute_unchecked = mute_to.is_some();
-            crate::reload_state(&mut app, dev)
+            crate::reload_state(app, dev)
                 .with_context(|| crate::mode_switched_note(mode))
                 .map_err(|e| progress.fail(&["--mode"], e))?;
             progress.mute_unchecked = false;
@@ -336,20 +416,19 @@ fn execute(
         {
             // Not applied any more, so a failure here doesn't say it was.
             progress.applied.retain(|flag| *flag != "--mute");
-            write_mute(&mut app, &mut device, muted, report)
-                .map_err(|e| progress.fail(&["--mute"], e))?;
+            write_mute(app, device, muted, report).map_err(|e| progress.fail(&["--mute"], e))?;
             progress.applied.insert(0, "--mute");
         }
     }
     if let Some(amount) = request.gain {
         let tenths = match amount {
-            Amount::To(db) => absolute_gain(&app, db)?,
-            Amount::By(presses) => pressed(&app, Focus::Gain, presses).gain_tenths,
+            Amount::To(db) => absolute_gain(app, db)?,
+            Amount::By(presses) => pressed(app, Focus::Gain, presses).gain_tenths,
         };
         let action = DeviceAction::SetGain(tenths);
         write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--gain",
             action,
             |state| state.gain_tenths = tenths,
@@ -361,12 +440,12 @@ fn execute(
     if let Some(amount) = request.monitor_mix {
         let mix = match amount {
             Amount::To(value) => absolute_level("--monitor-mix", value)?,
-            Amount::By(presses) => pressed(&app, Focus::MonitorMix, presses).monitor_mix,
+            Amount::By(presses) => pressed(app, Focus::MonitorMix, presses).monitor_mix,
         };
         let action = DeviceAction::SetMonitorMix(mix);
         write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--monitor-mix",
             action,
             |state| state.monitor_mix = mix,
@@ -378,12 +457,12 @@ fn execute(
     if let Some(amount) = request.playback_mix {
         let mix = match amount {
             Amount::To(value) => absolute_level("--playback-mix", value)?,
-            Amount::By(presses) => pressed(&app, Focus::PlaybackMix, presses).playback_mix,
+            Amount::By(presses) => pressed(app, Focus::PlaybackMix, presses).playback_mix,
         };
         let action = DeviceAction::SetMv7PlaybackMix(mix);
         write(
-            &mut app,
-            &mut device,
+            app,
+            device,
             "--playback-mix",
             action,
             |state| state.playback_mix = mix,
@@ -391,7 +470,7 @@ fn execute(
         )
         .map_err(|e| progress.fail(&["--playback-mix"], e))?;
     }
-    Ok(app)
+    Ok(())
 }
 
 /// For `--mute toggle`, the device's lock, held until the caller drops it:
@@ -806,7 +885,8 @@ mod tests {
 
     /// A toggle reads and writes in one turn at the device, so a second
     /// toggle (a double press) can't read between them and unmute too.
-    /// Combined, it takes no more turns than a fixed mute does.
+    /// With a relative step the steps' turn starts inside the toggle's, so
+    /// nothing comes between them either: one turn in all.
     #[test]
     fn a_toggle_reads_and_writes_in_one_turn() {
         for model in MODELS {
@@ -818,9 +898,38 @@ mod tests {
             };
             assert_eq!(
                 turns_for(model, &with_gain(MuteAction::Toggle)),
-                turns_for(model, &with_gain(MuteAction::On)),
+                1,
                 "{model:?}"
             );
+            // A fixed mute goes first in a turn of its own.
+            assert_eq!(turns_for(model, &with_gain(MuteAction::On)), 2, "{model:?}");
+        }
+    }
+
+    /// A step from the value read (`--mode toggle`, a relative level) reads
+    /// and writes in one turn, so a second run (a double press) can't read
+    /// between them and step from the same value.
+    #[test]
+    fn a_step_from_the_reading_reads_and_writes_in_one_turn() {
+        for model in MODELS {
+            let requests = [
+                Request {
+                    gain: Some(Amount::By(1)),
+                    ..Request::default()
+                },
+                Request {
+                    mode: Some(ModeChoice::Toggle),
+                    ..Request::default()
+                },
+                Request {
+                    monitor_mix: Some(Amount::By(-1)),
+                    gain: Some(Amount::By(1)),
+                    ..Request::default()
+                },
+            ];
+            for request in &requests {
+                assert_eq!(turns_for(model, request), 1, "{model:?} {request:?}");
+            }
         }
     }
 

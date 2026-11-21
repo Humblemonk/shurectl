@@ -192,6 +192,9 @@ pub struct App {
     pub device_model: DeviceModel,
     /// Loaded preset slots. `None` means the slot file does not exist yet.
     pub presets: [Option<PresetSlot>; PRESET_COUNT],
+    /// Slots whose file couldn't be read at startup: shown as such, and `s`
+    /// refuses to save over them until `d` deletes the file.
+    pub preset_unreadable: [bool; PRESET_COUNT],
     /// Set to `true` while the user is typing a new name for a preset slot.
     pub editing_preset_name: bool,
     /// Which slot index is being edited (valid when `editing_preset_name` is true).
@@ -255,6 +258,7 @@ impl Default for App {
             help_visible: false,
             device_model: DeviceModel::Mvx2u,
             presets: [None, None, None, None],
+            preset_unreadable: [false; PRESET_COUNT],
             editing_preset_name: false,
             editing_preset_index: 0,
             editing_device_name: false,
@@ -438,8 +442,11 @@ impl App {
         } else if self.device_state.muted {
             self.set_err("Gain check needs the mic unmuted.");
         } else {
+            // `None` only before the meter's first start: no warning then.
+            let own_input = !matches!(self.meter_input, Some(MeterInput::Default));
             self.gain_check = Some(GainCheck::Listening(Listening::new(
                 self.device_state.gain_tenths,
+                own_input,
             )));
         }
     }
@@ -484,6 +491,7 @@ impl App {
         {
             self.gain_check = Some(GainCheck::Listening(Listening::new(
                 self.device_state.gain_tenths,
+                listening.own_input,
             )));
         }
         let peak = self
@@ -1502,13 +1510,15 @@ impl App {
                     InputMode::Manual => InputMode::Auto,
                 };
                 // The new mode's first control: its Auto Level rows, or Gain.
+                // A mode with no rows of its own keeps focus on Mode, so a
+                // second Enter switches back instead of unmuting the mic.
                 self.focus = match self.device_state.mode {
                     InputMode::Manual => Focus::Gain,
                     InputMode::Auto => match self.device_model {
                         DeviceModel::Mvx2u | DeviceModel::Mv7 => Focus::AutoPosition,
                         DeviceModel::Mv6Gen2 => Focus::AutoGain,
                         DeviceModel::Mvx2uGen2 | DeviceModel::Mv6 | DeviceModel::Mv7Plus => {
-                            Focus::Mute
+                            Focus::Mode
                         }
                     },
                 };
@@ -2761,6 +2771,7 @@ mod tests {
         app.gain_check = Some(GainCheck::Done(crate::gain_check::Outcome {
             loudest_x10: Some(-180),
             advice: crate::gain_check::Advice::Change(300),
+            own_input: true,
         }));
         app.set_ok("Gain → 24 dB");
         app.device_connected = false;
@@ -2890,22 +2901,41 @@ mod tests {
         assert_eq!(app.focus, Focus::AutoPosition);
     }
 
-    /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to Mute.
+    /// Every model focuses Gain on switching to Manual; the MV7+ used to jump to
+    /// Mute. A switch to an Auto Level with no rows of its own keeps focus on
+    /// Mode: on Mute, a second Enter meant to switch back unmuted the mic.
     #[test]
-    fn mv7plus_mode_toggle_focuses_gain_in_manual_and_mute_in_auto() {
-        let mut app = App {
-            device_model: DeviceModel::Mv7Plus,
-            focus: Focus::Mode,
-            ..App::default()
-        };
-        app.toggle_focused();
-        assert_eq!(app.device_state.mode, InputMode::Manual);
-        assert_eq!(app.focus, Focus::Gain);
+    fn mode_toggle_focuses_gain_in_manual_and_never_mute() {
+        for model in [
+            DeviceModel::Mvx2uGen2,
+            DeviceModel::Mv6,
+            DeviceModel::Mv7Plus,
+        ] {
+            let mut app = App {
+                device_model: model,
+                focus: Focus::Mode,
+                ..App::default()
+            };
+            app.toggle_focused();
+            assert_eq!(app.device_state.mode, InputMode::Manual, "{model:?}");
+            assert_eq!(app.focus, Focus::Gain, "{model:?}");
 
-        app.focus = Focus::Mode;
-        app.toggle_focused();
-        assert_eq!(app.device_state.mode, InputMode::Auto);
-        assert_eq!(app.focus, Focus::Mute);
+            app.device_state.muted = true;
+            app.focus = Focus::Mode;
+            assert!(matches!(
+                app.toggle_focused(),
+                Some(DeviceAction::SetMode(InputMode::Auto))
+            ));
+            assert_eq!(app.focus, Focus::Mode, "{model:?}");
+            assert!(
+                matches!(
+                    app.toggle_focused(),
+                    Some(DeviceAction::SetMode(InputMode::Manual))
+                ),
+                "{model:?}: the second Enter switches back"
+            );
+            assert!(app.device_state.muted, "{model:?}");
+        }
     }
 
     /// A refresh that finds a Gen 1 in Auto must not leave the EQ tab's

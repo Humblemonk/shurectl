@@ -78,7 +78,8 @@ CRC-16/ANSI covers 0x11 up to the CRC
   unread (the other shurectl may have changed them), and `r` doesn't reconnect on it. The
   live poll doesn't wait: it skips a turn while the lock is held (`exclusive_now()`), as
   waiting froze the TUI for as long as another process held it (`flock` on the hidraw node
-  for 30 s, MVX2U Gen 2, 2026-11-20). Reads that only label a device in a list (`--list`,
+  for 30 s, MVX2U Gen 2, 2026-11-20). Nor does the presence poll's reconnect after a replug:
+  it shows the waiting screen. Reads that only label a device in a list (`--list`,
   the picker) wait a second (`exclusive_for_labels()`). A `--mute toggle` holds one guard
   from its read through its write, or two at once both read the same state and unmute
   (`cli.rs::toggle_turn()`). Two toggles started together left the mute as it was in 40 of
@@ -99,10 +100,15 @@ CRC-16/ANSI covers 0x11 up to the CRC
   MV6, whose gain read in Auto is unconfirmed, re-read the gain (`resync_after_mode()`). On
   the MV7 an unanswered `micMute` skips the poll's other lines. The MV6's unconfirmed
   Playback Level GET (#99) isn't polled. A TUI write pushes the poll back a second because
-  whether a device applies a write before acking it is unconfirmed. On the MVX2U Gen 2 a
-  mute write is applied by the next read: `--mute on --json` read back muted in 20 of 20
-  runs (2026-11-20). `--mute off --json` can't show this, since the CLI shows Muted only
-  when the write and the readback both say so
+  whether a device applies a write before acking it is unconfirmed; a gain or level step
+  then polls first in its own turn (`changed_on_device()`), so a device that applied a write
+  late would read as changed and drop the next step (unconfirmed either way). A step the
+  poll got no answer for isn't sent; on the MV7 the value is first read again with a
+  readback's wait (`reread_stepped()`), since its poll gives each line 200 ms. On the MVX2U
+  Gen 2 a mute write is applied by the next read: `--mute on --json` read back muted in 20
+  of 20 runs (2026-11-20). `--mute off --json` can't show this, since the CLI shows Muted
+  only when the write and the readback both say so. A gain read above the model's maximum
+  is an unusable answer (`usable_gain()`), so it never shows and no step starts from it
 - **Live poll on hardware** (`read_live()`), by behaviour:
   - *A change made elsewhere shows in a running TUI.* On the MV6 Gen 2 under Linux, a
     pressed mute button sends no input report, and the poll shows the press (tested

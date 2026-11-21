@@ -663,6 +663,7 @@ impl ShureDevice {
         // Why a device couldn't be asked, for when nothing matches.
         let mut open_error = None;
         let mut busy = false;
+        let deadline = Instant::now() + LOCK_WAIT;
         if matches.is_empty() {
             matches = found
                 .iter()
@@ -670,9 +671,13 @@ impl ShureDevice {
                 // would hide why another couldn't be opened.
                 .filter(|(info, model)| !is_not_genuine(info, *model))
                 // The full wait, not `exclusive_for_labels()`'s: this is a
-                // command that should wait its turn, not a list.
+                // command that should wait its turn, not a list. One wait for
+                // every device asked, so several busy ones don't wait 5 s each.
                 .filter(|(info, model)| match Self::open_info(&api, info, *model) {
-                    Ok(dev) => match dev.read_factory_serial() {
+                    Ok(dev) => match dev
+                        .exclusive_within(deadline.saturating_duration_since(Instant::now()))
+                        .and_then(|_turn| dev.read_factory_serial())
+                    {
                         Ok(serial) => serial.is_some_and(|serial| same(&serial)),
                         Err(_) => {
                             busy = true;
@@ -1031,7 +1036,22 @@ impl ShureDevice {
             DeviceModel::Mv7 => self.get_state_mv7(&mut readback),
             DeviceModel::Mv7Plus => self.get_state_mv7_plus(&mut readback),
         }?;
+        // A gain above the model's maximum is no answer to the gain GET (a
+        // stray report, or a corrupt one): shown, the next step would write
+        // the maximum gain.
+        if !self.usable_gain(readback.state.gain_tenths) {
+            return Err(anyhow!(
+                "Couldn't read a setting: the gain read back, {} dB, is above the {} dB maximum",
+                f32::from(readback.state.gain_tenths) / 10.0,
+                f32::from(self.model.max_gain_tenths()) / 10.0
+            ));
+        }
         readback.finish()
+    }
+
+    /// Whether a gain read back is in the model's range, so usable.
+    fn usable_gain(&self, gain_tenths: u16) -> bool {
+        gain_tenths <= self.model.max_gain_tenths()
     }
 
     fn get_state_mv7(&self, readback: &mut Readback) -> Result<()> {
@@ -1229,7 +1249,42 @@ impl ShureDevice {
     pub fn read_gain(&self) -> Result<Option<u16>> {
         Ok(self
             .read_one(mv7_text::get_gain, cmd_get_gain)?
-            .map(|state| state.gain_tenths))
+            .map(|state| state.gain_tenths)
+            .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
+    }
+
+    /// The MV7's gain read alone, waiting as long as a readback does: the live
+    /// poll gives each line only 200 ms, which a slow answer may miss. `None`
+    /// without a usable answer, and on the other models, whose poll waited
+    /// that long already.
+    pub fn reread_mv7_gain(&self) -> Result<Option<u16>> {
+        Ok(self
+            .reread_mv7(&mv7_text::get_gain())?
+            .map(|state| state.gain_tenths)
+            .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
+    }
+
+    /// The MV7's Monitor Mix, read as [`Self::reread_mv7_gain`] reads the gain.
+    pub fn reread_mv7_monitor_mix(&self) -> Result<Option<u8>> {
+        Ok(self
+            .reread_mv7(&mv7_text::get_monitor_mix())?
+            .map(|state| state.monitor_mix))
+    }
+
+    fn reread_mv7(&self, command: &mv7_text::TextCommand) -> Result<Option<DeviceState>> {
+        match self.model {
+            DeviceModel::Mv7 => {
+                let _exclusive = self.exclusive()?;
+                let reply = self.send_text(command)?;
+                let mut state = DeviceState::default();
+                Ok(mv7_text::apply_reply(&reply, &mut state).then_some(state))
+            }
+            DeviceModel::Mvx2u
+            | DeviceModel::Mvx2uGen2
+            | DeviceModel::Mv6
+            | DeviceModel::Mv6Gen2
+            | DeviceModel::Mv7Plus => Ok(None),
+        }
     }
 
     /// One setting read alone: the MV7's text line, or the binary GET. On the
@@ -1262,7 +1317,7 @@ impl ShureDevice {
     /// queued input first.
     pub fn read_live(&self) -> Result<Live> {
         let _exclusive = self.exclusive()?;
-        match self.model {
+        let mut live = match self.model {
             DeviceModel::Mv7 => self.read_live_mv7(),
             // The Gen 1 balance and the Mic Level share an address, not a GET.
             DeviceModel::Mvx2u => self.read_live_binary(cmd_get_mix),
@@ -1270,7 +1325,12 @@ impl ShureDevice {
             | DeviceModel::Mv6
             | DeviceModel::Mv6Gen2
             | DeviceModel::Mv7Plus => self.read_live_binary(cmd_get_mv6_mix),
-        }
+        }?;
+        // Out of range, the gain is an unusable answer (`get_state()`).
+        live.gain_tenths = live
+            .gain_tenths
+            .filter(|gain_tenths| self.usable_gain(*gain_tenths));
+        Ok(live)
     }
 
     /// The MV7's lines, each waiting at most 200 ms. The first that isn't
@@ -1305,13 +1365,10 @@ impl ShureDevice {
         let mode = read(cmd_get_mode(self.next_seq()))?.map(|s| s.mode);
         let gain_tenths = read(cmd_get_gain(self.next_seq()))?.map(|s| s.gain_tenths);
         let monitor_mix = read(monitor_mix(self.next_seq()))?.map(|s| s.monitor_mix);
-        let playback_mix = match self.model {
-            DeviceModel::Mvx2uGen2 | DeviceModel::Mv6Gen2 | DeviceModel::Mv7Plus => {
-                read(cmd_get_mv7_playback_mix(self.next_seq()))?.map(|s| s.playback_mix)
-            }
-            // The MV6's Playback Level GET is unconfirmed (#99): unanswered it
-            // would cost every poll a timeout. None on models without one.
-            DeviceModel::Mv6 | DeviceModel::Mvx2u | DeviceModel::Mv7 => None,
+        let playback_mix = if self.model.polls_playback_mix() {
+            read(cmd_get_mv7_playback_mix(self.next_seq()))?.map(|s| s.playback_mix)
+        } else {
+            None
         };
         Ok(Live {
             muted,
@@ -1341,7 +1398,14 @@ impl ShureDevice {
         let mut state = DeviceState::default();
         let applied = match self.send_text_within(command, MV7_POLL_TIMEOUT) {
             Ok(reply) => mv7_text::apply_reply(&reply, &mut state),
-            Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+            // Busy sent nothing: a fallback readback would only wait as long
+            // again for the same lock.
+            Err(e)
+                if e.downcast_ref::<Disconnected>().is_some()
+                    || e.downcast_ref::<Busy>().is_some() =>
+            {
+                return Err(e);
+            }
             Err(_) => false,
         };
         Ok(applied.then_some(state))

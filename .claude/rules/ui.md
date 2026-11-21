@@ -47,11 +47,12 @@ ON/OFF/Enabled for anything but the mute state itself: the mute-button setting r
 "Pressing it: Works / Ignored" (`mute_btn_span()`). Card descriptions are one sentence that
 wraps; don't break lines by hand.
 
-**Never read.** When the first readback fails (`App::settings_never_read`), the content area
-shows a notice instead of the settings (`draw_never_read()`), the other tabs lock, and no
-default is ever drawn as the mic's value. If another shurectl held the device
+**Never read.** When the first readback on a connection fails (at startup or a reconnect,
+`App::settings_never_read`), the content area shows a notice instead of the settings
+(`draw_never_read()`), the other tabs lock, and no default or pre-unplug value is drawn as
+the mic's; Mute shows OFF until the live poll reads it. If another shurectl held the device
 (`App::waiting_for_device`), no control shows at all, since nothing could be sent, and the
-live poll reads everything once the device is free; `r` doesn't wait for it. Otherwise the
+live poll reads everything once the device is free; `r` tries for a second. Otherwise the
 Mute control shows, focused, since mute needs no readback. A readback that works clears both.
 Values put back or left unread after a failed write mid-session were read once, and still show.
 
