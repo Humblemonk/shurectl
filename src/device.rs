@@ -110,6 +110,12 @@ const STRAY_REPLIES_MAX: usize = 4;
 /// longer than a single read timeout, so waiting is bounded by time, not reads.
 const MV7_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// How long a TUI step waits for the MV7's value when the live poll before it
+/// got none (`reread_mv7_gain()`): longer than the poll's 200 ms, but short
+/// enough that a held arrow key can't queue seconds of steps. Unconfirmed on
+/// hardware whether a slow MV7 answers within it.
+pub const MV7_STEP_REREAD: Duration = Duration::from_millis(500);
+
 /// How long the live poll waits for each MV7 reply, as long as a
 /// binary GET waits. The full `MV7_REPLY_TIMEOUT` every second would leave
 /// the TUI waiting on a mic that doesn't answer; a reply that comes later is
@@ -420,8 +426,8 @@ impl Drop for Exclusive {
 /// its queue is full (`HIDRAW_BUFFER_SIZE`, 64, in `hidraw_report_event()`,
 /// drivers/hid/hidraw.c), so the main handle gets every report as before.
 /// A node that can't be opened a second time (an unusual permission set)
-/// falls back to the temp-directory file the other systems use, rather than
-/// no lock at all.
+/// falls back to a lock file in [`lock_dir()`], `$XDG_RUNTIME_DIR` here,
+/// rather than no lock at all.
 #[cfg(target_os = "linux")]
 fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -> Option<File> {
     File::open(hid_path)
@@ -435,7 +441,7 @@ fn open_lock_file(hid_path: &str, usb_serial: impl FnOnce() -> Option<String>) -
 }
 
 /// Elsewhere hidapi's path isn't a file, so the lock is a file named after the
-/// USB serial in the temp directory, which is per user on macOS and Windows.
+/// USB serial in [`lock_dir()`].
 /// A device without one is named by its hidapi path instead, which every
 /// process sees the same while it stays plugged in, so two such devices
 /// don't share a lock. Whether those systems share input reports between
@@ -450,13 +456,31 @@ fn open_temp_lock_file(
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
+    let path = lock_dir().join(format!("shurectl-{name}.lock"));
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(std::env::temp_dir().join(format!("shurectl-{name}.lock")))
+        .open(&path)
+        // A file another user made there may be theirs to write: a lock needs
+        // only a handle, so reading it is enough.
+        .or_else(|_| File::open(&path))
         .ok()
+}
+
+/// Where the lock file goes: `$XDG_RUNTIME_DIR` on Linux (a per-user tmpfs,
+/// so another user's stale file can't get in the way), else the temp
+/// directory, which is per user on macOS and Windows.
+fn lock_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+    {
+        return dir;
+    }
+    std::env::temp_dir()
 }
 
 /// Take `file`'s lock, waiting up to `wait` while another process holds it.
@@ -1054,10 +1078,15 @@ impl ShureDevice {
         // in Auto (a moving Auto gain); if so, that mic's readback always
         // fails. A one-off needn't come twice, so ask once more; only a second
         // one fails the readback, which then shows nothing as the mic's.
-        if !self.usable_gain(readback.state.gain_tenths)
-            && let Some(gain_tenths) = self.read_gain_again()?
-        {
-            readback.state.gain_tenths = gain_tenths;
+        if !self.usable_gain(readback.state.gain_tenths) {
+            // Only a lost device is its own error; no answer leaves the
+            // message about the gain above the maximum, which says why.
+            match self.read_gain_again() {
+                Ok(Some(gain_tenths)) => readback.state.gain_tenths = gain_tenths,
+                Ok(None) => {}
+                Err(e) if e.downcast_ref::<Disconnected>().is_some() => return Err(e),
+                Err(_) => {}
+            }
         }
         if !self.usable_gain(readback.state.gain_tenths) {
             return Err(anyhow!(
@@ -1074,7 +1103,7 @@ impl ShureDevice {
     /// usable answer.
     fn read_gain_again(&self) -> Result<Option<u16>> {
         match self.model {
-            DeviceModel::Mv7 => self.reread_mv7_gain(),
+            DeviceModel::Mv7 => self.reread_mv7_gain(MV7_REPLY_TIMEOUT),
             DeviceModel::Mvx2u
             | DeviceModel::Mvx2uGen2
             | DeviceModel::Mv6
@@ -1293,29 +1322,33 @@ impl ShureDevice {
             .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
     }
 
-    /// The MV7's gain read alone, waiting as long as a readback does: the live
-    /// poll gives each line only 200 ms, which a slow answer may miss. `None`
-    /// without a usable answer, and on the other models, whose poll waited
-    /// that long already.
-    pub fn reread_mv7_gain(&self) -> Result<Option<u16>> {
+    /// The MV7's gain read alone, waiting up to `wait` for its line: longer
+    /// than the live poll's 200 ms a line, which a slow answer may miss.
+    /// `None` without a usable answer, and on the other models, whose poll
+    /// waited as long as their readback does already.
+    pub fn reread_mv7_gain(&self, wait: Duration) -> Result<Option<u16>> {
         Ok(self
-            .reread_mv7(&mv7_text::get_gain())?
+            .reread_mv7(&mv7_text::get_gain(), wait)?
             .map(|state| state.gain_tenths)
             .filter(|gain_tenths| self.usable_gain(*gain_tenths)))
     }
 
     /// The MV7's Monitor Mix, read as [`Self::reread_mv7_gain`] reads the gain.
-    pub fn reread_mv7_monitor_mix(&self) -> Result<Option<u8>> {
+    pub fn reread_mv7_monitor_mix(&self, wait: Duration) -> Result<Option<u8>> {
         Ok(self
-            .reread_mv7(&mv7_text::get_monitor_mix())?
+            .reread_mv7(&mv7_text::get_monitor_mix(), wait)?
             .map(|state| state.monitor_mix))
     }
 
-    fn reread_mv7(&self, command: &mv7_text::TextCommand) -> Result<Option<DeviceState>> {
+    fn reread_mv7(
+        &self,
+        command: &mv7_text::TextCommand,
+        wait: Duration,
+    ) -> Result<Option<DeviceState>> {
         match self.model {
             DeviceModel::Mv7 => {
                 let _exclusive = self.exclusive()?;
-                let reply = self.send_text(command)?;
+                let reply = self.send_text_within(command, wait)?;
                 let mut state = DeviceState::default();
                 Ok(mv7_text::apply_reply(&reply, &mut state).then_some(state))
             }

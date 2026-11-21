@@ -263,6 +263,10 @@ fn execute(
         })
         .map_err(|e| progress.fail(&["--mute"], e))?;
         progress.applied.push("--mute");
+        // A toggle whose mute read fell back to a full readback read before
+        // this write: read again after it, so Muted shows only when the
+        // device says so too (`write_settings()`).
+        app.state_unread = true;
     }
     // A --mode toggle or a relative step works from the readback, so it
     // holds one turn at the device from that read through its last write, as
@@ -323,7 +327,8 @@ fn write_settings(
     report: &mut dyn FnMut(&str),
 ) -> Result<()> {
     check_values(request, app).map_err(|e| progress.fail(&[], e))?;
-    // A toggle the mute read couldn't answer read everything already.
+    // Read everything, after any mute: `execute()` marks the state unread
+    // once it is written, even if a toggle's fallback readback came first.
     if let Some(dev) = device.as_ref()
         && app.state_unread
     {

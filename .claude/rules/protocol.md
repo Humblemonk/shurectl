@@ -73,7 +73,8 @@ CRC-16/ANSI covers 0x11 up to the CRC
   same file as the TUI whatever their environment (20 `--json` runs each as the user, with
   `sudo` and without `XDG_RUNTIME_DIR`, beside the TUI, all identical; MVX2U Gen 2,
   2026-11-20); elsewhere it is `shurectl-<USB serial or hidapi path>.lock` in the temp
-  directory. An exchange that times out waiting fails with `device::Busy` having sent
+  directory, and on Linux, if the node can't be opened twice, the same file in
+  `$XDG_RUNTIME_DIR`. An exchange that times out waiting fails with `device::Busy` having sent
   nothing, so `recover_from_failure()` puts back the old values without a re-read, marked
   unread (the other shurectl may have changed them), and `r` doesn't reconnect on it. The
   live poll doesn't wait: it skips a turn while the lock is held (`exclusive_now()`), as
@@ -103,8 +104,9 @@ CRC-16/ANSI covers 0x11 up to the CRC
   whether a device applies a write before acking it is unconfirmed; a gain or level step
   then polls first in its own turn (`read_before_step()`), so a device that applied a write
   late would read as changed and drop the next step (unconfirmed either way). A step the
-  poll got no answer for isn't sent; on the MV7 the value is first read again with a
-  readback's wait (`reread_stepped()`), since its poll gives each line 200 ms. On the MVX2U
+  poll got no answer for isn't sent; on the MV7 the value is first read again for up to
+  500 ms (`reread_stepped()`), since its poll gives each line 200 ms, and a longer wait
+  would let a held arrow queue seconds of steps (unconfirmed whether that's enough). On the MVX2U
   Gen 2 a mute write is applied by the next read: `--mute on --json` read back muted in 20
   of 20 runs (2026-11-20). `--mute off --json` can't show this, since the CLI shows Muted
   only when the write and the readback both say so. A gain read above the model's maximum

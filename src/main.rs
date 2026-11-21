@@ -917,6 +917,8 @@ fn read_before_step(
         match reread_stepped(app, device, base, step) {
             Some(changed) if changed => return None,
             Some(_) => {}
+            // Gone, the status already says it reconnects.
+            None if !app.device_connected => return None,
             None => {
                 app.set_err(
                     "Couldn't read the device before this step, so it wasn't sent. Press again.",
@@ -936,9 +938,9 @@ fn read_before_step(
     Some(polled)
 }
 
-/// On the MV7, read the value `step` changes again, waiting as long as a
-/// readback does, before a step the live poll couldn't check is refused: the
-/// poll gives each line only 200 ms. `Some(true)` when the device has another
+/// On the MV7, read the value `step` changes again, waiting up to
+/// `MV7_STEP_REREAD` (500 ms), before a step the live poll couldn't check is
+/// refused: the poll gives each line only 200 ms. `Some(true)` when the device has another
 /// value (shown, and named in the status), `Some(false)` when it has the one
 /// shown, `None` without an answer, and always on the other models.
 fn reread_stepped(
@@ -951,7 +953,7 @@ fn reread_stepped(
     let model = app.device_model;
     match step {
         Step::Gain(_) => {
-            let gain_tenths = dev.reread_mv7_gain().ok().flatten()?;
+            let gain_tenths = answered(app, dev.reread_mv7_gain(device::MV7_STEP_REREAD))?;
             if gain_tenths == base.gain_tenths {
                 return Some(false);
             }
@@ -963,7 +965,7 @@ fn reread_stepped(
             Some(true)
         }
         Step::MonitorMix(_) => {
-            let mix = dev.reread_mv7_monitor_mix().ok().flatten()?;
+            let mix = answered(app, dev.reread_mv7_monitor_mix(device::MV7_STEP_REREAD))?;
             if shown_monitor_mix(model, mix) == shown_monitor_mix(model, base.monitor_mix) {
                 return Some(false);
             }
@@ -975,6 +977,20 @@ fn reread_stepped(
             Some(true)
         }
         Step::PlaybackMix(_) => None,
+    }
+}
+
+/// The value a re-read before a step got, if any. A lost device is marked
+/// disconnected, so the status says it reconnects, not to press again.
+fn answered<T>(app: &mut App, read: Result<Option<T>>) -> Option<T> {
+    match read {
+        Ok(value) => value,
+        Err(e) => {
+            if is_disconnect(&e) {
+                mark_disconnected(app, app.device_model);
+            }
+            None
+        }
     }
 }
 
@@ -1173,6 +1189,10 @@ fn step(
                 handle_key(app, key.code, key.modifiers)
             }
             Event::Mouse(event) => {
+                // A click is no more typing for a name edit cut short.
+                if !matches!(event.kind, MouseEventKind::Moved) {
+                    app.name_edit_cut = false;
+                }
                 let action = mouse::handle_mouse(app, event, hits)
                     .and_then(|key| handle_key(app, key, KeyModifiers::NONE));
                 // Left over when the click's Enter didn't reach a strip.
@@ -1272,6 +1292,23 @@ fn key_action(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Device
     // ── Preset or device name editing mode ────────────────────────────────────
     // Handled before the quit keys so `q` can be typed in a name, and Ctrl+C
     // doesn't quit while editing.
+    // The rest of a name edit a failed reconnect cancelled: typing is ignored,
+    // saying so, so a `q` in the name doesn't quit. Any other key ends it and
+    // does what it does: Enter still mutes, which refusing would leave live.
+    if app.name_edit_cut {
+        match code {
+            KeyCode::Char(_) | KeyCode::Backspace if !mods.contains(KeyModifiers::CONTROL) => {
+                app.set_err(NAME_EDIT_CUT_NOTE);
+                return None;
+            }
+            KeyCode::Esc => {
+                app.name_edit_cut = false;
+                app.set_ok("Typing goes to the controls again.");
+                return None;
+            }
+            _ => app.name_edit_cut = false,
+        }
+    }
     if app.editing_name() {
         // Characters, not bytes: a preset name may hold any, and a device
         // name only ASCII (`is_device_name_char()`), one byte each.
@@ -2310,6 +2347,9 @@ fn reconnect(app: &mut App, device: &mut Option<ShureDevice>, wait_for_turn: boo
     }
 }
 
+/// Status for a key typed into a name edit a failed reconnect cancelled.
+const NAME_EDIT_CUT_NOTE: &str = "Name edit closed by the reconnect; typing is ignored. Press Esc.";
+
 /// Longest preset name, in characters.
 const PRESET_NAME_MAX_CHARS: usize = 40;
 
@@ -2325,7 +2365,7 @@ fn unreadable_preset_note(index: usize) -> String {
 /// nothing shown came from it: show the Mute control alone
 /// (`App::settings_never_read`), as OFF until the live poll reads it, since
 /// Muted over a live mic is the worse mistake. Busy waits for the other
-/// shurectl instead, showing no control (`App::waiting_for_device`).
+/// shurectl instead (`App::waiting_for_device`), still showing Mute.
 fn mark_never_read(app: &mut App, serial_number: &str, e: &anyhow::Error) {
     app.device_connected = !is_disconnect(e);
     app.state_unread = true;
@@ -2340,6 +2380,7 @@ fn mark_never_read(app: &mut App, serial_number: &str, e: &anyhow::Error) {
     app.confirming_factory_reset = false;
     app.confirming_preset_load = None;
     app.armed_preset_action = None;
+    app.name_edit_cut = app.editing_name();
     app.editing_preset_name = false;
     app.editing_device_name = false;
     app.name_draft.clear();
@@ -2353,7 +2394,7 @@ fn never_read_status(e: &dyn std::fmt::Display) -> String {
 
 /// A readback (`r`, or a reconnect) found another shurectl holding the
 /// device. Never read, it waits as the startup readback does
-/// (`App::waiting_for_device`): no controls, and the live poll reads the
+/// (`App::waiting_for_device`): only Mute, and the live poll reads the
 /// device once it is free. Otherwise `busy` goes to `recover_from_failure()`.
 fn wait_if_never_read(app: &mut App, busy: anyhow::Error) -> Result<()> {
     if !app.settings_never_read {
@@ -2674,6 +2715,8 @@ fn reload_state(app: &mut App, dev: &ShureDevice) -> Result<Vec<String>> {
     app.state_unread = false;
     app.settings_never_read = false;
     app.waiting_for_device = false;
+    // The full screen is back, so typing goes to its controls again.
+    app.name_edit_cut = false;
     app.device_state.serial_number = dev.serial_number.clone();
     Ok(readback.skipped)
 }
@@ -3317,12 +3360,13 @@ mod tests {
     }
 
     /// A first readback that found another shurectl holding the device shows
-    /// no control: Enter and arrows send nothing. Once the device is free the
+    /// only Mute: Enter on it mutes (waiting its turn, as every write does),
+    /// and arrows or Enter elsewhere send nothing. Once the device is free the
     /// live poll reads everything, and so does `r` (which tries for a second,
     /// not 5); the fake never locks, so both read at once here. Unplugged, the
     /// screen no longer blames another shurectl.
     #[test]
-    fn waiting_for_the_device_reads_it_once_free_and_offers_nothing_before() {
+    fn waiting_for_the_device_reads_it_once_free_and_offers_only_mute() {
         let waiting = |model| App {
             device_model: model,
             settings_never_read: true,
@@ -3336,8 +3380,14 @@ mod tests {
             let fake = FakeDevice::new(model);
             let mut device = Some(fake.open());
             let mut app = waiting(model);
-            assert!(app.toggle_focused().is_none(), "{model:?}");
+            assert!(
+                matches!(app.toggle_focused(), Some(DeviceAction::SetMute(true))),
+                "{model:?}: refusing a mute would leave the mic live"
+            );
+            app.device_state.muted = false;
             assert!(app.adjust_focused(1).is_none(), "{model:?}");
+            app.focus = app::Focus::Mode;
+            assert!(app.toggle_focused().is_none(), "{model:?}");
             poll_live(&mut app, &device);
             assert!(
                 !app.waiting_for_device && !app.settings_never_read && !app.state_unread,
@@ -3574,7 +3624,7 @@ mod tests {
 
     /// An MV7 slower than the live poll's 200 ms a line still gets its step:
     /// before refusing one the poll couldn't check, the value is read again
-    /// with a readback's wait (`reread_stepped()`).
+    /// with a longer wait (`reread_stepped()`).
     #[test]
     fn an_mv7_step_the_poll_couldnt_check_reads_the_value_again() {
         let model = DeviceModel::Mv7;
@@ -4363,6 +4413,12 @@ mod tests {
             }
             mark_never_read(&mut app, "", &read_failed);
             assert!(!app.editing_name() && !app.confirming_factory_reset);
+            // The rest of a cut name edit is ignored, saying so, so its `q`
+            // doesn't quit; Enter, below, still mutes.
+            if pending == 1 {
+                assert!(handle_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE).is_none());
+                assert!(!app.should_quit && app.status_message == NAME_EDIT_CUT_NOTE);
+            }
             assert!(matches!(
                 handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
                 Some(DeviceAction::SetMute(true))
