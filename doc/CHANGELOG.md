@@ -104,7 +104,7 @@ leave the screen showing the wrong gain or mute.
 ### Upgrading
 
 - On Linux, quit any shurectl still running from before the upgrade, such as an open TUI,
-  and start it again. An older one and a 2.18.2 one don't take turns at the device.
+  and start it again. An older one and a 2.19.0 one don't take turns at the device.
 
 ## 2.18.1 — 2026-11-19
 
